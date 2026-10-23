@@ -13,4 +13,11 @@
 
 ## License
 
-To be decided before the first release.
+Copyright (c) 2026 Bluesounds.
+
+[GNU AGPL v3.0](LICENSE) with [additional terms](LICENSE-EXCEPTIONS.md):
+
+- Personal and in-company use and modification: free, no obligation to publish source.
+- Free, non-commercial distribution or hosting: also exempt from publishing source.
+- Selling it, or offering it as part of a paid product, subscription, or ad-gated service: AGPL applies — publish your source.
+- Always keep the attribution to Nasquire.

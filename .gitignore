@@ -1,0 +1,14 @@
+.gradle/
+build/
+out/
+.idea/
+*.iml
+.vscode/
+node_modules/
+dist/
+*.log
+.env
+.env.*
+data/
+.ai-commit-msg
+.DS_Store
