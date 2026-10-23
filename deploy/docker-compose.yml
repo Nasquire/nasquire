@@ -1,0 +1,28 @@
+services:
+  nasquire:
+    build:
+      context: ..
+      args:
+        PUID: ${PUID:-1000}
+        PGID: ${PGID:-1000}
+    user: "${PUID:-1000}:${PGID:-1000}"
+    ports:
+      - "8080:8080"
+    environment:
+      NASQUIRE_DATA: /data
+    volumes:
+      - nasquire-data:/data
+      - ${SOURCE_DIR:-./documents}:/sources/documents:ro
+    mem_limit: 512m
+    cpus: 2
+    pids_limit: 100
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+volumes:
+  nasquire-data:

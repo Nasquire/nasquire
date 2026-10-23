@@ -1,0 +1,24 @@
+plugins {
+    id 'org.springframework.boot' version '4.1.2' apply false
+    id 'com.github.node-gradle.node' version '7.1.0' apply false
+}
+allprojects {
+    group = 'com.bluesounds'
+    version = '0.1.0'
+    repositories { mavenCentral() }
+}
+configure([project(':core'), project(':app')]) {
+    apply plugin: 'java'
+    java { toolchain { languageVersion = JavaLanguageVersion.of(25) } }
+    tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
+    tasks.withType(Test).configureEach {
+        useJUnitPlatform()
+        maxHeapSize = '256m'
+        jvmArgs '-XX:+UseSerialGC'
+    }
+    dependencies {
+        testImplementation platform('org.junit:junit-bom:6.0.3')
+        testImplementation 'org.junit.jupiter:junit-jupiter'
+        testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    }
+}

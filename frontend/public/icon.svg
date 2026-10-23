@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- 공식 아이콘 "푸른 바다" 원본(유일): 남색 하늘, 달, 물결 두 겹. 둥근 사각형으로 자름. 다른 크기·형식은 build-icons.mjs로 생성 -->
+  <defs><clipPath id="r"><rect width="100" height="100" rx="22"/></clipPath></defs>
+  <g clip-path="url(#r)">
+    <rect width="100" height="100" fill="#1e3a8a"/>
+    <circle cx="66" cy="34" r="12" fill="#bfdbfe"/>
+    <path d="M0 62c14-8 26-8 40 0s26 8 40 0 14-6 20-6v44H0z" fill="#3b82f6"/>
+    <path d="M0 76c14-7 26-7 40 0s26 7 40 0 14-5 20-5v29H0z" fill="#60a5fa"/>
+  </g>
+</svg>
