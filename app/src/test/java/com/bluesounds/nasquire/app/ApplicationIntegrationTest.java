@@ -478,11 +478,18 @@ class ApplicationIntegrationTest {
         assertTrue(uploads.trashList(id).isEmpty());
         var current = storage.source(id);
         storage.save(new com.bluesounds.nasquire.core.Source(id, current.name(), current.root(), null, List.of("folder"), "upload"));
-        var excluded = json(call("/api/shares", "POST", Map.of("source", readOnly, "path", "notes.md"), null, true), 200);
-        var previous = storage.source(readOnly);
-        storage.save(new com.bluesounds.nasquire.core.Source(readOnly, previous.name(), previous.root(), previous.includes(), List.of("notes.md")));
+        // 뒤의 검색·임베딩 검증 소스를 잠시 제외하면 주기 색인기가 문서를 삭제할 수 있다. 정책 검사는 전용 소스로 격리한다.
+        Path exclusionRoot = Files.createDirectory(TEMP.resolve("share-exclusion"));
+        Files.writeString(exclusionRoot.resolve("notes.md"), "공유 제외 정책 검사");
+        String exclusionId = UUID.randomUUID().toString();
+        storage.save(new com.bluesounds.nasquire.core.Source(exclusionId, "Share exclusion", exclusionRoot, null, null));
+        var excluded = json(call("/api/shares", "POST", Map.of("source", exclusionId, "path", "notes.md"), null, true), 200);
+        storage.save(new com.bluesounds.nasquire.core.Source(exclusionId, "Share exclusion", exclusionRoot, null, List.of("notes.md")));
+        // 제외 상태를 반드시 색인기에 적용해도 원래 검색 소스는 그대로 남아야 한다.
+        indexing.scan(storage.sources());
+        assertEquals(1, json(call("/api/search?query=ocean&source=" + readOnly, "GET", null, token, false), 200).size());
         assertEquals(404, call(excluded.get("url").asText(), "GET", null, null, false).statusCode());
-        storage.save(previous);
+        storage.deleteSource(exclusionId);
         var limiter = new ShareSecurity.PublicFilter(2, storage);
         assertTrue(limiter.allow("test", 0)); assertTrue(limiter.allow("test", 0)); assertFalse(limiter.allow("test", 0));
         assertTrue(limiter.allow("test", 60000));

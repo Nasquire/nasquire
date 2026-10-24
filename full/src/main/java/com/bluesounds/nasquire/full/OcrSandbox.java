@@ -142,20 +142,24 @@ final class OcrSandbox {
      * 자식이 먼저 끝나 고아가 된 손자도 같은 프로세스 그룹이라 함께 종료된다. 시간 안에 확인되면 true.
      */
     static boolean kill(Process process, long waitMillis) {
+        return kill(process, waitMillis, Path.of("/proc"));
+    }
+    static boolean kill(Process process, long waitMillis, Path proc) {
         var family = new ArrayList<>(process.descendants().toList());
         long group = process.pid();
-        signalGroup(group);
+        if (process.isAlive()) signalGroup(group);
+        else signalRunningGroup(proc, group);
         family.forEach(ProcessHandle::destroyForcibly);
         process.destroyForcibly();
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(waitMillis);
         try { process.waitFor(waitMillis, TimeUnit.MILLISECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
         while (true) {
-            boolean alive = process.isAlive() || groupAlive(group);
-            for (var member : family) alive |= running(member.pid());
+            boolean alive = process.isAlive() || groupAlive(proc, group);
+            for (var member : family) alive |= running(proc, member.pid());
             if (!alive) return true;
             if (System.nanoTime() >= deadline) return false;
             // 그룹에 남은 구성원이 있으면 그 번호는 재사용되지 않으므로 다시 보내도 안전하다.
-            if (groupAlive(group)) signalGroup(group);
+            signalRunningGroup(proc, group);
             family.forEach(ProcessHandle::destroyForcibly);
             try { Thread.sleep(20); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return false; }
         }
@@ -170,23 +174,44 @@ final class OcrSandbox {
         if (group <= 1 || group == ProcessHandle.current().pid() || group > Integer.MAX_VALUE) return;
         try { int ignored = (int) Signals.KILL.invokeExact((int) -group, 9); } catch (Throwable ignored) { }
     }
-    /** /proc의 상태가 좀비·종료가 아닌 프로세스만 실행 중으로 본다. */
-    private static boolean running(long pid) {
-        String stat = stat(pid);
-        return stat != null && !List.of("Z", "X", "x").contains(field(stat, 0));
+    private static void signalRunningGroup(Path proc, long group) {
+        try { if (groupRunning(proc, group)) signalGroup(group); }
+        catch (IOException | RuntimeException ignored) { /* 종료 미확인 상태에서는 그룹 번호에 재신호하지 않는다. */ }
     }
-    private static boolean groupAlive(long group) {
-        try (var entries = Files.newDirectoryStream(Path.of("/proc"), "[0-9]*")) {
+    /** 열거·읽기·파싱 실패는 종료 미확인이다. 좀비·종료·확실히 사라진 pid만 종료로 본다. */
+    static boolean running(Path proc, long pid) {
+        try {
+            String stat = stat(proc, pid);
+            return stat != null && !List.of("Z", "X", "x").contains(field(stat, 0));
+        } catch (IOException | RuntimeException e) { return true; }
+    }
+    static boolean groupAlive(Path proc, long group) {
+        try { return groupRunning(proc, group); }
+        catch (IOException | RuntimeException e) { return true; }
+    }
+    private static boolean groupRunning(Path proc, long group) throws IOException {
+        try (var entries = Files.newDirectoryStream(proc, "[0-9]*")) {
             for (Path entry : entries) {
-                String stat = stat(Long.parseLong(entry.getFileName().toString()));
+                String stat = stat(proc, Long.parseLong(entry.getFileName().toString()));
                 if (stat != null && String.valueOf(group).equals(field(stat, 2)) && !List.of("Z", "X", "x").contains(field(stat, 0))) return true;
             }
             return false;
-        } catch (IOException | RuntimeException e) { return false; }
+        }
     }
-    private static String stat(long pid) {
-        try { String text = Files.readString(Path.of("/proc", String.valueOf(pid), "stat")); return text.substring(text.lastIndexOf(')') + 2); }
-        catch (IOException | RuntimeException e) { return null; }
+    private static String stat(Path proc, long pid) throws IOException {
+        Path folder = proc.resolve(String.valueOf(pid));
+        String text;
+        try { text = Files.readString(folder.resolve("stat")); }
+        catch (NoSuchFileException e) {
+            // 열거 직후 실제로 사라진 프로세스는 정상이다. stat만 없거나 접근을 확인할 수 없으면 실패 닫힘.
+            if (Files.isDirectory(proc) && Files.notExists(folder)) return null;
+            throw e;
+        }
+        int end = text.lastIndexOf(')');
+        if (end < 0 || end + 2 >= text.length()) throw new IOException("프로세스 상태 확인 실패");
+        String rest = text.substring(end + 2);
+        if (!field(rest, 0).matches("[RSDZTtXxKWPIN]") || !field(rest, 2).matches("[0-9]+")) throw new IOException("프로세스 상태 확인 실패");
+        return rest;
     }
     /** "(comm)" 뒤 필드: 0=state, 1=ppid, 2=pgrp. */
     private static String field(String rest, int index) {

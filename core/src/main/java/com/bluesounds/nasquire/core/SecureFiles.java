@@ -73,6 +73,7 @@ public final class SecureFiles {
             if (fd < 0) throw new IllegalStateException("닫힌 파일");
             return Path.of("/proc/self/fd/" + fd);
         }
+        public String fileKey() { return key(device, inode); }
         public long device() { return device; }
         public long inode() { return inode; }
         public long size() { return size; }
@@ -83,6 +84,66 @@ public final class SecureFiles {
             return new FdChannel(owned);
         }
         public synchronized void close() { SecureFiles.close(fd); fd = -1; }
+    }
+
+    private static String key(long device, long inode) {
+        return "(dev=" + Long.toHexString(device) + ",ino=" + inode + ")";
+    }
+
+    /** 확인한 공유 루트 fd를 유지하며 하위 경로를 openat·NOFOLLOW로만 연다. */
+    public static final class Directory implements AutoCloseable {
+        private int fd;
+        private final String fileKey;
+        private Directory(int fd, String fileKey) { this.fd = fd; this.fileKey = fileKey; }
+        public String fileKey() { return fileKey; }
+        public synchronized Path path() throws IOException {
+            if (fd < 0) throw new IOException("닫힌 디렉터리");
+            return Path.of("/proc/self/fd/" + fd);
+        }
+        public synchronized Pinned open(Path relative) throws IOException {
+            if (fd < 0 || relative.isAbsolute() || relative.toString().isEmpty()) throw new IOException("상대 파일 경로 필요");
+            int parent = -1, file = -1;
+            try (Arena arena = Arena.ofConfined()) {
+                parent = (int) Native.OPEN.invokeExact(fd, arena.allocateFrom("."), DIRECTORY_FLAGS);
+                if (parent < 0) throw new IOException("공유 루트 열기 실패");
+                for (int i = 0; i < relative.getNameCount(); i++) {
+                    String part = relative.getName(i).toString();
+                    if (part.equals(".") || part.equals("..") || part.isEmpty()) throw new IOException("상대 파일 경로 오류");
+                    if (i == relative.getNameCount() - 1) {
+                        file = (int) Native.OPEN.invokeExact(parent, arena.allocateFrom(part), FILE_FLAGS);
+                    } else {
+                        int next = (int) Native.OPEN.invokeExact(parent, arena.allocateFrom(part), DIRECTORY_FLAGS);
+                        if (next < 0) throw new IOException("하위 디렉터리 열기 실패");
+                        SecureFiles.close(parent); parent = next;
+                    }
+                }
+                Pinned result = regular(file, arena); file = -1; return result;
+            } catch (IOException e) { throw e;
+            } catch (Throwable e) { throw new IOException("공유 파일 열기 실패", e);
+            } finally { SecureFiles.close(parent); SecureFiles.close(file); }
+        }
+        public synchronized void close() { SecureFiles.close(fd); fd = -1; }
+    }
+
+    public static Directory openDirectory(Path absolute) throws IOException {
+        int fd = -1;
+        try (Arena arena = Arena.ofConfined()) {
+            fd = directory(absolute, arena);
+            var stat = arena.allocate(256, 8);
+            if ((int) Native.STAT.invokeExact(fd, stat) != 0) throw new IOException("디렉터리 식별자 확인 실패");
+            var result = new Directory(fd, key(stat.get(ValueLayout.JAVA_LONG, 0), stat.get(ValueLayout.JAVA_LONG, 8)));
+            fd = -1; return result;
+        } catch (IOException e) { throw e;
+        } catch (Throwable e) { throw new IOException("공유 루트 열기 실패", e);
+        } finally { close(fd); }
+    }
+
+    private static Pinned regular(int fd, Arena arena) throws Throwable {
+        if (fd < 0) throw new IOException("파일 열기 실패");
+        var stat = arena.allocate(256, 8);
+        int result = (int) Native.STAT.invokeExact(fd, stat);
+        if (result != 0 || (stat.get(ValueLayout.JAVA_INT, MODE_OFFSET) & 0170000) != 0100000) throw new IOException("일반 파일이 아닙니다");
+        return new Pinned(fd, stat.get(ValueLayout.JAVA_LONG, 0), stat.get(ValueLayout.JAVA_LONG, 8), stat.get(ValueLayout.JAVA_LONG, 48));
     }
 
     /**
@@ -99,12 +160,7 @@ public final class SecureFiles {
                 parent = directory(absolute.getParent(), arena);
                 file = (int) Native.OPEN.invokeExact(parent, arena.allocateFrom(absolute.getFileName().toString()), FILE_FLAGS);
             }
-            if (file < 0) throw new IOException("파일 열기 실패");
-            var stat = arena.allocate(256, 8);
-            int result = (int) Native.STAT.invokeExact(file, stat);
-            int mode = stat.get(ValueLayout.JAVA_INT, MODE_OFFSET);
-            if (result != 0 || (mode & 0170000) != 0100000) throw new IOException("일반 파일이 아닙니다");
-            var pinned = new Pinned(file, stat.get(ValueLayout.JAVA_LONG, 0), stat.get(ValueLayout.JAVA_LONG, 8), stat.get(ValueLayout.JAVA_LONG, 48));
+            var pinned = regular(file, arena);
             file = -1;
             return pinned;
         } catch (IOException e) { throw e;

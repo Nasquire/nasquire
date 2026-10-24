@@ -1,6 +1,7 @@
 package com.bluesounds.nasquire.app;
 
 import com.bluesounds.nasquire.core.Source;
+import com.bluesounds.nasquire.core.SecureFiles;
 import java.io.*;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.file.*;
@@ -143,7 +144,10 @@ public class ShareService {
     }
     List<Map<String, Object>> entries(Target target) throws IOException {
         target = refresh(target);
-        return SafeFiles.list(target.source, target.relative);
+        try (var root = openSharedRoot(target);
+             var opened = new SafeFiles(root, Path.of(target.share.path).relativize(target.relative))) {
+            return SafeFiles.list(target.source, target.relative, opened);
+        }
     }
     private Share findById(Share share) {
         if (db.queryForObject("SELECT COUNT(*) FROM shares WHERE id=? AND revoked=FALSE AND expires_at>?", Integer.class, share.id, clock.millis()) != 1) throw new Missing();
@@ -153,10 +157,29 @@ public class ShareService {
         Path root = Path.of(target.share.path);
         return target(findById(target.share), target.relative.equals(root) ? "" : root.relativize(target.relative).toString());
     }
+    SecureFiles.Directory openSharedRoot(Target target) throws IOException {
+        var root = SecureFiles.openDirectory(target.source.root().resolve(target.share.path));
+        if (!root.fileKey().equals(target.share.fileKey)) { root.close(); throw new Missing(); }
+        return root;
+    }
+
+    /** 전송할 fd 자체를 검증한다. 폴더 공유는 확인한 루트 fd 아래에서만 연다. */
+    SecureFiles.Pinned openPinned(Target target) throws IOException {
+        if (!target.share.directory) {
+            var pinned = SecureFiles.open(target.source.root().resolve(target.relative));
+            if (!pinned.fileKey().equals(target.share.fileKey)) { pinned.close(); throw new Missing(); }
+            return pinned;
+        }
+        try (var root = openSharedRoot(target)) {
+            return root.open(Path.of(target.share.path).relativize(target.relative));
+        }
+    }
+
     ReadableByteChannel open(Target target) throws IOException {
         target = refresh(target);
         if (target.directory) throw new Missing();
-        ReadableByteChannel channel = downloads.open(target.source.id() + ":" + target.relative);
+        ReadableByteChannel channel;
+        try (var pinned = openPinned(target)) { channel = pinned.channel(); }
         try {
             if (db.update("UPDATE shares SET downloads=downloads+1 WHERE id=? AND revoked=FALSE AND expires_at>? AND (max_downloads=0 OR downloads<max_downloads)", target.share.id, clock.millis()) != 1) throw new Missing();
             storage.audit("share-visitor", "share-download", 200); return channel;

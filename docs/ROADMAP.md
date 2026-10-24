@@ -13,7 +13,8 @@
 - [x] 3단계: 형식 확장 — Word·PPT·Excel(POI, 스트리밍), HWP·HWPX, download_file 짧은 주소.
 - [x] 3.5단계: 업로드·공유 — 선택 기능 "업로드 소스"(기본 끔, 별도 쓰기 가능 폴더만 쓰고 일반 소스는 계속 읽기 전용, 웹 업로드·폴더·휴지통), 외부 공유 링크(파일 또는 폴더 하나, 무작위 토큰 `/s/{token}`, 만료·비밀번호·다운로드 횟수 제한·철회·감사 로그, 실경로 범위 검사·심볼릭 링크 탈출 차단·속도 제한, 범위 밖 목록·검색·MCP 노출 없음).
 - [ ] 3.6단계: 임베드용 core 라이브러리 — 앱 의존 없는 공개 API 정리, Maven 패키지 배포(`nasquire-core`), 버전 정책(SemVer), 사용 예제. 확장 지점(인증·저장 위치·원본 열기 주소)을 설정·인터페이스로.
-- [ ] 4단계: full 모듈 — OCR(PaddleOCR ONNX vs Tesseract 실측), 리랭커, Qdrant, ML 전용 모드. (구현 완료: 원격/로컬 리랭커·Tesseract 경로·Qdrant·ML 전용 모드. 미완료: 실제 OCR 실측·PaddleOCR·실제 Qdrant 서버 검증)
+- [x] 4단계: full 모듈 기본 구현 — 원격/로컬 리랭커·격리된 Tesseract 처리 경로·Qdrant·ML 전용 모드 및 보안 잔여 수정.
+- [ ] 4단계 후속 구현·실측 — 실제 OCR 정확도/속도/RSS 비교·실제 Qdrant 서버·arm64·NAS/NFS/SMB·cgroup 검증은 미실측. PaddleOCR·원격 OCR 클라이언트·full 설정 UI는 미구현. 내장 모델의 512 MiB 초과는 유지한다.
 - [ ] 5단계: 배포 — amd64·arm64 이미지 `:lite`·`:full`, CI, NAS 설치 안내(Synology·Unraid·TrueNAS), MCP OAuth.
 
 ## 결정
@@ -175,12 +176,13 @@
 - [x] 등록 비밀번호 재확인, 등록/해제 별도 제한 키, 키 누락/변경 시 새 키 생성 금지·503·복구 안내, 용도별 AAD `v2:` 형식과 기존 형식 이전.
 - [x] 복구 코드 정규화, 오프라인 복구 확인 재입력·CR 제거, 로그인 코드 단계 취소(한/영).
 - [x] `./gradlew build -q` 종료 0, `verify-runtime.py`·`verify-admin-recovery.py` 종료 0. 상세: [TOTP 검증](verification/totp.md#교차-검토-반영-2026-10-24-기준-커밋-ad6a3b1).
-- [ ] 실제 브라우저 UI·실제 TTY 확인 재입력 검증, 키 오류 503 HTTP 통합 테스트, 원격 임베딩 테스트 간헐 실패(1회) 원인 확인.
+- [ ] 실제 브라우저 UI·실제 TTY 확인 재입력 검증, 키 오류 503 HTTP 통합 테스트.
+- [x] 원격 임베딩 테스트 간헐 실패 원인 확인·공유 제외 정책 테스트 소스 격리: 4단계 최종 확인 절 참고.
 
 
 ## 4단계 full 모듈 부분 구현 (2026-10-24, 기준 a4bb16b)
 
-**부분 완료. 단계 전체 체크는 미완료로 유지한다.** 상세 근거·제한은 [full 검증](verification/full.md)을 따른다.
+**당시 부분 완료 기록이다. 현재 기본 구현 완료와 후속 미완료 상태는 아래 최종 확인 절을 따른다.** 상세 근거·제한은 [full 검증](verification/full.md)을 따른다.
 
 - [x] 독립 `full` Gradle 라이브러리·Providers/ServiceLoader 확장. 기본 lite 앱 런타임에서 full·ONNX Runtime·DJL 제외, 기존 내장 E5 공급자는 full로 이동, 원격 임베딩은 lite에 유지. `-Pfull`로 선택 포함, lite 의존성 유입 검사.
 - [x] full 설정 기본 off·관리자 세션/CSRF 전용 API(`/api/full`), 원격 키 AES-GCM v2 + AAD `reranker`·비공개·0600·공유 암호화 키 재생성 차단.
@@ -241,3 +243,12 @@
 - [x] S4 setsid 그룹으로 고아 손자까지 종료·확인 후 슬롯 반환/정리, 부모 PNG 합계·열린 fd 재검사, 직접 작업자 실행의 작업 폴더 형식·소유자·0700 검사.
 - [x] 최종 lite/full 빌드 종료 0(core 27·app 20·full 18, 65개 테스트 실패·생략 0), 8101 lite 런타임·8102 ML 실측 각각 종료 0·서버/포트 정리. 상세 결과는 [full 검증](verification/full.md)의 "최종 재확인 반영" 절에 기록한다.
 - 기존 4단계 전체 미완료 항목(실제 OCR·Qdrant·arm64·cgroup·PaddleOCR·full UI)은 그대로 유지한다.
+
+## 4단계 최종 확인 (2026-10-24, 기준 cd23e83)
+
+- [x] 공유 파일은 전송할 fd의 fstat dev/ino를 저장된 fileKey와 대조한 뒤 그 fd로만 읽는다. 폴더 공유의 다운로드·목록은 확인한 루트 디렉터리 핸들을 유지하고 하위 경로를 NOFOLLOW로 연다. 검사 전후 파일·폴더 교체, 링크·FIFO 거부 회귀 테스트 추가.
+- [x] OCR 자식 회수 시 `/proc` 열거·stat 읽기·파싱 실패는 종료 미확인으로 처리한다. 확인 전에는 슬롯과 작업 폴더를 보유한다. 확실히 사라진 pid와 좀비만 종료로 보며 오류 경로 회귀 테스트 추가.
+- [x] app 간헐 실패 자연 재현(키워드 1건 기대·0건 실제)·원인 수정: 공유 제외 정책 검사를 전용 소스로 격리하고 제외 상태를 직접 색인해 원래 결과 보존 확인. 수정 후 `./gradlew :app:cleanTest :app:test -q` 10회 모두 종료 0(app 25개씩).
+- [x] 최종 `./gradlew build -q`·`./gradlew -Pfull build -q`·`VERIFY_PORT=8101 python3 scripts/verify-runtime.py` 각각 종료 0. core 27·app 25·full 19개 테스트 결과 실패·오류·생략 0. lite 최대 RSS 281.9 MiB, 서버·bootRun 종료/포트 반환 확인. [full 최종 확인](verification/full.md#최종-확인-기준-cd23e83)에 실패 근거와 최종 결과 기록.
+- [ ] 실제 OCR·실제 Qdrant·arm64·NAS/NFS/SMB·악성 코퍼스·512 MiB cgroup 부하 검증은 미실측. PaddleOCR·원격 OCR 클라이언트·full UI는 미구현이다.
+- 수용한 한계: NAS/NFS 일반 파일 I/O가 반환하지 않으면 복사·추출은 시간 제한을 보장하지 못한다. 일반 텍스트 추출도 같은 한계다. 운영자는 soft/intr 마운트·타임아웃 설정을 권장하며 실제 동작은 사용하는 클라이언트/파일시스템에서 확인해야 한다.

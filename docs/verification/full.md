@@ -297,3 +297,41 @@ PaddleOCR ONNX는 이번에도 구현하지 않고 Tesseract CLI 경로를 유�
 이번 위임 실행에서 위 필수 검증의 실패는 없었다. 빌드/bootRun은 순차 실행했고 마지막 ML 검증이 full bootJar를 만들었으므로 현재 앱 JAR는 full 구성이다. 실제 OCR 실행 파일이 없어서 정상 이미지 디코딩 뒤 OCR 호출은 예상한 500 응답으로 검증했다(실제 인식 성공을 뜻하지 않는다).
 
 상세 아티팩트(공개 커밋 제외): `build/verification/stage4-final/`의 빌드·런타임 로그, `test-summary.json`, 모듈별 `*-tests/`, `measurement.json`, `smoke.txt`, `ml-measurement.json`, `exit.txt`, `changed-files.txt`.
+
+## 최종 확인 (기준 cd23e83)
+
+검증일: 2026-10-24. 4단계 기본 구현과 이번 보안 잔여 수정은 완료했고, 아래의 미구현·미실측 항목은 별도로 남긴다.
+
+공유 파일은 실제 전송할 fd의 `fstat` dev/ino를 기존 `fileKey` 형식과 대조하고 같은 fd로만 전송한다. 경로에서 식별자를 확인한 뒤 다른 일반 파일로 바뀌면 거부하며, fd 확인 뒤 교체되면 원래 inode만 전송한다. 폴더 공유는 `SecureFiles.openDirectory`로 연 루트 핸들의 식별자를 확인하고 그 핸들을 유지한 채 `openat`·NOFOLLOW로 하위 파일을 연다. 목록도 확인한 루트 핸들에서 NOFOLLOW 디렉터리 스트림을 열어 읽는다. 루트 교체 전후·일반 파일 교체 전후·하위 링크/FIFO 거부를 `ShareRaceTest` 5개로 검증한다.
+
+OCR 종료 확인은 `/proc` 열거·stat 읽기·파싱 실패를 종료 미확인으로 처리한다. `/proc`가 정상적으로 존재하고 pid 디렉터리가 확실히 사라진 경우와 좀비/종료 상태만 종료로 본다. 미확인일 때는 회수자가 슬롯·작업 폴더를 계속 보유하고, 존재를 확인하지 못한 그룹에 반복 신호를 보내지 않는다. 가짜 proc 트리로 열거 실패·stat 누락/읽기 실패/손상·좀비·사라진 pid를 검사하고, 종료된 직접 자식도 그룹 열거에 실패하면 `kill`이 false를 반환하는 회귀 테스트를 추가했다.
+
+### app 간헐 실패 조사
+
+조사 중 첫 10회는 통과했다(보안 수정 작업을 병행한 탐색 실행). 이후 `./gradlew :app:cleanTest :app:test -q` 10회 중 8번째에서 app 25개 중 1개가 자연 재현됐다. 실패 테스트는 `ApplicationIntegrationTest.setupSessionTokensScopesAndMcpEndToEnd`, 실패 지점은 `verifyRemoteEmbedding`의 키워드 검색 단언(수정 전 526줄), 기대 1건·실제 0건이다. 해당 Gradle 종료 코드는 1이며 나머지 9회는 0이다. 새 실패 로그·XML은 `build/verification/final/app-final-08.log`, `app-final-08/app/TEST-com.bluesounds.nasquire.app.ApplicationIntegrationTest.xml`, 요약은 `reproduced-failure.txt`에 보존했다. 과거 TOTP 검증의 같은 증상과 일치한다(`historical-totp-review-build-run1-failed.log`).
+
+원인은 같은 통합 테스트 안에서 소스 정의를 공유한 데 있다. `verifyUploadsShares`가 뒤의 임베딩 테스트에서도 사용하는 읽기 전용 소스의 `notes.md`를 잠시 제외했다가 복원한다. 100ms 주기 색인기가 이 제외 상태를 관찰하면 기존 문서를 지우며, 복원 후 다시 안정화·색인되기 전에 `verifyRemoteEmbedding`이 공급자를 remote로 바꾸면 재색인 필요 상태가 되어 일반 색인이 중지된다. 그 뒤 재색인 요청보다 먼저 수행하는 키워드 검색에서 0건이 나온다. 서버 포트는 기존부터 RANDOM_PORT/가짜 HTTP 포트 0을 사용한다.
+
+수정은 공유 제외 정책 검사에 전용 소스·파일을 사용하도록 분리한다. 원래 검색/임베딩 소스의 정의를 바꾸지 않으며, 제외 정의를 실제 색인기에 한 번 적용해도 원래 검색 결과가 유지되는지 검사한다. 대기 시간을 늘리거나 실패 단언을 재시도하는 방식으로 덮지 않는다. 최종 수정본 10회 반복 결과는 아래 표에 기록한다.
+
+### 수용한 한계·미실측
+
+**NAS/NFS 일반 파일 I/O가 반환하지 않으면 복사·추출은 시간 제한을 보장하지 못한다.** 복사의 시간/중단 검사는 버퍼 읽기·쓰기 사이에 수행되므로 커널에서 반환하지 않는 일반 파일 열기·읽기·쓰기를 강제로 끝내지 못한다. 일반 텍스트 추출도 같은 한계다. 운영자는 soft/intr 마운트·타임아웃 설정을 권장하며, 옵션의 지원 여부와 실제 중단 동작은 사용하는 클라이언트/파일시스템에서 확인해야 한다. 이번 작업은 이 한계를 수용했으며 NAS 장애 실측을 완료했다는 뜻이 아니다.
+
+실제 Tesseract/언어 데이터가 준비되지 않아 OCR 정확도·속도·RSS 비교는 미수행이다. 실제 Qdrant 서버·TLS·대규모 컬렉션, arm64, NAS/NFS/SMB 장애, 악성 PDF/이미지 코퍼스, 512 MiB cgroup 부하 검증도 미수행이다. PaddleOCR·원격 OCR 클라이언트·full 설정 UI는 미구현이고 내장 모델의 512 MiB 초과도 그대로다. `/proc` 접근 문제가 계속되면 OCR 슬롯을 계속 보유하므로 운영자가 접근 문제를 해소해야 한다.
+
+### 검증 결과
+
+| 명령 | 종료 코드 | 결과 |
+| --- | ---: | --- |
+| `./gradlew :app:test --tests '*ShareRaceTest' :full:test --tests '*FinalReviewFullTest' -q` | 0 | 표적 회귀 app 5개·full 6개 통과. 이후 proc 루트 누락 검사와 재신호 조건도 보강하고 아래 최종 빌드에서 전체 재검증 |
+| `./gradlew :app:cleanTest :app:test -q` (원인 수정 전 조사 10회) | 8번째 1, 나머지 0 | `verifyRemoteEmbedding` 키워드 검색 0건 실패를 보존. 첫 탐색 10회와 별도 실행 |
+| `./gradlew :app:cleanTest :app:test -q` (원인 수정 후 10회) | 10회 모두 0 | 매회 app 25개, 합계 250개 테스트 실패·오류·생략 0 |
+| `./gradlew build -q` | 0 | 최종 core 27·app 25·full 19, 합계 71개 테스트 결과 실패·오류·생략 0, lite 클래스 경로 검사 통과 |
+| `./gradlew -Pfull build -q` | 0 | full 구성 빌드와 통합 테스트 통과, 최종 테스트 결과 동일 |
+| `VERIFY_PORT=8101 python3 scripts/verify-runtime.py` | 0 | lite 48문서·16 MiB 업로드/공유·REST/MCP·TOTP. 시작 최대 174,160 KiB·작업 최대 288,636 KiB(281.9 MiB). 서버·bootRun 종료와 포트 반환 확인 |
+| `git diff --check` | 0 | 공백 오류 없음 |
+
+빌드와 bootRun은 순차 실행했다. 마지막 bootJar는 full 구성이고 런타임 검증은 lite bootRun이다. 필수 완료 기준은 모두 통과했다. 위 조사 중 실패 1회는 수정 전 증상이며 실패 근거를 삭제하지 않았다. 실제 OCR·외부 서비스·다른 아키텍처/파일시스템·cgroup 검증은 앞 절의 이유로 미수행이다.
+
+상세 아티팩트(공개 커밋 제외): `build/verification/final/`의 `results.json`(원인 수정 전 조사·빌드), `stable-results.json`(수정 후 10회·최종 빌드·런타임의 명령/종료 코드/시간), `app-final-08.log`·`app-final-08/app/`·`reproduced-failure.txt`(자연 재현), `app-stable-01`~`app-stable-10`의 로그·XML, `stable-lite-build.log`·`stable-full-build.log`와 모듈별 XML, `test-summary.json`, `runtime.log`·`measurement.json`·`smoke.txt`·`bootrun.log`, `changed-files.txt`. 커밋 메시지는 저장소 루트 `.ai-commit-msg`에 작성했으며 git add/commit/push는 수행하지 않았다.

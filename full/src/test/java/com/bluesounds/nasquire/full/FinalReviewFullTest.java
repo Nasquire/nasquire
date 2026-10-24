@@ -68,6 +68,30 @@ class FinalReviewFullTest {
         try (var left = Files.list(data.resolve("ocr-tmp"))) { assertEquals(1, left.count(), "작업 폴더 정리(pid 기록만 남음)"); }
     }
 
+    @Test void procFailuresNeverConfirmProcessTermination() throws Exception {
+        Path proc = Files.createDirectory(temp.resolve("proc"));
+        Path missing = proc.resolve("unavailable");
+        assertTrue(OcrSandbox.groupAlive(missing, 123), "열거 실패는 종료 미확인");
+        assertTrue(OcrSandbox.running(missing, 123), "proc 자체가 없으면 pid 소멸로 판정하지 않음");
+        Path pid = Files.createDirectory(proc.resolve("123"));
+        assertTrue(OcrSandbox.running(proc, 123), "stat만 없으면 종료 미확인");
+        assertTrue(OcrSandbox.groupAlive(proc, 123));
+        Files.createDirectory(pid.resolve("stat"));
+        assertTrue(OcrSandbox.running(proc, 123), "stat 읽기 실패는 종료 미확인");
+        assertTrue(OcrSandbox.groupAlive(proc, 123));
+        Files.delete(pid.resolve("stat"));
+        Files.writeString(pid.resolve("stat"), "손상된 상태");
+        assertTrue(OcrSandbox.running(proc, 123));
+        assertTrue(OcrSandbox.groupAlive(proc, 123));
+        Files.writeString(pid.resolve("stat"), "123 (worker) Z 1 123 0");
+        assertFalse(OcrSandbox.running(proc, 123), "좀비는 종료로 확인");
+        assertFalse(OcrSandbox.groupAlive(proc, 123));
+        assertFalse(OcrSandbox.running(proc, 456), "실제로 사라진 pid");
+        var process = new ProcessBuilder("/bin/true").start(); process.waitFor();
+        assertFalse(OcrSandbox.kill(process, 30, missing), "확인 실패 시 슬롯 반환 조건을 충족하지 않음");
+        assertTrue(OcrSandbox.kill(process, 30, proc), "열거와 상태를 확인하면 회수 완료");
+    }
+
     @Test void workerAcceptsOnlyPrivateJobFolders() throws Exception {
         Path scratch = Files.createDirectories(temp.resolve("data/ocr-tmp")).toRealPath();
         Path job = Files.createTempDirectory(scratch, "job-", PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));

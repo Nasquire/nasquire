@@ -66,3 +66,5 @@
 - 로컬 리랭커: cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 고정 커밋 qint8·SHA-256, 데이터 폴더 안 다운로드만. 512 MiB 목표 초과(실측은 `docs/verification/full.md`).
 - 최종 재확인: 원본 읽기·다운로드·업로드 네이티브 작업은 core `SecureFiles`로 공통화한다. 절대 경로의 모든 디렉터리를 openat·NOFOLLOW로 고정하고 마지막 파일은 O_NOFOLLOW|O_NONBLOCK+열린 fd의 fstat으로 일반 파일인지 확인한다. 색인기는 텍스트·Office·OCR 모두 고정 fd 경로로 읽으며 형식 판별용 원래 이름은 별도로 전달한다. 미지원 환경에서 안전하지 않은 경로 읽기로 폴백하지 않는다.
 - OCR 복사는 자식 실행과 같은 시간 상한을 쓰며 setsid 프로세스 그룹·자손 종료 확인 뒤 결과를 검사하고 슬롯을 반환한다(종료 확인 지연 시 회수자가 슬롯 유지). 부모도 PNG 쪽당 16 MiB·합계 256 MiB와 열린 fd 일반 파일을 재검사한다. ocr-worker 직접 실행은 실경로 `ocr-tmp/job-*`·현재 사용자 소유·0700 폴더만 허용한다. SearchIndex의 두 번째 종료 대기 뒤에도 활성 작업이 있으면 공급자·저장소 폐기는 마지막 exit()까지 미루며 실제 close는 공통 잠금 밖에서 한다.
+
+- 공유 전송은 열린 fd의 fstat dev/ino를 저장된 fileKey와 대조하고 그 fd만 사용한다. 폴더 공유는 확인한 루트 핸들을 유지하며 core SecureFiles의 openat·NOFOLLOW로 하위를 연다. OCR 회수의 `/proc` 열거·stat 읽기/파싱 실패는 종료 미확인으로 처리해 슬롯·작업 폴더를 보유한다. NAS/NFS 일반 파일 I/O 자체가 반환하지 않으면 복사·추출 시간 상한은 보장하지 못한다(일반 텍스트와 동일).
