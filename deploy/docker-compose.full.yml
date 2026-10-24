@@ -1,0 +1,12 @@
+# docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.full.yml up -d
+services:
+  nasquire:
+    image: ghcr.io/nasquire/nasquire:${NASQUIRE_TAG:-full}
+    build:
+      target: full
+    # 모델+OCR 동시 사용의 보장값이 아니다. 실제 부하에 맞춰 늘린다.
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 160
+    tmpfs:
+      - /tmp:size=256m,mode=1777

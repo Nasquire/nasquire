@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Container version="2">
+  <Name>nasquire</Name>
+  <Repository>ghcr.io/nasquire/nasquire:lite</Repository>
+  <Registry>https://ghcr.io/nasquire/nasquire</Registry>
+  <Network>bridge</Network>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/Nasquire/nasquire</Support>
+  <Project>https://github.com/Nasquire/nasquire</Project>
+  <Overview>기존 폴더를 읽기 전용으로 색인하는 검색 서비스. HTTPS 프록시가 필요합니다. PUID/PGID와 --user를 함께 맞추세요.</Overview>
+  <Category>Tools:</Category>
+  <WebUI>https://nas.example.com</WebUI>
+  <ExtraParams>--user=99:100 --memory=512m --memory-swap=512m --cpus=2 --pids-limit=100 --read-only --tmpfs /tmp:size=64m,mode=1777 --cap-drop=ALL --security-opt=no-new-privileges:true -p 127.0.0.1:8080:8080</ExtraParams>
+  <Config Name="데이터 폴더" Target="/data" Default="/mnt/user/appdata/nasquire" Mode="rw" Description="실행 UID/GID에 쓰기 권한이 필요한 백업 대상" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/nasquire</Config>
+  <Config Name="읽기 전용 문서" Target="/sources/documents" Default="/mnt/user/documents" Mode="ro" Description="일반 원본은 항상 읽기 전용" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/documents</Config>
+  <Config Name="PUID 안내값" Target="PUID" Default="99" Mode="" Description="Extra Parameters의 --user도 같은 UID로 바꾸세요" Type="Variable" Display="always" Required="true" Mask="false">99</Config>
+  <Config Name="PGID 안내값" Target="PGID" Default="100" Mode="" Description="Extra Parameters의 --user도 같은 GID로 바꾸세요" Type="Variable" Display="always" Required="true" Mask="false">100</Config>
+  <Config Name="데이터 경로" Target="NASQUIRE_DATA" Default="/data" Mode="" Description="컨테이너 데이터 경로" Type="Variable" Display="advanced" Required="true" Mask="false">/data</Config>
+  <Config Name="공개 HTTPS 주소" Target="NASQUIRE_PUBLIC_URL" Default="https://nas.example.com" Mode="" Description="실제 외부 HTTPS 주소" Type="Variable" Display="always" Required="true" Mask="false">https://nas.example.com</Config>
+  <Config Name="신뢰 프록시 IP" Target="NASQUIRE_TRUSTED_PROXIES" Default="" Mode="" Description="실제 연결 프록시 IP만 쉼표로 구분, DNS/CIDR 미지원" Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <Config Name="Secure 쿠키" Target="SERVER_SERVLET_SESSION_COOKIE_SECURE" Default="true" Mode="" Description="HTTPS 프록시 필수" Type="Variable" Display="advanced" Required="true" Mask="false">true</Config>
+  <Config Name="전달 헤더 전략" Target="SERVER_FORWARD_HEADERS_STRATEGY" Default="none" Mode="" Description="기본 신뢰 경계 유지" Type="Variable" Display="advanced" Required="true" Mask="false">none</Config>
+</Container>

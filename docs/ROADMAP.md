@@ -15,7 +15,8 @@
 - [ ] 3.6단계: 임베드용 core 라이브러리 — 앱 의존 없는 공개 API 정리, Maven 패키지 배포(`nasquire-core`), 버전 정책(SemVer), 사용 예제. 확장 지점(인증·저장 위치·원본 열기 주소)을 설정·인터페이스로.
 - [x] 4단계: full 모듈 기본 구현 — 원격/로컬 리랭커·격리된 Tesseract 처리 경로·Qdrant·ML 전용 모드 및 보안 잔여 수정.
 - [ ] 4단계 후속 구현·실측 — 실제 OCR 정확도/속도/RSS 비교·실제 Qdrant 서버·arm64·NAS/NFS/SMB·cgroup 검증은 미실측. PaddleOCR·원격 OCR 클라이언트·full 설정 UI는 미구현. 내장 모델의 512 MiB 초과는 유지한다.
-- [ ] 5단계: 배포 — amd64·arm64 이미지 `:lite`·`:full`, CI, NAS 설치 안내(Synology·Unraid·TrueNAS), MCP OAuth.
+- [x] 5a단계: 배포 구성 — amd64·arm64 대상 `lite`·`full` Dockerfile, 태그 전용 GHCR CI, NAS 설치 안내·Unraid 템플릿. 실제 이미지 빌드/기동·cgroup·arm64 검증은 환경 부재로 미완료이며 `verification/deploy.md`에 구분한다.
+- [ ] 5b단계: MCP OAuth — 미착수.
 
 ## 결정
 - Spring Boot + React, Gradle 멀티 모듈. 자바 유지 여부는 1단계 RSS 실측으로 판단.
@@ -252,3 +253,13 @@
 - [x] 최종 `./gradlew build -q`·`./gradlew -Pfull build -q`·`VERIFY_PORT=8101 python3 scripts/verify-runtime.py` 각각 종료 0. core 27·app 25·full 19개 테스트 결과 실패·오류·생략 0. lite 최대 RSS 281.9 MiB, 서버·bootRun 종료/포트 반환 확인. [full 최종 확인](verification/full.md#최종-확인-기준-cd23e83)에 실패 근거와 최종 결과 기록.
 - [ ] 실제 OCR·실제 Qdrant·arm64·NAS/NFS/SMB·악성 코퍼스·512 MiB cgroup 부하 검증은 미실측. PaddleOCR·원격 OCR 클라이언트·full UI는 미구현이다.
 - 수용한 한계: NAS/NFS 일반 파일 I/O가 반환하지 않으면 복사·추출은 시간 제한을 보장하지 못한다. 일반 텍스트 추출도 같은 한계다. 운영자는 soft/intr 마운트·타임아웃 설정을 권장하며 실제 동작은 사용하는 클라이언트/파일시스템에서 확인해야 한다.
+
+## 5a단계 배포 이미지·CI·NAS 설치 안내 (2026-10-24)
+
+- [x] 다단계 lite/full JAR·Temurin 25 glibc JRE, 비루트 PUID/PGID, native access, /data·읽기 전용 소스, 헬스체크·OCI 소스/AGPL 라벨. full은 Tesseract kor/eng·prlimit/setsid·PDF 렌더 글꼴 포함, 모델 파일 제외.
+- [x] push/PR의 lite/full Gradle·멀티 아키텍처 Buildx 빌드. `v*` 태그 전용 GHCR `lite`/`full`/버전별 태그/`latest=lite`, 게시 job만 packages:write, 액션 SHA 고정·SBOM/프로비넌스.
+- [x] lite 기본 compose·full override·ML 독립 예시. 메모리 제한·:ro 소스·선택 업로드 쓰기 볼륨·HTTPS 공개 URL·신뢰 프록시 경계.
+- [x] Docker 공통·Synology·Unraid·TrueNAS 설치 문서와 XML 템플릿. UID/GID·메모리 실측 한계·HTTPS/민감 로그 제외·백업·Qdrant 세대 재색인·오프라인 관리자 복구.
+- [ ] Docker 이미지 빌드/기동·HEALTHCHECK·512 MiB cgroup 측정 — Docker 실행 파일 없음. 정적 대체 검증과 필수 빌드 결과는 [배포 검증](verification/deploy.md).
+- [ ] arm64·NAS 실기·실제 OCR/전체 full 부하·GHCR 게시와 Actions 실실행 — 미실측/미수행. 게시·서버 접속은 이번 범위에서 실행하지 않는다.
+- [ ] 5b MCP OAuth — 미착수.

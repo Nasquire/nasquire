@@ -6,3 +6,10 @@
 **/dist
 data
 .ai-commit-msg
+**/.env
+**/.env.*
+**/secrets
+**/*.onnx
+**/tokenizer.json
+**/models
+**/ml-token

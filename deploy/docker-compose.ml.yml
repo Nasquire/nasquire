@@ -1,0 +1,40 @@
+# 독립 예시: docker compose -f deploy/docker-compose.ml.yml up -d
+services:
+  nasquire-ml:
+    image: ghcr.io/nasquire/nasquire:${NASQUIRE_TAG:-full}
+    build:
+      context: ..
+      target: full
+      args:
+        PUID: ${PUID:-1000}
+        PGID: ${PGID:-1000}
+    user: "${PUID:-1000}:${PGID:-1000}"
+    command:
+      - --nasquire.mode=ml
+      - --server.address=0.0.0.0
+      - --server.port=8080
+      - --nasquire.ml.ocr=tesseract
+      # 내장 모델은 사전 준비 후 별도 활성화한다(자동 다운로드 기본 off).
+      # - --nasquire.ml.embedding=builtin
+      # - --nasquire.ml.reranker=builtin
+    environment:
+      NASQUIRE_MODE: ml
+      NASQUIRE_DATA: /data
+      NASQUIRE_ML_TOKEN_FILE: /run/secrets/ml-token
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - ${ML_DATA_DIR:?ML_DATA_DIR를 준비하세요}:/data
+      - ${ML_TOKEN_FILE:?ML_TOKEN_FILE을 준비하세요}:/run/secrets/ml-token:ro
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: 2
+    pids_limit: 160
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
