@@ -1,6 +1,6 @@
 # Nasquire
 
-**Ask your NAS.** Search existing folders on a NAS or server through a browser, REST API, or MCP client. Nasquire reads original files and keeps metadata and its search index in a separate data directory.
+**Ask your NAS.** Search existing folders on a NAS or server through a browser, REST API, or MCP client. Nasquire reads ordinary sources without modifying them and keeps metadata and its search index in a separate data directory. Optional upload sources use dedicated writable folders; external shares expose only one selected file or folder.
 
 Copyright (c) 2026 Bluesounds. [Source repository](https://github.com/Nasquire/nasquire).
 
@@ -36,7 +36,7 @@ Pass Spring Boot arguments to `bootRun` or the executable JAR:
 
 ```sh
 ./gradlew :app:bootRun --args='--server.port=8101 --nasquire.data=./data --nasquire.scan-millis=5000'
-java -Xmx256m -XX:+UseSerialGC -jar app/build/libs/app-0.1.0.jar --nasquire.data=./data
+java --enable-native-access=ALL-UNNAMED -Xmx256m -XX:+UseSerialGC -jar app/build/libs/app-0.1.0.jar --nasquire.data=./data
 ```
 
 | Property | Default | Purpose |
@@ -50,6 +50,9 @@ java -Xmx256m -XX:+UseSerialGC -jar app/build/libs/app-0.1.0.jar --nasquire.data
 | `nasquire.mcp-allowed-origins` | empty | Comma-separated exact allowed browser Origins for MCP; no Origin header is required for native clients |
 | `nasquire.public-url` | empty | Public base URL, e.g. `https://nas.example.com`; otherwise use the current request base |
 | `nasquire.download-ttl-seconds` | `300` | Signed download lifetime, 1–86400 seconds |
+| `nasquire.upload-max-bytes` | `33554432` | Upload ceiling, 1 byte–1 GiB; multipart stored on disk, request ceiling includes 1 MiB overhead |
+| `nasquire.trash-retention-days` | `30` | Trash retention, 1–365 days; hourly cleanup, first run after one minute |
+| `nasquire.share-requests-per-minute` | `60` | Public requests per remote IP, 1–10000; at most 4096 IP windows |
 | `server.servlet.session.cookie.secure` | `false` | Set `true` when serving through HTTPS |
 
 Include/exclude globs use paths relative to the source, one per line in the UI. An empty include list includes all supported formats. `**/*.pdf` includes root-level PDFs too. Default exclusions always apply: `@eaDir`, `#recycle`, `#snapshot`, `.DS_Store`, `Thumbs.db`, `~$*`, `.~*`, backup `*~`, and `.tmp`, `.temp`, `.part`, `.swp`, `.swo`, `.crdownload` files. Directory symlinks are skipped; file symlinks are read only when their resolved target stays inside the source. Returned relative names use NFC normalization. Source and data directories must not overlap.
@@ -68,7 +71,7 @@ Authenticate reading requests with `Authorization: Bearer <token>` or an adminis
 | POST | `/api/setup` | Create the sole administrator with JSON `username`, `password` |
 | POST | `/api/login` | Form-encoded `username`, `password` |
 | POST | `/api/logout` | End administrator session |
-| GET, POST | `/api/sources` | List/register sources (`name`, `path`, `includes`, `excludes`) |
+| GET, POST | `/api/sources` | List/register sources (`name`, `path`, `includes`, `excludes`, optional `kind`: `directory` or `upload`) |
 | PUT, DELETE | `/api/sources/{id}` | Update/remove a source |
 | POST | `/api/sources/{id}/reindex` | Queue a complete rebuild |
 | GET | `/api/sources/{id}/status` | State, indexed/pending file counts, errors |
@@ -82,7 +85,32 @@ Authenticate reading requests with `Authorization: Bearer <token>` or an adminis
 
 Administrator mutations, including setup, login, and logout, require the CSRF header from `/api/auth` and the same session cookie. Login rotates the session and CSRF token; fetch `/api/auth` again afterward. Document requests accept `page_from`/`page_to` **or** `offset`/`length` (zero-based character offset, at most 100000 characters). Responses include `truncated` and `totalCharacters`. The path format is `<source-id>:<relative-name>`; arbitrary filesystem reads are never exposed. Source removal makes its results inaccessible immediately, then the worker removes its index entries.
 
-Download links expire after five minutes by default and are invalidated by server restart. Token revocation prevents new issuance; an already issued link remains usable until expiry. Source existence, include/exclude rules, real paths, and directory handles are rechecked at receipt. Downloads reject all symbolic links, including internal ones, and fail closed where secure directory streams are unavailable. Originals are opened read-only. Responses use attachment disposition with an RFC 5987 UTF-8 filename and disable caching. Links resolve the current original, not a pinned content version. Set `nasquire.public-url` behind a reverse proxy. Do not log signed query strings in proxy access logs; application audit records omit tickets and signatures. No upload or long-lived sharing feature is provided.
+Download links expire after five minutes by default and are invalidated by server restart. Token revocation prevents new issuance; an already issued link remains usable until expiry. Source existence, include/exclude rules, real paths, and directory handles are rechecked at receipt. Downloads reject all symbolic links, including internal ones, and fail closed where secure directory streams are unavailable. Originals are opened read-only. Responses use attachment disposition with an RFC 5987 UTF-8 filename and disable caching. Links resolve the current original, not a pinned content version. Set `nasquire.public-url` behind a reverse proxy. Do not log signed query strings in proxy access logs; application audit records omit tickets and signatures. External shares and upload sources are configured separately below.
+
+## 업로드 소스·외부 공유
+
+기본 소스 종류는 `directory`이며 읽기 전용입니다. **Sources**에서 `upload`를 명시하고 데이터 폴더 및 다른 모든 소스와 겹치지 않는 별도 쓰기 가능 폴더를 지정하면 업로드 기능이 활성화됩니다. 일반 소스 마운트는 `:ro`로 유지하고 업로드 폴더만 별도 `:rw`로 연결하세요. 등록한 소스의 종류·경로 변경은 등록 해제 후 다시 추가합니다. 앱만 업로드 폴더를 관리하도록 파일시스템 권한을 제한하세요.
+
+**파일·공유 / Files and shares**에서 업로드 폴더 탐색·업로드·폴더 생성·소스 안 이동·이름 변경·휴지통·복원을 수행합니다. 덮어쓰기는 명시적으로 선택해야 합니다. 파일 이름은 NFC이며 금지 문자·예약 이름·240 UTF-8 바이트 상한을 검사합니다. 심볼릭 링크는 거부합니다. `.nasquire-*` 임시 파일·휴지통은 색인·공유에서 제외합니다. 파일 업로드 후 다음 색인 작업을 즉시 예약합니다. 멀티파트는 데이터 폴더의 임시 파일로 받고, 64 KiB 버퍼로 업로드 폴더 안 임시 파일에 복사한 후 원자적으로 이동합니다. 업로드 상한과 기존 색인 상한은 독립적이므로 업로드에 성공한 큰 파일도 색인에서 제외되거나 오류가 될 수 있습니다.
+
+안전한 폴더 생성·덮어쓰기 없는 원자적 이동은 Java 25 FFM과 Linux libc `openat`/`mkdirat`/`renameat2`를 사용합니다. Linux amd64/arm64와 SecureDirectoryStream 지원 파일시스템이 필요합니다. 미지원 시 실패하며 경로 기반의 불안전한 쓰기로 대체하지 않습니다. bootRun·컨테이너에는 native access 옵션이 포함되어 있습니다. arm64 실기와 실제 NAS 파일시스템은 아직 검증하지 않았습니다.
+
+공유는 일반 소스와 업로드 소스에서 파일 하나 또는 폴더 하나를 선택합니다. 경로는 소스 기준 상대경로이며 빈 경로는 소스 루트입니다. 만료 기본값은 7일(최대 365일), 비밀번호는 선택(8자 이상·UTF-8 72바이트 이하), 다운로드 상한은 선택(1–1000000)입니다. 256비트 무작위 `/s/{token}` 주소는 생성할 때 한 번만 표시하며 DB에는 SHA-256만 저장합니다. 비밀번호는 BCrypt 비용 12로 저장합니다. 비밀번호 링크는 브라우저의 HTTP Basic 인증 창을 사용합니다(사용자명은 비워 두고 비밀번호만 입력). HTTPS로 제공하세요.
+
+공개 경로는 관리 세션 쿠키를 사용하거나 생성하지 않습니다. 폴더 하위 목록·탐색·다운로드만 제공하며 검색·MCP·소스 경로·상위 폴더는 제공하지 않습니다. 매 요청에 소스·제외 규칙·실경로·NOFOLLOW 검사를 적용하고 삭제·제외·철회·만료·횟수 소진 대상은 404입니다. 다운로드 횟수는 응답 전송 시작 시 소비하므로 중단된 전송도 포함합니다. 비밀번호 실패는 1/2/4/8초 지연 후 5회째 15분 제한하며 링크 전체에 적용됩니다. IP 제한은 앱이 직접 관찰한 주소 기준이므로 프록시 뒤에서는 여러 방문자가 한도를 공유할 수 있습니다. 기본 CSP·nosniff·no-referrer·no-store·DENY 헤더를 적용합니다.
+
+| Method | Endpoint | 용도 |
+| --- | --- | --- |
+| GET, POST | `/api/uploads/{id}` | 상대 `path` 폴더 탐색 / multipart `file` 업로드 (`path`, 선택 `overwrite=true`) |
+| POST | `/api/uploads/{id}/folder` | JSON `{path}` 폴더 생성 |
+| POST | `/api/uploads/{id}/move` | JSON `{path,destination,overwrite}` 이름 변경·이동 |
+| GET, POST | `/api/uploads/{id}/trash` | 휴지통 목록 / JSON `{path}` 휴지통 이동 |
+| POST | `/api/uploads/{id}/restore/{item}` | 원래 경로로 복원(기존 대상이 있으면 실패) |
+| GET, POST | `/api/shares` | 공유 목록 / JSON `{source,path,expiresAt?,password?,maxDownloads?}` 생성 |
+| DELETE | `/api/shares/{id}` | 즉시 철회 |
+| GET | `/s/{token}?path=...&download=true` | 익명 공유 방문·다운로드, 선택 HTTP Basic 비밀번호 |
+
+모든 관리 변경은 관리자 세션+CSRF가 필요하고 API 토큰·MCP에는 쓰기를 제공하지 않습니다. 감사 로그에는 공유 토큰·비밀번호를 넣지 않습니다. 프록시 접근 로그에서도 `/s/` 토큰 경로·Authorization·서명 쿼리를 제외하세요. 업로드 소스를 등록 해제하면 해당 소스의 휴지통 관리도 중단됩니다. 앱 중단 시 남은 임시 파일과 파일 이동/DB 사이 중단 복구에는 운영자 확인이 필요합니다. [업로드·공유 검증과 남은 한계](docs/verification/upload-share.md)를 참고하세요.
 
 ## MCP connection
 
@@ -125,7 +153,7 @@ curl https://nasquire.example.com/mcp \
 VERIFY_PORT=8101 python3 scripts/verify-runtime.py
 ```
 
-The runtime check generates 48 original sample documents (including all eight new formats), starts `:app:bootRun`, exercises setup → indexing → Korean/English search → tokens → all three MCP tools → anonymous signed-download curl, records JVM RSS, and stops the server. Set `VERIFY_EMBEDDING=builtin` to fetch pinned SHA-256-verified model files into ignored build artifacts and test local hybrid search, or `VERIFY_EMBEDDING=remote` to exercise a fake HTTP provider. Do not run builds concurrently with bootRun verification because they share class output directories. It writes ignored artifacts under `build/verification`. [Stage 3 results and limits](docs/verification/formats-download.md); [MVP results](docs/verification/mvp.md).
+The runtime check generates 48 original sample documents (including all eight new formats), starts `:app:bootRun`, exercises setup → indexing → Korean/English search → tokens → all three MCP tools → anonymous signed-download curl, also streams a 16 MiB upload, checks uploaded-file search, trash/restore and anonymous external shares, records JVM RSS, and stops the server. Set `VERIFY_EMBEDDING=builtin` to fetch pinned SHA-256-verified model files into ignored build artifacts and test local hybrid search, or `VERIFY_EMBEDDING=remote` to exercise a fake HTTP provider. Do not run builds concurrently with bootRun verification because they share class output directories. It writes ignored artifacts under `build/verification`. [Stage 3 results and limits](docs/verification/formats-download.md); [MVP results](docs/verification/mvp.md).
 
 Use HTTPS and restrict initial setup/administrator access to trusted users. Secure session cookies should be enabled behind HTTPS. This MVP has one administrator, no password recovery UI, TOTP, login rate limiting, or OAuth. A sampled RSS measurement on small documents is not a guarantee for large PDFs or concurrent workloads; test your own corpus under a real container limit. The source mount must be read-only to enforce isolation against filesystem races.
 

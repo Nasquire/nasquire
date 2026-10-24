@@ -19,6 +19,7 @@ public class Storage {
         this.db = db;
         db.execute("CREATE TABLE IF NOT EXISTS administrator (id INT PRIMARY KEY CHECK(id=1), username VARCHAR(100) NOT NULL, password_hash VARCHAR(100) NOT NULL)");
         db.execute("CREATE TABLE IF NOT EXISTS sources (id VARCHAR(36) PRIMARY KEY, name VARCHAR(200) NOT NULL, root VARCHAR(4096) NOT NULL, includes CLOB NOT NULL, excludes CLOB NOT NULL)");
+        db.execute("ALTER TABLE sources ADD COLUMN IF NOT EXISTS kind VARCHAR(20) DEFAULT 'directory' NOT NULL");
         db.execute("CREATE TABLE IF NOT EXISTS tokens (id VARCHAR(36) PRIMARY KEY, name VARCHAR(200) NOT NULL, token_hash VARCHAR(64) UNIQUE NOT NULL, expires_at BIGINT NOT NULL, sources CLOB NOT NULL, revoked BOOLEAN DEFAULT FALSE)");
         db.execute("CREATE TABLE IF NOT EXISTS audit (id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, occurred_at BIGINT NOT NULL, actor VARCHAR(100) NOT NULL, action VARCHAR(200) NOT NULL, status INT NOT NULL)");
     }
@@ -39,11 +40,11 @@ public class Storage {
     }
     public List<Source> sources() {
         return db.query("SELECT * FROM sources ORDER BY name", (rs, row) -> new Source(rs.getString("id"), rs.getString("name"),
-                Path.of(rs.getString("root")), lines(rs.getString("includes")), lines(rs.getString("excludes"))));
+                Path.of(rs.getString("root")), lines(rs.getString("includes")), lines(rs.getString("excludes")), rs.getString("kind")));
     }
     public Source source(String id) { return sources().stream().filter(s -> s.id().equals(id)).findFirst().orElseThrow(() -> new NoSuchElementException("소스 없음")); }
     public void save(Source s) {
-        db.update("MERGE INTO sources KEY(id) VALUES (?,?,?,?,?)", s.id(), s.name(), s.root().toString(), String.join("\n", s.includes()), String.join("\n", s.excludes()));
+        db.update("MERGE INTO sources(id,name,root,includes,excludes,kind) KEY(id) VALUES (?,?,?,?,?,?)", s.id(), s.name(), s.root().toString(), String.join("\n", s.includes()), String.join("\n", s.excludes()), s.kind());
     }
     public void deleteSource(String id) { db.update("DELETE FROM sources WHERE id=?", id); }
     public void addToken(String id, String name, String hash, long expires, List<String> sources) {

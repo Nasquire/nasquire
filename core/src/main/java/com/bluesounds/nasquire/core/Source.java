@@ -4,8 +4,12 @@ import java.nio.file.*;
 import java.text.Normalizer;
 import java.util.*;
 
-public record Source(String id, String name, Path root, List<String> includes, List<String> excludes) {
+public record Source(String id, String name, Path root, List<String> includes, List<String> excludes, String kind) {
+    public Source(String id, String name, Path root, List<String> includes, List<String> excludes) {
+        this(id, name, root, includes, excludes, "directory");
+    }
     public Source {
+        if (!Set.of("directory", "upload").contains(kind)) throw new IllegalArgumentException("소스 종류 오류");
         Objects.requireNonNull(id);
         if (name == null || name.isBlank()) throw new IllegalArgumentException("소스 이름이 필요합니다");
         root = root.toAbsolutePath().normalize();
@@ -22,7 +26,7 @@ public record Source(String id, String name, Path root, List<String> includes, L
     public boolean accepts(Path relative) {
         for (Path component : relative) {
             String n = component.toString();
-            if (Set.of("@eaDir", "#recycle", "#snapshot", ".DS_Store", "Thumbs.db").contains(n)
+            if (n.startsWith(".nasquire-") || Set.of("@eaDir", "#recycle", "#snapshot", ".DS_Store", "Thumbs.db").contains(n)
                     || n.startsWith("~$") || n.startsWith(".~") || n.endsWith("~")
                     || n.matches("(?i).*\\.(tmp|temp|part|swp|swo|crdownload)$")) return false;
         }

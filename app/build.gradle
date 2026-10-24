@@ -23,3 +23,5 @@ tasks.named('bootRun') {
     workingDir rootProject.projectDir
     jvmArgs '--enable-native-access=ALL-UNNAMED', '-Xms64m', '-Xmx256m', '-XX:+UseSerialGC', '-XX:MaxMetaspaceSize=128m', '-XX:ReservedCodeCacheSize=48m', '-Xss512k', '-XX:MaxDirectMemorySize=32m'
 }
+
+tasks.named('test') { jvmArgs '--enable-native-access=ALL-UNNAMED' }

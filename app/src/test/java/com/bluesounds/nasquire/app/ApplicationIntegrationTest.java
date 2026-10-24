@@ -18,12 +18,16 @@ class ApplicationIntegrationTest {
     static { try { TEMP = Files.createTempDirectory("nasquire-integration-"); } catch (Exception e) { throw new ExceptionInInitializerError(e); } }
     @DynamicPropertySource static void properties(DynamicPropertyRegistry r) {
         r.add("nasquire.data", () -> TEMP.resolve("data").toString());
+        r.add("nasquire.upload-max-bytes", () -> "4096");
         r.add("nasquire.scan-millis", () -> "100"); r.add("nasquire.stable-millis", () -> "50");
     }
     @Value("${local.server.port}") int port;
     @Autowired ObjectMapper mapper;
     @Autowired Storage storage;
     @Autowired DocumentService documents;
+    @Autowired UploadService uploads;
+    @Autowired DownloadService downloads;
+    @Autowired org.springframework.jdbc.core.JdbcTemplate db;
     final HttpClient client = HttpClient.newBuilder().cookieHandler(new CookieManager(null, CookiePolicy.ACCEPT_ALL)).build();
     String csrf;
     HttpResponse<String> call(String path, String method, Object body, String bearer, boolean useCsrf) throws Exception {
@@ -86,6 +90,7 @@ class ApplicationIntegrationTest {
         assertTrue(denied.at("/result/isError").asBoolean()); assertFalse(denied.toString().contains("confidential"));
         assertTrue(mcp(token, "get_document", Map.of("path", id + ":notes.md", "length", 100001)).at("/result/isError").asBoolean());
         verifyDownloads(token, id, otherId, source, other);
+        verifyUploadsShares(token, id, source, other);
         verifyRemoteEmbedding(token, id);
         storage.addToken("expired", "expired", SecurityConfiguration.hash("expired-test-value"), System.currentTimeMillis() - 1, List.of(id));
         assertEquals(401, call("/api/search?query=ocean", "GET", null, "expired-test-value", false).statusCode());
@@ -144,6 +149,132 @@ class ApplicationIntegrationTest {
         assertTrue(audit.contains("download-receive")); assertFalse(audit.contains(ticket)); assertFalse(audit.contains(token));
         assertFalse(audit.contains("ticket="));
     }
+    void verifyUploadsShares(String token, String readOnly, Path original, Path outside) throws Exception {
+        Path root = Files.createDirectory(TEMP.resolve("uploads"));
+        String id = json(call("/api/sources", "POST", Map.of("name", "Uploads", "path", root.toString(), "kind", "upload"), null, true), 200).get("id").asText();
+        assertEquals(400, call("/api/sources", "POST", Map.of("name", "Overlap", "path", root.toString()), null, true).statusCode());
+        assertEquals(400, call("/api/sources", "POST", Map.of("name", "Overlap upload", "path", original.toString(), "kind", "upload"), null, true).statusCode());
+        assertEquals(403, call("/api/uploads/" + readOnly + "/folder", "POST", Map.of("path", "bad"), null, true).statusCode());
+        assertEquals(403, call("/api/uploads/" + id + "/folder", "POST", Map.of("path", "bad"), null, false).statusCode());
+        assertEquals(403, call("/api/uploads/" + id + "/folder", "POST", Map.of("path", "bad"), token, false).statusCode());
+        assertEquals(200, call("/api/uploads/" + id + "/folder", "POST", Map.of("path", "folder"), null, true).statusCode());
+        for (String bad : List.of("../escape.md", "/escape.md", "folder/../escape.md", "e\u0301.md", "CON.txt", ".nasquire-trash/x"))
+            assertThrows(RuntimeException.class, () -> uploads.upload(id, bad, new java.io.ByteArrayInputStream(new byte[0]), false));
+        Files.createSymbolicLink(root.resolve("link"), outside);
+        assertThrows(java.io.IOException.class, () -> uploads.upload(id, "link/escape.md", new java.io.ByteArrayInputStream(new byte[0]), false));
+        assertThrows(java.io.IOException.class, () -> uploads.folder(id, "link/new-folder"));
+        String boundary = "NasquireBoundary";
+        String payload = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"notes.md\"\r\nContent-Type: text/plain\r\n\r\nuploadgalaxy\r\n--" + boundary + "--\r\n";
+        var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/uploads/" + id + "?path=folder/notes.md"))
+            .header("X-CSRF-TOKEN", csrf).header("Content-Type", "multipart/form-data; boundary=" + boundary).POST(HttpRequest.BodyPublishers.ofString(payload)).build();
+        assertEquals(200, client.send(request, HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals("uploadgalaxy", Files.readString(root.resolve("folder/notes.md")));
+        var oversized = HttpRequest.newBuilder(request.uri()).header("X-CSRF-TOKEN", csrf)
+            .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+            .POST(HttpRequest.BodyPublishers.ofString(payload.replace("uploadgalaxy", "x".repeat(4097)))).build();
+        assertEquals(413, client.send(oversized, HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals("uploadgalaxy", Files.readString(root.resolve("folder/notes.md")));
+        uploads.upload(id, "folder/notes.md", new java.io.ByteArrayInputStream("uploadgalaxy".getBytes(java.nio.charset.StandardCharsets.UTF_8)), true);
+        Path staged = Files.writeString(root.resolve("staged.md"), "new");
+        assertThrows(java.io.IOException.class, () -> SecureDirectories.moveNew(staged, root.resolve("folder/notes.md")));
+        assertEquals("uploadgalaxy", Files.readString(root.resolve("folder/notes.md")));
+        Files.delete(staged);
+        assertThrows(IllegalStateException.class, () -> uploads.upload(id, "folder/notes.md", new java.io.ByteArrayInputStream(new byte[0]), false));
+        var limited = new UploadService(storage, indexing, db, TEMP.resolve("data"), 3, 1);
+        assertThrows(IllegalArgumentException.class, () -> limited.upload(id, "large.md", new java.io.ByteArrayInputStream(new byte[4]), false));
+        assertFalse(Files.exists(root.resolve("large.md")));
+        try (var files = Files.list(root)) { assertFalse(files.anyMatch(f -> f.getFileName().toString().endsWith(".part"))); }
+        for (int i = 0; i < 100; i++) {
+            var found = json(call("/api/search?query=uploadgalaxy&source=" + id, "GET", null, null, true), 200);
+            if (!found.isEmpty()) break;
+            Thread.sleep(100);
+        }
+        assertEquals(1, json(call("/api/search?query=uploadgalaxy&source=" + id, "GET", null, null, true), 200).size());
+        uploads.move(id, "folder/notes.md", "folder/renamed.md", false);
+        String item = uploads.trash(id, "folder/renamed.md");
+        assertFalse(Files.exists(root.resolve("folder/renamed.md")));
+        assertFalse(new com.bluesounds.nasquire.core.Source("x", "x", root, null, null).accepts(Path.of(".nasquire-trash/" + item)));
+        uploads.restore(id, item); assertTrue(Files.exists(root.resolve("folder/renamed.md")));
+        var shared = json(call("/api/shares", "POST", Map.of("source", id, "path", "folder", "maxDownloads", 1), null, true), 200);
+        String url = shared.get("url").asText();
+        var anonymous = HttpClient.newHttpClient();
+        java.util.function.Function<String, HttpResponse<String>> get = suffix -> {
+            try { return anonymous.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + url + suffix)).GET().build(), HttpResponse.BodyHandlers.ofString()); }
+            catch (Exception e) { throw new RuntimeException(e); }
+        };
+        var listing = get.apply(""); assertEquals(200, listing.statusCode());
+        assertTrue(listing.body().contains("renamed.md")); assertFalse(listing.body().contains(root.toString())); assertFalse(listing.body().contains(id));
+        for (String header : List.of("Content-Security-Policy", "X-Content-Type-Options", "Referrer-Policy", "Cache-Control", "X-Frame-Options")) assertTrue(listing.headers().firstValue(header).isPresent());
+        assertTrue(listing.headers().allValues("Set-Cookie").isEmpty());
+        for (String bad : List.of("..", "../link/private.txt", "/folder/renamed.md", "e\u0301.md"))
+            assertEquals(404, get.apply("?path=" + URLEncoder.encode(bad, java.nio.charset.StandardCharsets.UTF_8)).statusCode());
+        Files.createSymbolicLink(root.resolve("folder/link.md"), outside.resolve("private.txt"));
+        assertEquals(404, get.apply("?path=link.md&download=true").statusCode());
+        assertEquals("uploadgalaxy", get.apply("?path=renamed.md&download=true").body());
+        assertEquals(404, get.apply("").statusCode());
+        var revoked = json(call("/api/shares", "POST", Map.of("source", id, "path", "folder/renamed.md"), null, true), 200);
+        assertEquals(403, call("/api/shares", "POST", Map.of(), token, false).statusCode());
+        assertEquals(403, call("/api/shares", "POST", Map.of(), null, false).statusCode());
+        call("/api/shares/" + revoked.get("id").asText(), "DELETE", null, null, true);
+        assertEquals(404, call(revoked.get("url").asText(), "GET", null, null, false).statusCode());
+        var time = new java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis());
+        var clock = new java.time.Clock() {
+            public java.time.ZoneId getZone() { return java.time.ZoneOffset.UTC; }
+            public java.time.Clock withZone(java.time.ZoneId zone) { return this; }
+            public java.time.Instant instant() { return java.time.Instant.ofEpochMilli(time.get()); }
+        };
+        var service = new ShareService(db, storage, downloads, clock);
+        String password = "share-test-password";
+        var protectedLink = service.create(id, "folder/renamed.md", time.get() + 3600000, password, null);
+        String value = protectedLink.get("url").toString().substring(3);
+        assertThrows(ShareService.PasswordRequired.class, () -> service.authorize(value, "", null));
+        for (int i = 0; i < 5; i++) {
+            assertThrows(ShareService.PasswordRequired.class, () -> service.authorize(value, "", "wrong-password"));
+            assertThrows(ShareService.Delayed.class, () -> service.authorize(value, "", password));
+            time.addAndGet(i == 4 ? 900000 : 1000L << i);
+        }
+        assertNotNull(service.authorize(value, "", password));
+        var passwordLink = service.create(id, "folder/renamed.md", null, password, null);
+        String publicPasswordUrl = "http://127.0.0.1:" + port + passwordLink.get("url");
+        // 관리 세션을 붙여도 공유 비밀번호 검사를 우회할 수 없다.
+        var challenge = client.send(HttpRequest.newBuilder(URI.create(publicPasswordUrl)).GET().build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(401, challenge.statusCode()); assertTrue(challenge.headers().firstValue("WWW-Authenticate").isPresent());
+        var withPassword = anonymous.send(HttpRequest.newBuilder(URI.create(publicPasswordUrl))
+            .header("Authorization", "Basic " + Base64.getEncoder().encodeToString((":" + password).getBytes(java.nio.charset.StandardCharsets.UTF_8))).GET().build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, withPassword.statusCode()); assertEquals("uploadgalaxy", withPassword.body());
+        assertEquals(1, db.queryForObject("SELECT COUNT(*) FROM shares WHERE token_hash=?", Integer.class, SecurityConfiguration.hash(value)));
+        time.addAndGet(3600000); assertThrows(ShareService.Missing.class, () -> service.authorize(value, "", password));
+        var deleted = service.create(id, "folder/renamed.md", null, null, null);
+        String deletedToken = deleted.get("url").toString().substring(3);
+        String removed = uploads.trash(id, "folder/renamed.md");
+        assertThrows(java.io.IOException.class, () -> service.authorize(deletedToken, "", null));
+        db.update("UPDATE trash SET deleted_at=0 WHERE id=?", removed); uploads.cleanup();
+        assertTrue(uploads.trashList(id).isEmpty());
+        var current = storage.source(id);
+        storage.save(new com.bluesounds.nasquire.core.Source(id, current.name(), current.root(), null, List.of("folder"), "upload"));
+        var excluded = json(call("/api/shares", "POST", Map.of("source", readOnly, "path", "notes.md"), null, true), 200);
+        var previous = storage.source(readOnly);
+        storage.save(new com.bluesounds.nasquire.core.Source(readOnly, previous.name(), previous.root(), previous.includes(), List.of("notes.md")));
+        assertEquals(404, call(excluded.get("url").asText(), "GET", null, null, false).statusCode());
+        storage.save(previous);
+        var limiter = new ShareSecurity.PublicFilter(2, storage);
+        assertTrue(limiter.allow("test", 0)); assertTrue(limiter.allow("test", 0)); assertFalse(limiter.allow("test", 0));
+        assertTrue(limiter.allow("test", 60000));
+        for (int i = 0; i < 4095; i++) assertTrue(limiter.allow("ip-" + i, 60000));
+        assertFalse(limiter.allow("overflow", 60000)); limiter.expire(120000); assertTrue(limiter.allow("overflow", 120000));
+        String audit = call("/api/audit", "GET", null, null, true).body();
+        assertFalse(audit.contains(value)); assertFalse(audit.contains(password)); assertFalse(audit.contains(url));
+        assertFalse(call("/api/shares", "GET", null, null, true).body().contains(value));
+        storage.deleteSource(id);
+        assertEquals(404, call(passwordLink.get("url").toString(), "GET", null, null, false).statusCode());
+        boolean rateLimited = false;
+        for (int i = 0; i < 65; i++) {
+            if (call(url, "GET", null, null, false).statusCode() == 429) { rateLimited = true; break; }
+        }
+        assertTrue(rateLimited);
+    }
+    @Autowired com.bluesounds.nasquire.core.IndexingService indexing;
+
     void verifyRemoteEmbedding(String token, String source) throws Exception {
         var fake = com.sun.net.httpserver.HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         fake.createContext("/v1/embeddings", exchange -> {

@@ -15,6 +15,7 @@ import urllib.parse
 parser = argparse.ArgumentParser()
 parser.add_argument('url', help='Example: http://127.0.0.1:8101')
 parser.add_argument('samples', type=pathlib.Path)
+parser.add_argument('--upload-root', type=pathlib.Path)
 parser.add_argument('--embedding', choices=['off', 'builtin', 'remote'], default='off')
 parser.add_argument('--pid', type=int, help='Application JVM PID for Linux RSS measurement')
 args = parser.parse_args()
@@ -45,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix='nasquire-smoke-') as folder:
     cookies = str(pathlib.Path(folder) / 'cookies')
     csrf = ''
 
-    def curl(path, method='GET', body=None, token=None, form=None, csrf_enabled=True, expected=200):
+    def curl(path, method='GET', body=None, token=None, form=None, csrf_enabled=True, expected=200, multipart=None):
         # 토큰/비밀번호는 프로세스 인자나 로그 대신 curl의 표준 입력으로 전달한다.
         config = {'url': args.url.rstrip('/') + path, 'request': method, 'cookie': cookies, 'cookie-jar': cookies,
                   'silent': None, 'show-error': None, 'max-time': '30', 'write-out': '\n%{http_code}'}
@@ -65,6 +66,8 @@ with tempfile.TemporaryDirectory(prefix='nasquire-smoke-') as folder:
         if form is not None:
             lines.append('header = "Content-Type: application/x-www-form-urlencoded"')
             lines.append('data = ' + json.dumps(urllib.parse.urlencode(form)))
+        if multipart is not None:
+            lines.append('form = ' + json.dumps('file=@' + str(multipart)))
         response = subprocess.run(['curl', '--config', '-'], input='\n'.join(lines), text=True, capture_output=True, check=True).stdout
         text, status = response.rsplit('\n', 1)
         assert int(status) == expected, f'{method} {path}: HTTP {status}, expected {expected}'
@@ -155,6 +158,48 @@ with tempfile.TemporaryDirectory(prefix='nasquire-smoke-') as folder:
     result = subprocess.run(['curl', '--config', '-'], input=('url = ' + json.dumps(mcp_link['url']) + '\nsilent\nshow-error\nmax-time = 30').encode(), capture_output=True, check=True)
     assert result.stdout == (args.samples / 'sample.docx').read_bytes()
     print('PASS REST/MCP download_file: anonymous curl original bytes, expiry metadata, forged signature rejected')
+
+    upload_root = args.upload_root or pathlib.Path(folder) / 'uploads'
+    upload_root.mkdir()
+    uploaded = curl('/api/sources', 'POST', {'name': 'Upload smoke', 'path': str(upload_root.resolve()), 'kind': 'upload'})
+    upload_id = uploaded['id']
+    upload_base = '/api/uploads/' + upload_id
+    curl(upload_base + '/folder', 'POST', {'path': 'folder'}, csrf_enabled=False, expected=403)
+    curl(upload_base + '/folder', 'POST', {'path': 'folder'}, token=token, csrf_enabled=False, expected=403)
+    curl(upload_base + '/folder', 'POST', {'path': 'folder'})
+    upload_file = pathlib.Path(folder) / 'upload.md'
+    upload_file.write_text('uploadgalaxy runtime verification')
+    curl(upload_base + '?path=folder/upload.md', 'POST', multipart=upload_file)
+    large = pathlib.Path(folder) / 'large.bin'
+    with large.open('wb') as file:
+        file.truncate(16 * 1024 * 1024)
+    curl(upload_base + '?path=large.bin', 'POST', multipart=large)
+    assert (upload_root / 'large.bin').stat().st_size == 16 * 1024 * 1024
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if curl('/api/search?' + urllib.parse.urlencode({'query': 'uploadgalaxy', 'source': upload_id})):
+            break
+        time.sleep(0.25)
+    else:
+        raise AssertionError('Uploaded file was not indexed')
+    shared = curl('/api/shares', 'POST', {'source': upload_id, 'path': 'folder', 'maxDownloads': 1})
+    share_url = args.url.rstrip('/') + shared['url']
+    listing = fetch_download(share_url, 200)
+    assert 'upload.md' in listing and upload_id not in listing and str(upload_root) not in listing
+    fetch_download(share_url + '?path=..', 404)
+    assert fetch_download(share_url + '?path=upload.md&download=true', 200) == upload_file.read_text()
+    fetch_download(share_url, 404)
+    revoked = curl('/api/shares', 'POST', {'source': upload_id, 'path': 'folder/upload.md'})
+    curl('/api/shares/' + revoked['id'], 'DELETE')
+    fetch_download(args.url.rstrip('/') + revoked['url'], 404)
+    trashed = curl(upload_base + '/trash', 'POST', {'path': 'folder/upload.md'})
+    assert not (upload_root / 'folder/upload.md').exists()
+    curl(upload_base + '/restore/' + trashed['id'], 'POST')
+    assert (upload_root / 'folder/upload.md').read_text() == upload_file.read_text()
+    audit_text = json.dumps(curl('/api/audit'))
+    assert shared['url'][3:] not in audit_text and revoked['url'][3:] not in audit_text
+    curl('/api/sources/' + upload_id, 'DELETE')
+    print('PASS upload (16 MiB streamed), immediate index/search, CSRF/token denial, trash/restore, anonymous share curl, scope/count/revocation, secret-free audit')
 
     if args.embedding != 'off':
         mock = None

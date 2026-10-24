@@ -9,6 +9,7 @@ import javax.sql.DataSource;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.*;
 
+@org.springframework.scheduling.annotation.EnableScheduling
 @Configuration
 public class AppConfiguration {
     @Bean
@@ -16,6 +17,13 @@ public class AppConfiguration {
         var path = Path.of(folder).toAbsolutePath().normalize();
         Files.createDirectories(path);
         return path.toRealPath();
+    }
+    @Bean
+    jakarta.servlet.MultipartConfigElement multipartConfig(Path dataFolder,
+            @Value("${nasquire.upload-max-bytes:33554432}") long maximum) throws IOException {
+        if (maximum < 1 || maximum > 1073741824L) throw new IllegalArgumentException("업로드 상한 오류");
+        Path temporary = Files.createDirectories(dataFolder.resolve("multipart"));
+        return new jakarta.servlet.MultipartConfigElement(temporary.toString(), maximum, maximum + 1048576, 0);
     }
     @Bean(destroyMethod = "close")
     DataSource dataSource(Path dataFolder) {

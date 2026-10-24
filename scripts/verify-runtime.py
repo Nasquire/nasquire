@@ -64,7 +64,7 @@ with tempfile.TemporaryDirectory(prefix='runtime-', dir=artifacts) as folder, (a
             raise RuntimeError('Server startup timed out')
         if pid is None:
             raise RuntimeError('Cannot identify the application JVM for RSS measurement')
-        result = subprocess.run([sys.executable, 'scripts/smoke.py', url, 'build/samples', '--pid', str(pid), '--embedding', os.environ.get('VERIFY_EMBEDDING', 'off')], cwd=root, text=True, capture_output=True)
+        result = subprocess.run([sys.executable, 'scripts/smoke.py', url, 'build/samples', '--upload-root', str(pathlib.Path(folder) / 'uploads'), '--pid', str(pid), '--embedding', os.environ.get('VERIFY_EMBEDDING', 'off')], cwd=root, text=True, capture_output=True)
         sys.stdout.write(result.stdout)
         sys.stderr.write(result.stderr)
         (artifacts / 'smoke.txt').write_text(result.stdout + result.stderr)
@@ -73,7 +73,7 @@ with tempfile.TemporaryDirectory(prefix='runtime-', dir=artifacts) as folder, (a
         workload = next(int(line.split('=')[1]) for line in result.stdout.splitlines() if line.startswith('PEAK_APPLICATION_RSS_KIB='))
         measurement = {'embedding': os.environ.get('VERIFY_EMBEDDING', 'off'), 'documents': 48, 'officeHwp': 8, 'markdown': 20, 'pdf': 20, 'pdfPages': 40, 'heapMiB': 256, 'gc': 'SerialGC',
                        'startupPeakRssKiB': peak_rss, 'workloadPeakRssKiB': workload, 'peakRssMiB': round(max(peak_rss, workload) / 1024, 1),
-                       'strictContainerLimit': False, 'curlSmokeExitCode': result.returncode}
+                       'uploadBytes': 16777216, 'uploadShareCurl': True, 'strictContainerLimit': False, 'curlSmokeExitCode': result.returncode}
         (artifacts / 'measurement.json').write_text(json.dumps(measurement, indent=2) + '\n')
         print(json.dumps(measurement, indent=2))
     finally:
