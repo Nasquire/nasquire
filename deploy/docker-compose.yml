@@ -1,19 +1,29 @@
 services:
   nasquire:
+    image: ghcr.io/nasquire/nasquire:${NASQUIRE_TAG:-lite}
     build:
       context: ..
+      target: lite
       args:
         PUID: ${PUID:-1000}
         PGID: ${PGID:-1000}
+    # 공개 이미지 계정은 1000:1000이며 실제 권한은 아래 숫자 매핑을 따른다.
     user: "${PUID:-1000}:${PGID:-1000}"
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       NASQUIRE_DATA: /data
+      NASQUIRE_PUBLIC_URL: ${PUBLIC_URL:-https://nas.example.com}
+      NASQUIRE_TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      SERVER_FORWARD_HEADERS_STRATEGY: none
+      SERVER_SERVLET_SESSION_COOKIE_SECURE: "true"
     volumes:
-      - nasquire-data:/data
-      - ${SOURCE_DIR:-./documents}:/sources/documents:ro
+      - ${DATA_DIR:?DATA_DIR를 준비하세요}:/data
+      - ${SOURCE_DIR:?SOURCE_DIR를 지정하세요}:/sources/documents:ro
+      # 업로드를 쓸 때만 별도 전용 폴더를 추가하고 kind=upload로 등록한다.
+      # - ${UPLOAD_DIR}:/uploads:rw
     mem_limit: 512m
+    memswap_limit: 512m
     cpus: 2
     pids_limit: 100
     read_only: true
@@ -24,5 +34,3 @@ services:
     cap_drop:
       - ALL
     restart: unless-stopped
-volumes:
-  nasquire-data:

@@ -12,7 +12,7 @@
 - `app/src/main/java/com/bluesounds/nasquire/app`: 업로드 전용 WritableSource·SecureDirectoryStream/Linux mkdirat·renameat2, 해시 외부 공유·별도 stateless 보안 경로, Spring MVC REST, H2/JDBC, BCrypt 관리자 세션·CSRF, 해시 API 토큰, 감사 로그, 공식 MCP SDK의 stateless Streamable HTTP(`/mcp`), 메모리 불투명 티켓 다운로드 주소(`/api/download`, `/download`).
 - `frontend/src`: React·Vite·TypeScript 관리 화면(브라우저 한/영, 자동/라이트/다크). Gradle이 Node를 내려받고 npm ci로 빌드하여 app의 static에 포함한다.
 - `frontend/public/icon.svg`: 시그니처 아이콘 복사본. 원본 자산은 수정하지 않는다.
-- `deploy/docker-compose.yml`, `Dockerfile`: 비루트 JRE 런타임, PUID/PGID 빌드 인자와 사용자 매핑, 읽기 전용 소스, 데이터 볼륨.
+- `Dockerfile`: 다단계 `lite`(기본)·`full` 비루트 JRE, OCR 도구·헬스체크·OCI 라벨. `deploy/docker-compose*.yml`: lite/full/ML, 숫자 사용자 매핑·읽기 전용 소스·별도 업로드·데이터 볼륨. `deploy/unraid/`, `docs/install/`: NAS 템플릿·설치/백업/복구 안내. `.github/workflows/`: lite/full CI와 태그 전용 GHCR 게시(액션 SHA 고정).
 - `scripts/smoke.py`: 새 서버 데이터에 대한 curl 실제 API 검증(인증값 미출력).
 - `scripts/verify-runtime.py`: 문서 생성·bootRun·curl·RSS·서버 종료를 자동 수행. 결과는 무시되는 `build/verification/`에 생성한다.
 - `scripts/fetch-verification-models.py`: 명시적 내장 모델 검증 시 고정 리비전·SHA-256 모델 파일을 무시되는 build 폴더에 준비한다.
@@ -21,14 +21,14 @@
 
 ## 명령
 - 빌드·테스트(기본 lite): `./gradlew build -q` (`:app:verifyLiteClasspath`가 full/ONNX/DJL 유입 검사)
-- full 선택 빌드·실행: `./gradlew -Pfull build -q`, `./gradlew -Pfull :app:bootRun`; 공급자 테스트 `./gradlew :full:test -q`. 앱 JAR 경로는 같으므로 마지막 빌드 구성에 유의한다. 기존 Dockerfile은 lite다.
+- full 선택 빌드·실행: `./gradlew -Pfull build -q`, `./gradlew -Pfull :app:bootRun`; 공급자 테스트 `./gradlew :full:test -q`. 앱 JAR 경로는 같으므로 마지막 빌드 구성에 유의한다. Dockerfile의 기본 타깃도 lite다.
 - 코어/통합 테스트: `./gradlew :core:test :app:test -q` (가짜 Qdrant는 core testFixtures `FakeQdrant`)
 - 실행: `./gradlew :app:bootRun` (포트 8080, 저장소 루트 `./data`)
 - 별도 설정: `./gradlew :app:bootRun --args='--server.port=8101 --nasquire.data=./data'`
 - 자체 작성 문서 48개 생성(PDF·Markdown 40개와 Office/HWP 8개): `./gradlew :core:generateSamples -q` (`build/samples`)
 - Linux 실측: `VERIFY_PORT=8101 python3 scripts/verify-runtime.py` (Python 3·curl 필요, 새 임시 DB, 종료 자동 처리)
 - 벡터 실측: `VERIFY_PORT=8101 VERIFY_EMBEDDING=builtin python3 scripts/verify-runtime.py` (모델 다운로드·해시 검사 포함). `remote`는 가짜 HTTP 공급자 검증. 빌드와 bootRun 실측은 클래스 출력 폴더를 공유하므로 동시에 실행하지 않는다.
-- 컨테이너: `SOURCE_DIR=/path/to/documents docker compose -f deploy/docker-compose.yml up --build -d`
+- 컨테이너: `DATA_DIR=/path/to/data SOURCE_DIR=/path/to/documents docker compose -f deploy/docker-compose.yml up --build -d` (호스트 데이터 권한·HTTPS 프록시 선행). full은 `-f deploy/docker-compose.full.yml` 추가, ML은 `-f deploy/docker-compose.ml.yml` 독립 실행. 직접 빌드는 `docker build --target lite .` / `docker build --target full .`; 검증 한계는 `docs/verification/deploy.md`.
 
 ## 구현 규칙
 - AGPL 호환 의존성만 사용한다. 라이선스 변경 시 `THIRD-PARTY.md`를 갱신한다. LICENSE·LICENSE-EXCEPTIONS.md·NOTICE는 임의 변경하지 않는다.

@@ -4,7 +4,7 @@
 
 Copyright (c) 2026 Bluesounds. [Source repository](https://github.com/Nasquire/nasquire).
 
-The search service supports PDF (page-level text), UTF-8 and detected-encoding text, Markdown, Word (.docx/.doc), PowerPoint (.pptx/.ppt), Excel (.xlsx/.xls), and Korean HWP/HWPX. Excel uses SAX/event readers. Korean Nori analysis also handles English terms; Lucene ranks chunks with BM25. Optional local ONNX and remote embeddings add Lucene HNSW vector search and BM25/vector RRF fusion. OCR, reranking, and TOTP are planned. See [embedding configuration](docs/embeddings.md).
+The search service supports PDF (page-level text), UTF-8 and detected-encoding text, Markdown, Word (.docx/.doc), PowerPoint (.pptx/.ppt), Excel (.xlsx/.xls), and Korean HWP/HWPX. Excel uses SAX/event readers. Korean Nori analysis also handles English terms; Lucene ranks chunks with BM25. Optional local ONNX and remote embeddings add Lucene HNSW vector search and BM25/vector RRF fusion. 선택 full 모듈은 OCR·리랭커를 제공하고 관리자 TOTP도 지원합니다. See [embedding configuration](docs/embeddings.md).
 
 ## Quick start
 
@@ -23,18 +23,27 @@ The app uses `./data` by default. Stop the application before copying its data d
 
 기본 빌드는 lite이며 OCR·리랭커는 off입니다. `./gradlew -Pfull build -q` 또는 `./gradlew -Pfull :app:bootRun`으로 ONNX 임베딩·원격 리랭커·외부 Tesseract OCR 구현을 포함합니다. 기존 내장 임베딩도 이제 full 빌드가 필요합니다. 원격 임베딩은 lite에서 사용할 수 있습니다. 두 빌드의 앱 JAR 경로가 같으므로 마지막 빌드 구성을 확인하세요.
 
-OCR 실행 파일과 kor+eng 데이터는 별도로 준비해야 합니다. 관리 설정 API와 제한은 [full 검증](docs/verification/full.md)을 참고하세요. 선택 Qdrant 벡터 저장소(임베딩 설정), 로컬 ONNX 리랭커(`reranker=builtin`, full), 임베딩·리랭크·OCR만 제공하는 ML 전용 모드(`--nasquire.mode=ml`, full, Bearer 필수)를 제공합니다. 실제 OCR 비교·PaddleOCR·실제 Qdrant 서버 검증은 미완료입니다. 기존 Dockerfile은 lite입니다.
+full 이미지에는 Tesseract 실행 파일과 kor+eng 데이터가 포함됩니다. JAR를 직접 실행한다면 별도로 준비해야 합니다. 관리 설정 API와 제한은 [full 검증](docs/verification/full.md)을 참고하세요. 선택 Qdrant 벡터 저장소(임베딩 설정), 로컬 ONNX 리랭커(`reranker=builtin`, full), 임베딩·리랭크·OCR만 제공하는 ML 전용 모드(`--nasquire.mode=ml`, full, Bearer 필수)를 제공합니다. 실제 OCR 비교·PaddleOCR·실제 Qdrant 서버 검증은 미완료입니다. Dockerfile은 `lite`·`full` 타깃을 제공하며 기본 타깃은 lite입니다.
 
-## Docker
+## Docker 빠른 시작
+
+Linux amd64/arm64용 이미지는 `ghcr.io/nasquire/nasquire:lite`(기본·`:latest`)와 `:full`입니다. 첫 릴리스 게시 전에는 pull이 실패할 수 있으며 이번 단계에서는 게시하지 않았습니다. 이미지·arm64 실행은 아직 미검증입니다.
+
+데이터 폴더를 실행 UID/GID가 쓸 수 있게 먼저 준비하고 HTTPS 프록시를 구성하세요. 일반 문서는 읽기 전용으로 연결합니다.
 
 ```sh
-SOURCE_DIR=/path/to/documents PUID=1000 PGID=1000 \
-  docker compose -f deploy/docker-compose.yml up --build -d
+export DATA_DIR=/srv/nasquire/data SOURCE_DIR=/srv/documents
+export PUID=1000 PGID=1000 PUBLIC_URL=https://nas.example.com
+# TRUSTED_PROXIES에는 앱에 실제 연결하는 프록시 IP만 설정합니다.
+docker compose -f deploy/docker-compose.yml up -d
+# 이미지 게시 전 로컬 빌드: 위 명령에 --build 추가
 ```
 
-Register `/sources/documents` in the UI. The example mounts sources read-only, persists `/data`, limits memory to 512 MiB, and runs a JRE-only image as a non-root user. `PUID`/`PGID` configure the build-time account and runtime UID/GID. Ensure this identity can read source files and write the data volume. Changing IDs for an existing volume requires adjusting its ownership before starting. PDF scratch files use the size-limited `/tmp` mount.
+`/sources/documents`를 UI 소스로 등록합니다. lite 예시는 512 MiB 한도이며 내장 모델·리랭커에는 부족합니다. full은 `-f deploy/docker-compose.full.yml`을 추가하고, 같은 full 이미지의 ML 전용 모드는 `deploy/docker-compose.ml.yml`을 사용합니다. 모델은 이미지에 포함하지 않습니다. PUID/PGID는 compose의 숫자 `user` 매핑을 통해 적용하며, 공개 이미지에 환경변수만 주어서는 사용자가 바뀌지 않습니다.
 
-The 512 MiB example targets keyword/remote operation. Built-in model memory must be checked against [vector verification](docs/verification/vector.md) before enabling it. Container image building and a strict 512 MiB container test have not yet been verified. See [verification](docs/verification/mvp.md).
+- [Docker 공통 설치·HTTPS·백업·업그레이드·관리자 복구](docs/install/generic-docker.md)
+- [Synology Container Manager](docs/install/synology.md) · [Unraid와 XML 템플릿](docs/install/unraid.md) · [TrueNAS SCALE](docs/install/truenas.md)
+- [배포·CI 검증과 미실측 항목](docs/verification/deploy.md) · [full 메모리 실측](docs/verification/full.md)
 
 ## Configuration
 
