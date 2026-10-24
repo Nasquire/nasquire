@@ -29,9 +29,10 @@ public final class IndexingService implements AutoCloseable {
     }
 
     public void start(Supplier<List<Source>> sources, long intervalMillis) {
+        // 예외가 밖으로 나가면 scheduleWithFixedDelay가 이후 실행을 영구 취소하므로 Error(메모리 부족 포함)까지 잡아 상태로 남긴다.
         worker.scheduleWithFixedDelay(() -> {
-            try { scan(sources.get()); }
-            catch (Exception e) { statuses.put("_system", new Status("error", 0, 0, 1, "검사 실패")); }
+            try { scan(sources.get()); statuses.remove("_system"); }
+            catch (Throwable e) { statuses.put("_system", new Status("error", 0, 0, 1, e instanceof OutOfMemoryError ? "검사 실패: 메모리 부족" : "검사 실패")); }
         }, 0, intervalMillis, TimeUnit.MILLISECONDS);
     }
     public void reindex(String id) { reindex.add(id); }
@@ -91,22 +92,42 @@ public final class IndexingService implements AutoCloseable {
                         if (!stamp.indexed && now - stamp.stableSince >= stableMillis) {
                             var chunks = new ArrayList<SearchIndex.Chunk>();
                             int[] offset = {0};
-                            extractor.get().extractLocated(real, (page, location, text) -> {
+                            TextExtractor.LocatedConsumer sink = (page, location, text) -> {
                                 for (int i = 0; i < text.length(); i += 1200) {
                                     String chunk = text.substring(i, Math.min(i + 1200, text.length()));
                                     chunks.add(new SearchIndex.Chunk(page, offset[0], chunk, location)); offset[0] += chunk.length();
                                 }
-                            }, maxCharacters);
-                            // 추출 도중 변경된 파일은 이번 검사에서 게시하지 않는다.
+                            };
+                            Object identity = attrs.fileKey();
+                            if (SecureFiles.supported()) {
+                                // 루트부터 각 요소를 NOFOLLOW로 열어 고정한 fd만 읽는다. 검사 뒤 중간 디렉터리를 소스 밖 링크로 바꾸거나
+                                // FIFO로 바꿔도 소스 밖 내용을 읽거나 멈추지 않는다.
+                                try (var pinned = SecureFiles.open(real)) {
+                                    var opened = Files.readAttributes(pinned.path(), BasicFileAttributes.class);
+                                    if (!java.util.Objects.equals(opened.fileKey(), identity) || opened.size() != stamp.size
+                                            || opened.lastModifiedTime().toMillis() != stamp.mtime) throw new IOException("추출 중 파일 변경");
+                                    if (opened.size() > maxBytes) throw new IOException("파일 크기 상한 초과");
+                                    extractor.get().extractLocated(real, pinned.path(), sink, maxCharacters);
+                                    var done = Files.readAttributes(pinned.path(), BasicFileAttributes.class);
+                                    if (done.size() != stamp.size || done.lastModifiedTime().toMillis() != stamp.mtime) throw new IOException("추출 중 파일 변경");
+                                }
+                            } else {
+                                throw new IOException("안전한 원본 열기 미지원");
+                            }
+                            // 추출 도중 변경·교체된 파일은 이번 검사에서 게시하지 않는다.
                             var after = Files.readAttributes(file.toRealPath(), BasicFileAttributes.class);
-                            if (!file.toRealPath().equals(real) || after.size() != stamp.size || after.lastModifiedTime().toMillis() != stamp.mtime)
+                            if (!file.toRealPath().equals(real) || !java.util.Objects.equals(after.fileKey(), identity)
+                                    || after.size() != stamp.size || after.lastModifiedTime().toMillis() != stamp.mtime)
                                 throw new IOException("추출 중 파일 변경");
                             index.replace(source, key, stamp.mtime, chunks);
                             stamp = new Stamp(stamp.size, stamp.mtime, stamp.stableSince, true);
                         }
                         next.put(key, stamp);
                         if (stamp.indexed) counts[0]++; else { counts[1]++; index.delete(source.id() + ":" + key); }
-                    } catch (IOException | RuntimeException e) { counts[2]++; }
+                    } catch (IOException | RuntimeException | OutOfMemoryError | StackOverflowError e) {
+                        // 한 파일의 추출 메모리 부족이 소스 전체 검사를 멈추지 않게 그 파일만 오류로 남긴다.
+                        counts[2]++;
+                    }
                     statuses.put(source.id(), new Status("scanning", counts[0], counts[1], counts[2], ""));
                     return FileVisitResult.CONTINUE;
                 }

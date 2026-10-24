@@ -16,9 +16,11 @@ OpenAI 호환 `POST {baseUrl}/embeddings`를 호출하며 `input` 배열, `model
 | `batchSize` | 2, 1~16 |
 | `timeoutSeconds` | 30, 1~300 |
 
-원격 공급자를 사용하면 **문서 조각과 검색어가 설정한 서버로 전송된다. 외부 클라우드 주소라면 문서 내용이 외부로 전송됨**을 관리 화면에 경고한다. 신뢰하는 서버를 사용하고 외부 연결에는 HTTPS를 사용한다. 키는 응답에 반환하지 않는다. `embedding.properties`에는 AES-256-GCM 암호문을, `embedding.key`에는 로컬 암호화 키를 저장한다. POSIX에서는 두 파일을 0600으로 제한한다. 두 파일을 포함한 전체 데이터 디렉터리를 함께 백업해야 한다. 같은 파일에 접근할 수 있는 운영자에 대한 암호화 장벽은 아니다.
+원격 공급자를 사용하면 **문서 조각과 검색어가 설정한 서버로 전송된다. 외부 클라우드 주소라면 문서 내용이 외부로 전송됨**을 관리 화면에 경고한다. 신뢰하는 서버를 사용하고 외부 연결에는 HTTPS를 사용한다. 루프백(`localhost`, `127.0.0.0/8`, `[::1]`)이 아닌 평문 `http://` 주소(원격 임베딩·Qdrant)는 `allowInsecureHttp=true`를 명시해야 저장되며 화면에 경고한다. 이전 버전에서 저장한 비루프백 평문 설정은 시작은 하되 벡터 기능을 끄고 `disabledReason`으로 알린다. 주소를 바꾸면 새 키를 함께 입력하지 않는 한 저장된 키를 지우며, `DELETE /api/embeddings/key`·`/api/embeddings/qdrant-key`(관리자 세션+CSRF)로 키를 삭제할 수 있다. 키는 응답에 반환하지 않는다. `embedding.properties`에는 AES-256-GCM 암호문을, `embedding.key`에는 로컬 암호화 키를 저장한다. POSIX에서는 두 파일을 0600으로 제한한다. 두 파일을 포함한 전체 데이터 디렉터리를 함께 백업해야 한다. 같은 파일에 접근할 수 있는 운영자에 대한 암호화 장벽은 아니다.
 
 ## 내장 공급자
+
+4단계 모듈 분리 이후 내장 공급자는 `./gradlew -Pfull build -q`로 만든 full 앱에서만 제공한다. 기본 lite 앱에는 ONNX Runtime·DJL·네이티브 모델 구현을 포함하지 않으며 선택하면 거부한다. 원격 임베딩은 lite에서도 사용할 수 있다. 내장 공급자를 끄고 lite로 전환한다. full 선택 빌드와 OCR/리랭커의 현재 범위는 [4단계 검증](verification/full.md)을 참고한다.
 
 ONNX Runtime Java CPU로 int8 `multilingual-e5-small`을 실행한다. 모델 파일은 저장소·컨테이너 이미지에 포함하지 않는다. 모델 다운로드도 기본으로 꺼져 있다. 사전 준비한 파일을 읽거나 `download=true`를 명시하면 첫 연결 시험·임베딩 때 HTTPS로 내려받아 SHA-256을 확인한다. 기존 파일도 로드 전에 해시를 검사한다. 다운로드는 임시 파일 → 해시 검사 → 원자적 이동으로 게시하며 파일별 256 MiB 상한을 둔다. **자동 다운로드 대상은 데이터 디렉터리 안이어야 한다.** 외부 경로에 준비한 모델은 읽기만 한다. 원본 소스 볼륨은 항상 읽기 전용으로 마운트한다.
 
@@ -56,3 +58,11 @@ ONNX Runtime Java CPU로 int8 `multilingual-e5-small`을 실행한다. 모델 �
 Lucene의 같은 문서에 `KnnFloatVectorField`(cosine, HNSW)를 추가한다. commit user data에 `embedding.model`, `embedding.dimensions`, `embedding.incomplete`를 저장한다. 모델 ID에는 원격 endpoint·모델 이름 또는 내장 모델/토크나이저 SHA-256·풀링 버전이 들어간다. 같은 원격 모델 이름으로 서버 내부 가중치가 바뀌는 경우는 자동 감지할 수 없으므로 관리자가 재색인해야 한다. 차원 변경 시 전체 `deleteAll`로 필드 스키마도 재설정한다. 재색인이 중단되면 incomplete 상태를 읽어 벡터 검색을 차단하며 전체 재색인으로 복구한다.
 
 메모리 실측·512 MiB 목표 충족 여부와 재현 명령은 [2단계 검증 기록](verification/vector.md)에 남긴다.
+
+## 선택 Qdrant 벡터 저장소
+
+기본 벡터 저장소는 로컬 Lucene HNSW다. 임베딩 설정의 `vectorStore=qdrant`를 선택하면 운영자가 준비한 Qdrant의 REST API(`qdrantUrl`, `qdrantCollection`)에 벡터를 저장한다. API 키는 `qdrantApiKey`로 저장하며 `embedding.key`의 AES-GCM v2 + AAD `qdrant`로 암호화하고 응답에는 `hasQdrantKey`만 표시한다. 저장소·컬렉션을 바꾸면 모델·차원 변경과 같이 전체 재색인 전 벡터 검색을 막는다. Qdrant에는 벡터와 소스 ID·문서 key·offset만 보내고 본문은 로컬 색인에 둔다. 검색 범위는 Qdrant 필터와 앱 재검사로 이중 적용한다. 상세는 [4단계 검증](verification/full.md)을 참고한다.
+
+## ML 전용 서버를 원격 공급자로 사용
+
+full 빌드의 ML 전용 모드는 OpenAI 호환 `POST /v1/embeddings`와 `POST /v1/rerank`를 제공한다. 일반 Nasquire의 원격 임베딩 `baseUrl`과 원격 리랭커 `baseUrl`에 `https://ml.example.com/v1`처럼 지정하고, API 키에 ML 서버 토큰을 넣는다. 모델 이름은 ML 서버의 `nasquire.ml.embedding-model`(기본 `multilingual-e5-small`, 384차원)·`nasquire.ml.reranker-model`과 같아야 한다. OpenAI 형식에는 질의/문서 구분이 없어 ML 서버는 입력을 문서(`passage:`)로 임베딩한다. 확장 필드 `input_type=query`를 보내는 클라이언트만 질의 접두사를 사용한다.

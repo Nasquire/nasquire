@@ -9,7 +9,8 @@ import org.springframework.stereotype.Service;
 public class DocumentService {
     private final Storage storage;
     private final SearchIndex index;
-    public DocumentService(Storage storage, SearchIndex index) { this.storage = storage; this.index = index; }
+    private final FullSettings full;
+    public DocumentService(Storage storage, SearchIndex index, FullSettings full) { this.storage = storage; this.index = index; this.full = full; }
     public Set<String> scope(Storage.Identity identity, String source) {
         var allowed = new HashSet<String>();
         for (Source s : storage.sources()) if (identity == null || identity.sources().isEmpty() || identity.sources().contains(s.id())) allowed.add(s.id());
@@ -23,7 +24,11 @@ public class DocumentService {
         return search(identity, query, source, limit, null);
     }
     public List<SearchIndex.Hit> search(Storage.Identity identity, String query, String source, int limit, String mode) throws IOException {
-        return index.search(query, scope(identity, source), limit, mode);
+        return search(identity, query, source, limit, mode, false);
+    }
+    public List<SearchIndex.Hit> search(Storage.Identity identity, String query, String source, int limit, String mode, boolean rerank) throws IOException {
+        // 소스 범위를 적용한 결과만 외부 공급자에 전달한다. 원격 응답은 순서만 바꿀 수 있다.
+        return full.rerank(query, index.search(query, scope(identity, source), limit, mode), rerank);
     }
     public Map<String, Object> document(Storage.Identity identity, String path, Integer from, Integer to, Integer offset, Integer length) throws IOException {
         if (path == null || path.length() > 4096 || !path.contains(":")) throw new IllegalArgumentException("소스 ID:상대경로가 필요합니다");

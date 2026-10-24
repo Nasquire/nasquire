@@ -13,7 +13,8 @@
 - [x] 3단계: 형식 확장 — Word·PPT·Excel(POI, 스트리밍), HWP·HWPX, download_file 짧은 주소.
 - [x] 3.5단계: 업로드·공유 — 선택 기능 "업로드 소스"(기본 끔, 별도 쓰기 가능 폴더만 쓰고 일반 소스는 계속 읽기 전용, 웹 업로드·폴더·휴지통), 외부 공유 링크(파일 또는 폴더 하나, 무작위 토큰 `/s/{token}`, 만료·비밀번호·다운로드 횟수 제한·철회·감사 로그, 실경로 범위 검사·심볼릭 링크 탈출 차단·속도 제한, 범위 밖 목록·검색·MCP 노출 없음).
 - [ ] 3.6단계: 임베드용 core 라이브러리 — 앱 의존 없는 공개 API 정리, Maven 패키지 배포(`nasquire-core`), 버전 정책(SemVer), 사용 예제. 확장 지점(인증·저장 위치·원본 열기 주소)을 설정·인터페이스로.
-- [ ] 4단계: full 모듈 — OCR(PaddleOCR ONNX vs Tesseract 실측), 리랭커, Qdrant, ML 전용 모드.
+- [x] 4단계: full 모듈 기본 구현 — 원격/로컬 리랭커·격리된 Tesseract 처리 경로·Qdrant·ML 전용 모드 및 보안 잔여 수정.
+- [ ] 4단계 후속 구현·실측 — 실제 OCR 정확도/속도/RSS 비교·실제 Qdrant 서버·arm64·NAS/NFS/SMB·cgroup 검증은 미실측. PaddleOCR·원격 OCR 클라이언트·full 설정 UI는 미구현. 내장 모델의 512 MiB 초과는 유지한다.
 - [ ] 5단계: 배포 — amd64·arm64 이미지 `:lite`·`:full`, CI, NAS 설치 안내(Synology·Unraid·TrueNAS), MCP OAuth.
 
 ## 결정
@@ -67,7 +68,7 @@
 - [ ] MCP OAuth(후속 보안 작업).
 - [ ] 실제 브라우저에서 모바일·라이트/다크·접근성 시각 검증(이번 환경에는 브라우저 자동화 도구 없음). 프런트엔드는 TypeScript/Vite 빌드와 정적 리소스 제공을 검증했다.
 - [ ] 검색 하이라이트, 색인 오류 원인 상세 UI, 파일별 영속 변경 감지 스냅샷 최적화.
-- [ ] 리랭커·OCR·추가 문서 형식은 기존 3~4단계에서 구현.
+- [ ] 리랭커·OCR의 전체 완료는 아래 4단계 체크리스트를 따른다(추가 형식은 3단계 완료).
 
 
 ## 2단계 구현·검증 (2026-10-24)
@@ -175,4 +176,79 @@
 - [x] 등록 비밀번호 재확인, 등록/해제 별도 제한 키, 키 누락/변경 시 새 키 생성 금지·503·복구 안내, 용도별 AAD `v2:` 형식과 기존 형식 이전.
 - [x] 복구 코드 정규화, 오프라인 복구 확인 재입력·CR 제거, 로그인 코드 단계 취소(한/영).
 - [x] `./gradlew build -q` 종료 0, `verify-runtime.py`·`verify-admin-recovery.py` 종료 0. 상세: [TOTP 검증](verification/totp.md#교차-검토-반영-2026-10-24-기준-커밋-ad6a3b1).
-- [ ] 실제 브라우저 UI·실제 TTY 확인 재입력 검증, 키 오류 503 HTTP 통합 테스트, 원격 임베딩 테스트 간헐 실패(1회) 원인 확인.
+- [ ] 실제 브라우저 UI·실제 TTY 확인 재입력 검증, 키 오류 503 HTTP 통합 테스트.
+- [x] 원격 임베딩 테스트 간헐 실패 원인 확인·공유 제외 정책 테스트 소스 격리: 4단계 최종 확인 절 참고.
+
+
+## 4단계 full 모듈 부분 구현 (2026-10-24, 기준 a4bb16b)
+
+**당시 부분 완료 기록이다. 현재 기본 구현 완료와 후속 미완료 상태는 아래 최종 확인 절을 따른다.** 상세 근거·제한은 [full 검증](verification/full.md)을 따른다.
+
+- [x] 독립 `full` Gradle 라이브러리·Providers/ServiceLoader 확장. 기본 lite 앱 런타임에서 full·ONNX Runtime·DJL 제외, 기존 내장 E5 공급자는 full로 이동, 원격 임베딩은 lite에 유지. `-Pfull`로 선택 포함, lite 의존성 유입 검사.
+- [x] full 설정 기본 off·관리자 세션/CSRF 전용 API(`/api/full`), 원격 키 AES-GCM v2 + AAD `reranker`·비공개·0600·공유 암호화 키 재생성 차단.
+- [x] 원격 일반 rerank HTTP API, 검색 결과 상위 N만 재정렬·근거 보존·전체 시간/응답 상한·오류/혼잡 시 원래 순서, REST/MCP 요청별 opt-in과 범위 밖 내용 미전송 통합 테스트.
+- [x] Tesseract CLI 공급자와 이미지/텍스트 없는 PDF 쪽 추출 경로, kor+eng·시간/주소 공간/출력/쪽/픽셀/문자 상한, `location.type=ocr`와 원래 쪽 번호. 가짜 프로세스·생성 이미지/스캔 PDF·Lucene 근거 보존 테스트.
+- [ ] **실제 OCR 실행·정확도/속도/RSS 비교는 미완료.** Tesseract 실행 파일이 없어 종료 127, 두 언어 데이터 미준비. PaddleOCR ONNX는 공급자 계약만 유지하고 구현·고정 모델·전후처리 없음. Tesseract의 격리 용이성을 근거로 잠정 구현 선택했으며 인식 성능 우위를 입증하지 않았다.
+- [x] 로컬 ONNX 다국어 cross-encoder·AGPL 호환 모델 선정/고정 리비전/SHA-256·데이터 폴더 다운로드·실측. 아래 나머지 구현 절 참고.
+- [x] Qdrant 저장소와 REST 클라이언트, 암호화 키·컬렉션 모델/차원 메타·불일치 검색 차단/재색인·소스 범위 필터·가짜 HTTP 통합 테스트. 아래 나머지 구현 절 참고.
+- [x] ML 전용 HTTP 서버·Bearer 필수·소스/관리 화면 차단·기존 원격 프로토콜 호환·요청 크기/동시성 상한. 아래 나머지 구현 절 참고.
+- [ ] full 설정 UI, full OCR 실행 파일/언어 데이터 배포, 별도 lite/full 이미지·산출물 명명(5단계), arm64·Docker/cgroup·외부 실제 서비스/대규모 부하 검증.
+
+- [x] 최종 `./gradlew build -q`·`./gradlew -Pfull build -q` 종료 0, core 11개·app 15개·full 4개 테스트 통과. lite 실제 실행 검증 2회·기준 비교 1회 종료 0, 각 서버 종료/포트 정리. 기본 JAR에서 full/ONNX/DJL 제외 확인.
+- [x] lite RSS 원인 분석(0d2ff95 당시 미확정 → 나머지 구현 절에서 분석): 기준 282.8 MiB, 당시 309.9/309.8 MiB. 원인은 의존성이 아닌 Serial GC 구세대 점유 시점 차이로 확인. 실제 cgroup 검증은 미완료.
+
+## 4단계 나머지 구현 (2026-10-24, 기준 0d2ff95)
+
+상세 근거·숫자는 [full 검증](verification/full.md)의 "나머지 구현" 절을 따른다.
+
+- [x] Qdrant 선택 벡터 저장소(core `VectorStore`/`QdrantVectorStore`, 의존성 추가 없음). 기본은 Lucene HNSW. 설정은 기존 `/api/embeddings`(관리자 세션+CSRF), API 키는 `embedding.key` AES-GCM v2 + AAD `qdrant`로 `encryptedQdrantKey`에 저장·응답 비공개(`hasQdrantKey`만).
+- [x] 검색 시 소스 범위를 Qdrant payload `match.any` 필터로 전송하고, 응답은 앱에서 소스 재검사 후 Lucene `chunk` ID 조회(같은 범위 필터)로만 본문을 얻는다. Qdrant에는 본문을 보내지 않는다(벡터·소스 ID·key·offset만).
+- [x] 저장소 식별자(`vector.store`)를 색인 메타에 기록하여 모델·차원·저장소·컬렉션 변경 시 재색인 전 벡터 검색 차단. 재색인 시작 시 컬렉션 재생성, 파일 교체·삭제·소스 삭제 시 점 동기화, 외부 저장 실패 시 Lucene 미게시.
+- [x] ML 전용 모드(`--nasquire.mode=ml` 또는 `NASQUIRE_MODE=ml`, full 필요). Spring 컨텍스트 없이 JDK HTTP 서버로 `/v1/embeddings`(OpenAI 호환)·`/v1/rerank`·`/v1/ocr`·`/v1/models`만 제공. 모든 경로 Bearer 필수(SHA-256 상수 시간 비교), 토큰은 설정 파일·환경변수·토큰 파일에서만(명령행 거부), 미설정·32자 미만·기능 전부 off면 시작 거부. 관리 화면·소스·검색·MCP·DB 없음.
+- [x] 로컬 ONNX 리랭커 `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`(Apache-2.0) 고정 커밋·qint8·SHA-256, 데이터 폴더 안 다운로드만(기본 off). `/api/full`의 `reranker=builtin`, ML 서버 `nasquire.ml.reranker=builtin`. RSS 실측 기록.
+- [x] lite RSS 증가 원인 조사: 의존성 유입 없음, NMT 커밋 합계 동일, 차이는 RssAnon의 Serial GC 구세대 점유(조기 승격) 시점 차이. 코드 변경으로 되돌리지 않음(근거 숫자는 full 검증 문서).
+- [x] 가짜 HTTP Qdrant(필터 무시 모드 포함)·가짜 공급자 ML 서버로 단위/통합 테스트, 실제 모델 ML 서버 실측 스크립트 `scripts/verify-ml.py`.
+- [ ] PaddleOCR ONNX 구현·실제 OCR 정확도/속도/RSS 비교: 미완료(Tesseract 유지 근거는 full 검증 문서).
+- [ ] 실제 Qdrant 서버·인증/TLS·대규모 컬렉션 검증, 원격 OCR 클라이언트(검색 서버→ML 서버 OCR), full 설정 UI, ML 서버 컨테이너 이미지·arm64·cgroup 검증: 미완료.
+- [ ] 로컬 리랭커·내장 임베딩·ML 서버는 512 MiB 목표를 초과한다(리랭커 단독 약 615~632 MiB). 메모리 축소 미완료.
+
+## 4단계 보안 교차 검토 반영 (2026-10-24, 기준 4de7837)
+
+상세 처리·남은 한계는 [full 검증](verification/full.md)의 "보안 검토 반영" 절을 따른다.
+
+- [x] M1 주기 색인 작업이 Error(메모리 부족 포함)로 영구 취소되지 않게 Throwable을 잡아 상태에 기록, 파일 단위 메모리 부족은 그 파일만 오류. OCR 픽셀 상한 6M·디코딩 래스터 24 MiB·PDF 내장 이미지 64 MiB, PDF는 GRAY 렌더링·큰 쪽 DPI 축소, 이미지는 부분 샘플링. ML 서버 `/v1/ocr`도 같은 상한.
+- [x] M2 PDF 렌더링·이미지 디코딩을 별도 스레드에서 쪽/프레임당 20초로 제한, 초과·메모리 부족은 그 파일 실패. 중단을 무시하는 렌더러는 최대 2개 잔류 스레드로 격리.
+- [x] M3 Qdrant·원격 임베딩 호출을 SearchIndex 공통 잠금 밖으로 이동, 세대 번호로 게시·결과 사용 시점 검증, 교체된 공급자는 사용 종료 뒤 닫음. Qdrant 작업 전체 시간 상한(검색 1배·쓰기 4배)과 연속 3회 실패 시 30초 회로 차단.
+- [x] M4 ML 서버 대기열 없는 고정 작업자, 포화 시 즉시 503, 인증 실패는 수신 스레드에서 바로 401, 연결 수 64·요청/응답 시간 상한 기본값, 기능별 슬롯 대기 제거.
+- [x] M5 원격 임베딩·Qdrant·원격 리랭커의 비루프백 평문 http 거부(`allowInsecureHttp=true` 명시 시만, 화면 경고). 기존 설정은 시작하되 해당 기능만 끄고 `disabledReason` 표시. ML 서버 기본 바인드 127.0.0.1.
+- [x] L1 시작 시 `ocr-tmp`의 24시간 지난 `page-*` 정리. L2 주소 변경 시 저장 키 폐기. L3 OCR 필드 변경 시에만 전체 재색인. L4 tesseract 자식 환경 초기화. L5 키 삭제 API(`DELETE /api/embeddings/key`, `/api/embeddings/qdrant-key`, `/api/full/key`)와 임베딩 화면 삭제 버튼.
+- [ ] L6(선택) 스캔 PDF 이중 로드 개선·OCR 쪽 단위 건너뛰기: 미구현(기존 "일부 쪽만 게시하지 않음" 정책 유지).
+- [x] 렌더러·디코더의 별도 프로세스 격리: 아래 재검토 R1에서 반영.
+- [ ] 중첩 Form/인라인 이미지 사전 검사, 실제 Qdrant·TLS 리버스 프록시 앞 ML 서버 실측: 미완료.
+
+## 4단계 재검토 잔여 수정 (2026-10-24, 기준 23a4c61)
+
+상세는 [full 검증](verification/full.md)의 "재검토 반영" 절.
+
+- [x] R1 OCR 파일 열기·헤더/프레임/자원 검사·렌더링·디코딩을 자식 JVM(`OcrWorker`, 작은 힙·prlimit·환경 초기화·0700 작업 폴더)으로 격리. 파일 단위 시간 상한 초과 시 자손까지 강제 종료·회수, 동시 1개, 출력 상한·NOFOLLOW 읽기, 스레드 풀 제거. ML `/v1/ocr`도 같은 경로.
+- [x] R2 `SearchIndex.close()`: 신규 작업 차단 → 세대 변경 → 활성 작업 대기(초과 시 스레드 중단) → 공급자·저장소·Lucene 닫기. 종료 후 호출은 예외.
+- [x] R3 진행 중 replace를 key·source 삭제가 무효화하고 이미 쓴 Qdrant 점 정리. Qdrant 점 payload에 영속 색인 세대(`vector.epoch`)를 두고 검색은 현재 세대만 허용(세대 기록 없는 기존 Qdrant 색인은 1회 재색인).
+- [x] R4 앱 시작 때 OCR 사용 여부와 무관하게 `ocr-tmp`의 24시간 지난 `page-*`/`job-*` 정리.
+- [ ] Tesseract 호출은 기존처럼 쪽마다 별도 prlimit 프로세스(부모가 실행)이며 자식 JVM 안으로 옮기지 않았다. 실제 Tesseract·악성 코퍼스 퍼징·cgroup 검증 미완료.
+
+## 4단계 최종 재확인 잔여 수정 (2026-10-24, 기준 f28cf43)
+
+- [x] S1·S2 core `SecureFiles` 공통화: NOFOLLOW 디렉터리 핸들·O_NONBLOCK/fstat 일반 파일 검사, OCR 복사 전체 시간 상한, 일반 텍스트·Office·OCR 고정 fd 읽기. 미지원 환경은 안전하게 실패.
+- [x] S3 중단 무시 공급자·저장소는 마지막 활성 작업 exit()에서 폐기, 실제 close는 잠금 밖으로 이동. synchronized 공급자 회귀 테스트.
+- [x] S4 setsid 그룹으로 고아 손자까지 종료·확인 후 슬롯 반환/정리, 부모 PNG 합계·열린 fd 재검사, 직접 작업자 실행의 작업 폴더 형식·소유자·0700 검사.
+- [x] 최종 lite/full 빌드 종료 0(core 27·app 20·full 18, 65개 테스트 실패·생략 0), 8101 lite 런타임·8102 ML 실측 각각 종료 0·서버/포트 정리. 상세 결과는 [full 검증](verification/full.md)의 "최종 재확인 반영" 절에 기록한다.
+- 기존 4단계 전체 미완료 항목(실제 OCR·Qdrant·arm64·cgroup·PaddleOCR·full UI)은 그대로 유지한다.
+
+## 4단계 최종 확인 (2026-10-24, 기준 cd23e83)
+
+- [x] 공유 파일은 전송할 fd의 fstat dev/ino를 저장된 fileKey와 대조한 뒤 그 fd로만 읽는다. 폴더 공유의 다운로드·목록은 확인한 루트 디렉터리 핸들을 유지하고 하위 경로를 NOFOLLOW로 연다. 검사 전후 파일·폴더 교체, 링크·FIFO 거부 회귀 테스트 추가.
+- [x] OCR 자식 회수 시 `/proc` 열거·stat 읽기·파싱 실패는 종료 미확인으로 처리한다. 확인 전에는 슬롯과 작업 폴더를 보유한다. 확실히 사라진 pid와 좀비만 종료로 보며 오류 경로 회귀 테스트 추가.
+- [x] app 간헐 실패 자연 재현(키워드 1건 기대·0건 실제)·원인 수정: 공유 제외 정책 검사를 전용 소스로 격리하고 제외 상태를 직접 색인해 원래 결과 보존 확인. 수정 후 `./gradlew :app:cleanTest :app:test -q` 10회 모두 종료 0(app 25개씩).
+- [x] 최종 `./gradlew build -q`·`./gradlew -Pfull build -q`·`VERIFY_PORT=8101 python3 scripts/verify-runtime.py` 각각 종료 0. core 27·app 25·full 19개 테스트 결과 실패·오류·생략 0. lite 최대 RSS 281.9 MiB, 서버·bootRun 종료/포트 반환 확인. [full 최종 확인](verification/full.md#최종-확인-기준-cd23e83)에 실패 근거와 최종 결과 기록.
+- [ ] 실제 OCR·실제 Qdrant·arm64·NAS/NFS/SMB·악성 코퍼스·512 MiB cgroup 부하 검증은 미실측. PaddleOCR·원격 OCR 클라이언트·full UI는 미구현이다.
+- 수용한 한계: NAS/NFS 일반 파일 I/O가 반환하지 않으면 복사·추출은 시간 제한을 보장하지 못한다. 일반 텍스트 추출도 같은 한계다. 운영자는 soft/intr 마운트·타임아웃 설정을 권장하며 실제 동작은 사용하는 클라이언트/파일시스템에서 확인해야 한다.

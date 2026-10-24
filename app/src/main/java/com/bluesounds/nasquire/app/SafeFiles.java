@@ -23,6 +23,19 @@ final class SafeFiles implements AutoCloseable {
             directory = current;
         } catch (IOException | RuntimeException e) { close(); throw e; }
     }
+    /** 이미 식별자를 확인한 루트 fd를 의도적으로 다시 열고 하위만 NOFOLLOW로 따라간다. */
+    SafeFiles(com.bluesounds.nasquire.core.SecureFiles.Directory root, Path relative) throws IOException {
+        try {
+            var first = Files.newDirectoryStream(root.path()); handles.add(first);
+            if (!(first instanceof SecureDirectoryStream<Path> secure)) throw new IOException("안전한 디렉터리 열기 미지원");
+            var current = secure;
+            if (!relative.toString().isEmpty()) for (Path component : relative) {
+                name(component.toString());
+                current = current.newDirectoryStream(component, LinkOption.NOFOLLOW_LINKS); handles.add(current);
+            }
+            directory = current;
+        } catch (IOException | RuntimeException e) { close(); throw e; }
+    }
     static Path relative(String value, boolean empty) {
         if (value == null || value.length() > 4096 || (!empty && value.isEmpty())
                 || !Normalizer.isNormalized(value, Normalizer.Form.NFC)) throw new IllegalArgumentException("NFC 상대경로 필요");
@@ -60,19 +73,23 @@ final class SafeFiles implements AutoCloseable {
     }
     static List<Map<String, Object>> list(Source source, Path relative) throws IOException {
         allowed(source, relative, true);
-        var result = new ArrayList<Map<String, Object>>();
         try (var opened = new SafeFiles(source.root().resolve(relative))) {
-            for (Path child : opened.directory) {
-                Path name = child.getFileName(), candidate = relative.resolve(name);
-                try {
-                    relative(candidate.toString(), false);
-                    var attr = opened.attributes(name);
-                    if (attr.isSymbolicLink() || !(attr.isRegularFile() || attr.isDirectory())) continue;
-                    allowed(source, candidate, attr.isDirectory());
-                    result.add(Map.of("name", name.toString(), "path", candidate.toString(), "directory", attr.isDirectory(), "size", attr.size()));
-                    if (result.size() >= 1000) break;
-                } catch (IllegalArgumentException | AccessDeniedException | NoSuchFileException ignored) { }
-            }
+            return list(source, relative, opened);
+        }
+    }
+    static List<Map<String, Object>> list(Source source, Path relative, SafeFiles opened) throws IOException {
+        allowed(source, relative, true);
+        var result = new ArrayList<Map<String, Object>>();
+        for (Path child : opened.directory) {
+            Path name = child.getFileName(), candidate = relative.resolve(name);
+            try {
+                relative(candidate.toString(), false);
+                var attr = opened.attributes(name);
+                if (attr.isSymbolicLink() || !(attr.isRegularFile() || attr.isDirectory())) continue;
+                allowed(source, candidate, attr.isDirectory());
+                result.add(Map.of("name", name.toString(), "path", candidate.toString(), "directory", attr.isDirectory(), "size", attr.size()));
+                if (result.size() >= 1000) break;
+            } catch (IllegalArgumentException | AccessDeniedException | NoSuchFileException ignored) { }
         }
         result.sort(Comparator.comparing(row -> row.get("name").toString()));
         return result;

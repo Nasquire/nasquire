@@ -25,7 +25,7 @@ public class McpConfiguration {
     @Bean(destroyMethod = "close")
     McpStatelessSyncServer mcpServer(HttpServletStatelessServerTransport transport, DocumentService documents, Storage storage, DownloadService downloads) {
         var searchProperties = Map.<String, Object>of("query", Map.of("type", "string", "minLength", 1, "maxLength", 1000),
-                "source", Map.of("type", "string", "description", "Optional source ID"), "mode", Map.of("type", "string", "enum", List.of("keyword", "vector", "hybrid")), "limit", Map.of("type", "integer", "minimum", 1, "maximum", 100));
+                "source", Map.of("type", "string", "description", "Optional source ID"), "mode", Map.of("type", "string", "enum", List.of("keyword", "vector", "hybrid")), "limit", Map.of("type", "integer", "minimum", 1, "maximum", 100), "rerank", Map.of("type", "boolean", "default", false));
         var documentProperties = new LinkedHashMap<String, Object>();
         documentProperties.put("path", Map.of("type", "string", "description", "Source-qualified path returned by search_documents"));
         for (String n : List.of("page_from", "page_to", "offset", "length")) documentProperties.put(n, Map.of("type", "integer", "minimum", n.equals("offset") ? 0 : 1));
@@ -59,13 +59,18 @@ public class McpConfiguration {
         try {
             if (identity == null) throw new IllegalArgumentException("토큰 인증 필요");
             Map<String, Object> args = request.arguments();
-            Object result = search ? documents.search(identity, (String)args.get("query"), (String)args.get("source"), number(args, "limit") == null ? 20 : number(args, "limit"), (String)args.get("mode"))
+            Object result = search ? documents.search(identity, (String)args.get("query"), (String)args.get("source"), number(args, "limit") == null ? 20 : number(args, "limit"), (String)args.get("mode"), bool(args, "rerank"))
                     : documents.document(identity, (String)args.get("path"), number(args, "page_from"), number(args, "page_to"), number(args, "offset"), number(args, "length"));
             return McpSchema.CallToolResult.builder().content(List.of(McpSchema.TextContent.builder(McpJsonDefaults.getMapper().writeValueAsString(result)).build())).isError(false).build();
         } catch (Exception e) {
             status = 400;
             return McpSchema.CallToolResult.builder().content(List.of(McpSchema.TextContent.builder("문서를 조회할 수 없습니다 / Cannot access documents").build())).isError(true).build();
         } finally { storage.audit(identity == null ? "anonymous" : identity.tokenId(), "mcp " + request.name(), status); }
+    }
+    private boolean bool(Map<String, Object> args, String key) {
+        Object value = args.get(key);
+        if (value != null && !(value instanceof Boolean)) throw new IllegalArgumentException("논리값 오류");
+        return Boolean.TRUE.equals(value);
     }
     private Integer number(Map<String, Object> args, String key) {
         Object value = args.get(key);
