@@ -98,7 +98,7 @@ public class UploadService {
                 target(parent, relative.getFileName(), overwrite);
                 if (overwrite) storage.revokeShares(id, relative);
                 if (overwrite) parent.directory.move(temporary, parent.directory, relative.getFileName());
-                else SecureDirectories.moveNew(SafeFiles.parent(source.source().root(), relative).resolve(temporary), source.source().root().resolve(relative));
+                else com.bluesounds.nasquire.core.SecureFiles.moveNew(SafeFiles.parent(source.source().root(), relative).resolve(temporary), source.source().root().resolve(relative));
                 staged = false;
             } finally { if (staged) parent.directory.deleteFile(temporary); }
         }
@@ -111,7 +111,7 @@ public class UploadService {
         }
     }
     private void mkdir(WritableSource source, Path relative) throws IOException {
-        SecureDirectories.create(source.source().root().resolve(relative));
+        com.bluesounds.nasquire.core.SecureFiles.createDirectory(source.source().root().resolve(relative));
     }
     public synchronized void folder(String id, String path) throws IOException {
         var source = writable(id); Path relative = SafeFiles.relative(path, false);
@@ -134,7 +134,7 @@ public class UploadService {
             target(target, to.getFileName(), overwrite);
             storage.revokeShares(id, from); storage.revokeShares(id, to);
             if (overwrite) origin.directory.move(from.getFileName(), target.directory, to.getFileName());
-            else SecureDirectories.moveNew(source.source().root().resolve(from), source.source().root().resolve(to));
+            else com.bluesounds.nasquire.core.SecureFiles.moveNew(source.source().root().resolve(from), source.source().root().resolve(to));
         }
         changed(source, "upload-move");
     }
@@ -166,7 +166,7 @@ public class UploadService {
             var attr = origin.attributes(Path.of(item));
             if (attr.isSymbolicLink()) throw new AccessDeniedException("링크 거부");
             SafeFiles.allowed(source.source(), to, attr.isDirectory()); target(target, to.getFileName(), false);
-            SecureDirectories.moveNew(source.source().root().resolve(".nasquire-trash").resolve(item), source.source().root().resolve(to));
+            com.bluesounds.nasquire.core.SecureFiles.moveNew(source.source().root().resolve(".nasquire-trash").resolve(item), source.source().root().resolve(to));
         }
         db.update("DELETE FROM trash WHERE id=?", item); changed(source, "upload-restore");
     }

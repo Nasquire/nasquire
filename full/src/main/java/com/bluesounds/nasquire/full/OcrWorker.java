@@ -28,6 +28,7 @@ public final class OcrWorker {
             if (args.length < 3) return FAILED;
             ImageIO.setUseCache(false);
             Path folder = Path.of(args[1]);
+            if (!jobFolder(folder)) return FAILED;
             int maxPages = Integer.parseInt(args[2]);
             if (maxPages < 1 || maxPages > 100) return FAILED;
             long[] written = {0};
@@ -42,6 +43,23 @@ public final class OcrWorker {
         } catch (OcrTextExtractor.Limit | IllegalArgumentException e) { return LIMIT; }
         catch (OutOfMemoryError e) { return MEMORY; }
         catch (Throwable e) { return FAILED; }
+    }
+
+    /**
+     * 직접 실행해도 데이터 폴더 ocr-tmp 안 job-* 작업 폴더(실경로, 링크 아님, 현재 사용자 소유 0700)만 받는다. 다른 폴더의 input을 읽거나
+     * 임의 위치에 PNG를 쓰지 않게 한다.
+     */
+    static boolean jobFolder(Path folder) {
+        try {
+            if (!folder.isAbsolute() || !folder.normalize().equals(folder) || folder.getParent() == null
+                    || !folder.getFileName().toString().matches("job-[0-9A-Za-z_-]{1,64}")
+                    || !folder.getParent().getFileName().toString().equals("ocr-tmp") || !folder.toRealPath().equals(folder)) return false;
+            var attributes = Files.readAttributes(folder, java.nio.file.attribute.PosixFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            int uid = Files.readAllLines(Path.of("/proc/self/status")).stream().filter(line -> line.startsWith("Uid:"))
+                    .map(line -> Integer.parseInt(line.split("\\s+")[2])).findFirst().orElse(-1);
+            return attributes.isDirectory() && uid >= 0 && Integer.valueOf(uid).equals(Files.getAttribute(folder, "unix:uid", LinkOption.NOFOLLOW_LINKS))
+                    && attributes.permissions().equals(java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"));
+        } catch (IOException | RuntimeException e) { return false; }
     }
 
     private static int pdf(Path folder, String list, int maxPages, long[] written) throws IOException {

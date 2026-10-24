@@ -354,8 +354,8 @@ class ApplicationIntegrationTest {
         assertEquals(0, db.queryForObject("SELECT COUNT(*) FROM trash WHERE source_id=?", Integer.class, uploadId));
         Path fifo = root.resolve("fifo.md");
         var process = new ProcessBuilder("mkfifo", fifo.toString()).start(); assertEquals(0, process.waitFor());
-        assertTimeoutPreemptively(java.time.Duration.ofSeconds(2), () -> assertThrows(java.io.IOException.class, () -> SecureDirectories.readRegular(fifo)));
-        try (var channel = SecureDirectories.readRegular(root.resolve("saved.md"))) { assertTrue(channel.isOpen()); }
+        assertTimeoutPreemptively(java.time.Duration.ofSeconds(2), () -> assertThrows(java.io.IOException.class, () -> com.bluesounds.nasquire.core.SecureFiles.readRegular(fifo)));
+        try (var channel = com.bluesounds.nasquire.core.SecureFiles.readRegular(root.resolve("saved.md"))) { assertTrue(channel.isOpen()); }
         // 실제 로그인 필터 실패 지연과 성공 초기화. 계정/IP 모두 키로 사용한다.
         var login = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/login"))
                 .header("X-CSRF-TOKEN", csrf).header("Content-Type", "application/x-www-form-urlencoded")
@@ -397,7 +397,7 @@ class ApplicationIntegrationTest {
         assertEquals("uploadgalaxy", Files.readString(root.resolve("folder/notes.md")));
         uploads.upload(id, "folder/notes.md", new java.io.ByteArrayInputStream("uploadgalaxy".getBytes(java.nio.charset.StandardCharsets.UTF_8)), true);
         Path staged = Files.writeString(root.resolve("staged.md"), "new");
-        assertThrows(java.io.IOException.class, () -> SecureDirectories.moveNew(staged, root.resolve("folder/notes.md")));
+        assertThrows(java.io.IOException.class, () -> com.bluesounds.nasquire.core.SecureFiles.moveNew(staged, root.resolve("folder/notes.md")));
         assertEquals("uploadgalaxy", Files.readString(root.resolve("folder/notes.md")));
         Files.delete(staged);
         assertThrows(IllegalStateException.class, () -> uploads.upload(id, "folder/notes.md", new java.io.ByteArrayInputStream(new byte[0]), false));

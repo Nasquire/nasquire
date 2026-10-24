@@ -233,3 +233,11 @@
 - [x] R3 진행 중 replace를 key·source 삭제가 무효화하고 이미 쓴 Qdrant 점 정리. Qdrant 점 payload에 영속 색인 세대(`vector.epoch`)를 두고 검색은 현재 세대만 허용(세대 기록 없는 기존 Qdrant 색인은 1회 재색인).
 - [x] R4 앱 시작 때 OCR 사용 여부와 무관하게 `ocr-tmp`의 24시간 지난 `page-*`/`job-*` 정리.
 - [ ] Tesseract 호출은 기존처럼 쪽마다 별도 prlimit 프로세스(부모가 실행)이며 자식 JVM 안으로 옮기지 않았다. 실제 Tesseract·악성 코퍼스 퍼징·cgroup 검증 미완료.
+
+## 4단계 최종 재확인 잔여 수정 (2026-10-24, 기준 f28cf43)
+
+- [x] S1·S2 core `SecureFiles` 공통화: NOFOLLOW 디렉터리 핸들·O_NONBLOCK/fstat 일반 파일 검사, OCR 복사 전체 시간 상한, 일반 텍스트·Office·OCR 고정 fd 읽기. 미지원 환경은 안전하게 실패.
+- [x] S3 중단 무시 공급자·저장소는 마지막 활성 작업 exit()에서 폐기, 실제 close는 잠금 밖으로 이동. synchronized 공급자 회귀 테스트.
+- [x] S4 setsid 그룹으로 고아 손자까지 종료·확인 후 슬롯 반환/정리, 부모 PNG 합계·열린 fd 재검사, 직접 작업자 실행의 작업 폴더 형식·소유자·0700 검사.
+- [x] 최종 lite/full 빌드 종료 0(core 27·app 20·full 18, 65개 테스트 실패·생략 0), 8101 lite 런타임·8102 ML 실측 각각 종료 0·서버/포트 정리. 상세 결과는 [full 검증](verification/full.md)의 "최종 재확인 반영" 절에 기록한다.
+- 기존 4단계 전체 미완료 항목(실제 OCR·Qdrant·arm64·cgroup·PaddleOCR·full UI)은 그대로 유지한다.

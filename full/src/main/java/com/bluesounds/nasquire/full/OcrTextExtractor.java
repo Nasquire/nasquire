@@ -34,8 +34,12 @@ public final class OcrTextExtractor implements TextExtractor {
     }
     private record Part(int page, Location location, String text) { }
     public void extractLocated(Path path, LocatedConsumer consumer, int maxCharacters) throws IOException {
+        extractLocated(path, path, consumer, maxCharacters);
+    }
+    @Override
+    public void extractLocated(Path name, Path path, LocatedConsumer consumer, int maxCharacters) throws IOException {
         int[] remaining = {maxCharacters};
-        if (path.toString().toLowerCase(Locale.ROOT).endsWith(".pdf")) {
+        if (name.toString().toLowerCase(Locale.ROOT).endsWith(".pdf")) {
             // 텍스트 추출은 기존 PDF 추출기(같은 상한)로 하고, 텍스트 없는 쪽만 모아 자식 프로세스 한 번으로 렌더링한다.
             var parts = new ArrayList<Part>(); var blank = new ArrayList<Integer>();
             new PdfTextExtractor().extractLocated(path, (page, location, text) -> {

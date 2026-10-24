@@ -50,9 +50,13 @@ public final class OfficeTextExtractor implements TextExtractor {
         }
     }
     public void extractLocated(Path path, LocatedConsumer consumer, int maxCharacters) throws IOException {
-        if (!supports(path) || maxCharacters < 1) throw new IOException("형식 또는 문자 상한 오류");
+        extractLocated(path, path, consumer, maxCharacters);
+    }
+    @Override
+    public void extractLocated(Path name, Path path, LocatedConsumer consumer, int maxCharacters) throws IOException {
+        if (!supports(name) || maxCharacters < 1) throw new IOException("형식 또는 문자 상한 오류");
         if (Files.size(path) > 8L * 1024 * 1024) throw new IOException("Office/HWP 파일 상한 8 MiB 초과");
-        String ext = extension(path);
+        String ext = extension(name);
         var sink = new Sink(consumer, maxCharacters);
         try {
             if (Set.of("docx", "pptx", "xlsx", "hwpx").contains(ext)) preflightZip(path);

@@ -90,6 +90,6 @@ public class DownloadService {
         if (!root.equals(source.root().toAbsolutePath().normalize()) || !file.toRealPath().startsWith(root)
                 || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) throw new AccessDeniedException("소스 범위 밖");
         // O_NONBLOCK으로 FIFO 교체에도 멈추지 않고 열린 fd의 fstat으로 유형을 확인한다.
-        return SecureDirectories.readRegular(file);
+        return com.bluesounds.nasquire.core.SecureFiles.readRegular(file);
     }
 }

@@ -47,6 +47,11 @@ class ReviewFixesTest {
                 if (path.getFileName().toString().equals("bad.txt")) throw new OutOfMemoryError("test");
                 consumer.accept(1, "good text");
             }
+            // 색인기는 내용을 고정 fd 경로로 넘기므로 이름 기반 판단은 원래 이름을 받는 메서드에서 한다.
+            @Override public void extractLocated(Path name, Path content, LocatedConsumer consumer, int max) throws IOException {
+                if (name.getFileName().toString().equals("bad.txt")) throw new OutOfMemoryError("test");
+                extractLocated(content, consumer, max);
+            }
         };
         try (var index = new SearchIndex(temp.resolve("index"));
              var indexing = new IndexingService(index, 1 << 20, 1000, 0, List.of(extractor))) {

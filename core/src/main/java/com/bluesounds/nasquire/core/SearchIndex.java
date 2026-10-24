@@ -60,28 +60,42 @@ public final class SearchIndex implements AutoCloseable {
     /** 저장소 식별자. 외부 저장소는 임베딩이 켜져 있을 때만 사용한다. */
     private String storeId() { return store == null ? "lucene" : store.id(); }
     private boolean external() { return store != null && embedding != null; }
-    public synchronized void configureEmbedding(Providers.EmbeddingProvider provider) { configureVectors(provider, store); }
+    public void configureEmbedding(Providers.EmbeddingProvider provider) { configure(provider, null, true); }
     /** 모델·차원·벡터 저장소 중 하나라도 색인 당시와 다르면 재색인 전까지 벡터 검색을 막는다. */
-    public synchronized void configureVectors(Providers.EmbeddingProvider provider, VectorStore vectorStore) {
-        ensureOpen();
-        var old = embedding; var oldStore = store; embedding = provider; store = vectorStore; generation++;
-        if (rebuilding) { rebuilding = false; reindexRequired = true; }
-        reindexRequired = reindexRequired || rebuilding || !model().equals(indexedModel) || dimensions() != indexedDimensions
-                || embedding != null && !storeId().equals(indexedStore);
-        if (old != null && old != provider) retired.add(old);
-        if (oldStore != null && oldStore != vectorStore) retired.add(oldStore);
-        if (active == 0) closeRetired();
+    public void configureVectors(Providers.EmbeddingProvider provider, VectorStore vectorStore) { configure(provider, vectorStore, false); }
+    private void configure(Providers.EmbeddingProvider provider, VectorStore requested, boolean keepStore) {
+        List<AutoCloseable> taken;
+        synchronized (this) {
+            ensureOpen();
+            VectorStore vectorStore = keepStore ? store : requested;
+            var old = embedding; var oldStore = store; embedding = provider; store = vectorStore; generation++;
+            if (rebuilding) { rebuilding = false; reindexRequired = true; }
+            reindexRequired = reindexRequired || rebuilding || !model().equals(indexedModel) || dimensions() != indexedDimensions
+                    || embedding != null && !storeId().equals(indexedStore);
+            if (old != null && old != provider) retired.add(old);
+            if (oldStore != null && oldStore != vectorStore) retired.add(oldStore);
+            taken = active == 0 ? takeRetired() : List.of();
+        }
+        closeAll(taken);
     }
-    private void closeRetired() {
-        for (var c : retired) { try { c.close(); } catch (Exception ignored) { } }
-        retired.clear();
+    /** 잠금을 쥔 상태에서 닫을 객체를 꺼낸다. 실제 close는 잠금 밖에서 해 공급자 자체 잠금(내장 ONNX의 synchronized)과 교착하지 않게 한다. */
+    private List<AutoCloseable> takeRetired() {
+        var taken = List.copyOf(retired); retired.clear(); return taken;
+    }
+    private static void closeAll(List<AutoCloseable> closeables) {
+        for (var c : closeables) { try { c.close(); } catch (Exception ignored) { } }
     }
     private void ensureOpen() { if (closed) throw new IllegalStateException("색인이 종료되었습니다"); }
     /** 잠금을 쥔 상태에서 호출한다. 종료가 시작되면 새 작업을 받지 않는다. */
     private void enter() { ensureOpen(); active++; activeThreads.add(Thread.currentThread()); }
-    private synchronized void exit() {
-        activeThreads.remove(Thread.currentThread());
-        if (--active == 0) { closeRetired(); notifyAll(); }
+    /** 마지막 활성 작업이 끝나면 교체·종료로 미뤄 둔 공급자·저장소를 닫는다. */
+    private void exit() {
+        List<AutoCloseable> taken = List.of();
+        synchronized (this) {
+            activeThreads.remove(Thread.currentThread());
+            if (--active == 0) { taken = takeRetired(); notifyAll(); }
+        }
+        closeAll(taken);
     }
     private synchronized void checkGeneration(long expected) {
         if (expected != generation) throw new IllegalStateException("벡터 설정 변경, 다시 시도");
@@ -340,9 +354,12 @@ public final class SearchIndex implements AutoCloseable {
 
     /**
      * 신규 작업을 막고 세대를 바꾼 뒤 잠금 밖 원격 작업이 끝나기를 기다린다. 제한 시간을 넘기면 그 스레드를 중단시켜(원격 호출 취소)
-     * 한 번 더 기다리고, 그다음 공급자·저장소·Lucene을 닫는다. 종료 후 호출은 IllegalStateException이다.
+     * 한 번 더 기다리고, 그다음 공급자·저장소·Lucene을 닫는다. 두 번째 대기 뒤에도 중단에 응하지 않는 작업이 남으면 그 작업이 쓰는 공급자·저장소는
+     * 닫지 않고 마지막 활성 작업의 exit()까지 미룬다(활성 작업은 잠금 안에서 종료 여부를 확인한 뒤에만 Lucene을 쓰므로 Lucene은 바로 닫는다).
+     * 종료 후 호출은 IllegalStateException이다.
      */
     public void close() throws IOException {
+        List<AutoCloseable> taken;
         synchronized (this) {
             if (closed) return;
             closed = true; generation++;
@@ -350,10 +367,11 @@ public final class SearchIndex implements AutoCloseable {
                 for (Thread t : activeThreads) t.interrupt();
                 awaitIdle(closeWaitMillis);
             }
-            closeRetired();
+            if (embedding != null) retired.add(embedding);
+            if (store != null) retired.add(store);
+            taken = active == 0 ? takeRetired() : List.of();
         }
-        try { if (embedding != null) embedding.close(); } catch (RuntimeException ignored) { }
-        try { if (store != null) store.close(); } catch (Exception ignored) { }
+        closeAll(taken);
         searchers.close(); writer.close(); analyzer.close(); directory.close();
     }
     private boolean awaitIdle(long millis) {

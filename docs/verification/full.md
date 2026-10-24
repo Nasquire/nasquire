@@ -270,3 +270,30 @@ PaddleOCR ONNX는 이번에도 구현하지 않고 Tesseract CLI 경로를 유�
 | 실행 JAR 자식 단독(자체 생성 4000×3000 회색조 PNG, 위와 같은 prlimit·JVM 옵션) | 0 | 0.28초, 자식 최대 RSS 61,252 KiB(부분 샘플링 결과 1쪽) |
 
 정리 회귀 테스트·문서 추가 뒤 `./gradlew -Pfull build -q`와 최종 `./gradlew build -q`(마지막 구성 lite)를 다시 실행해 각각 0이었고(57개 테스트, 실패·생략 0), `git diff --check`도 0이다. 런타임 실측 뒤에는 테스트·문서만 바뀌었다. 못 한 검증: 실제 Tesseract(실행 파일 없음)·실제 Qdrant 서버·악성 PDF/이미지 코퍼스 퍼징·큰 스캔 PDF에서 자식 JVM 메모리·cgroup 제한. 상세 아티팩트(공개 커밋 제외): `build/verification/stage4-rereview/`.
+
+## 최종 재확인 반영 (기준 f28cf43)
+
+검증일: 2026-10-24. 중간 3개·낮음 1개 잔여 항목을 보완했다. 위 재검토 R1·R2의 원본 열기·종료 한계는 이 절의 동작으로 대체한다. 4단계 전체의 기존 미완료 항목은 유지한다.
+
+| 항목 | 최종 처리 |
+| --- | --- |
+| S1 OCR 원본 FIFO 고착 | core `SecureFiles`의 `O_NOFOLLOW\|O_NONBLOCK` 열기와 열린 fd의 `fstat`으로 일반 파일만 허용한다. 원본 복사는 자식 실행과 같은 파일 단위 시간 상한을 사용하고 복사 전·각 버퍼·완료 때 시간/중단을 검사한다. FIFO로 바뀐 원본은 즉시 실패하고 슬롯·작업 폴더를 반환한다. |
+| S2 중간 디렉터리 링크 교체 | `/`부터 각 요소를 `openat`·`O_DIRECTORY\|O_NOFOLLOW`로 고정한다. 색인기는 파일 식별자·크기·수정 시각을 확인하고 텍스트·PDF·Office·OCR 모두 고정 fd 경로(`/proc/self/fd/N`)에서 읽는다. 확장자 판별용 이름은 별도로 전달한다. 업로드·다운로드도 같은 `SecureFiles`를 쓰며 기존 app `SecureDirectories`는 제거했다. 미지원 환경에서 경로 기반 읽기로 폴백하지 않는다. |
+| S3 중단 무시 공급자 사용 중 닫기 | 두 번째 대기 뒤에도 활성 작업이 있으면 공급자·저장소 폐기를 마지막 `exit()`까지 미룬다. 실제 공급자 `close()`는 색인 잠금 밖에서 호출하므로 내장 ONNX처럼 추론/닫기에 같은 synchronized 잠금을 쓰는 공급자와 잠금 순환을 만들지 않는다. 종료 뒤 결과 게시·신규 작업은 거부한다. 영구 미종료 공급자는 그만큼 폐기도 보류한다. |
+| S4 자식·출력·직접 실행 | `setsid`로 새 프로세스 그룹을 만들고 자손 목록을 확보한 뒤 그룹·자손·자식을 종료한다. 고아 손자까지 실행 종료를 확인한 뒤 출력 검사·슬롯 반환·실패 작업 폴더 정리를 한다. 확인이 늦으면 백그라운드 회수자가 슬롯을 보유한다. 부모도 열린 fd에서 일반 파일·쪽당 16 MiB·합계 256 MiB를 검사하고 실제 읽기에도 상한을 적용한다. 작업자 직접 실행은 실경로 `ocr-tmp/job-*`·현재 사용자 소유·0700 폴더만 허용한다. |
+
+회귀 테스트: core `FinalReviewFixesTest` 3개(추출 도중 중간 폴더를 외부 링크로 바꾸고 사후 검사 전 복구해도 외부 본문 미색인·원래 본문 유지, FIFO/중간 링크 열기 실패와 fd 고정, 중단 무시 synchronized 공급자의 두 번째 대기 후 반환·작업 종료 전 미폐기·종료 결과 미게시), full `FinalReviewFullTest` 5개(FIFO 원본 실패·슬롯 반환·중간 링크 거부, 자식이 먼저 종료한 고아 손자 회수, 작업 폴더 형식·소유권·권한 검사, 희소 PNG 17개로 합계 256 MiB 초과 거부·출력 FIFO 거부, 만료된 복사 시간 상한 거부). 기존 무한 루프 자식/손자 시간 초과·다음 실제 OCR 작업 회귀 테스트도 통과했다.
+
+못 한 검증·남은 위험: 실제 Tesseract/한국어·영어 언어 데이터가 없어 실제 OCR 인식 비교는 수행하지 못했다. 실제 Qdrant·arm64·NAS/NFS/SMB·악성 코퍼스 퍼징·512 MiB cgroup 부하 검증도 미수행이다. 시간 검사는 일반 파일의 버퍼 읽기/쓰기 사이에서 수행하며 커널/원격 파일시스템 자체의 무기한 I/O 지연을 강제로 해소한다고 보장하지 않는다. 자식 회수는 Linux `/proc`·`setsid`를 전제로 하며 좀비는 실행 종료로 판정한다. 내장 모델의 기존 512 MiB 초과와 full UI·PaddleOCR 미완료는 유지한다.
+
+| 명령 | 종료 코드 | 결과 |
+| --- | ---: | --- |
+| `./gradlew build -q` (패치 적용 직후·보강 뒤 최종 실행) | 각각 0 | 최종 core 27·app 20·full 18, 합계 65개 테스트 실패·오류·생략 0, lite 클래스 경로 검사 통과 |
+| `./gradlew -Pfull build -q` | 0 | full 구성 빌드·통합 테스트 통과 |
+| `VERIFY_PORT=8101 python3 scripts/verify-runtime.py` | 0 | lite 48문서·16 MiB 업로드/공유·REST/MCP·TOTP, 시작 최대 173,964 KiB·작업 최대 288,068 KiB(281.3 MiB), 서버·bootRun 종료와 포트 반환 |
+| `VERIFY_PORT=8102 python3 scripts/verify-ml.py` | 0 | 실행 JAR ML 서버에서 한/영 리랭크·인증·경로 격리·OCR 자식 디코딩·상한/손상 입력 거부, 자식 잔존 없음·임시 폴더 정리, 최대 646,812 KiB(631.7 MiB) |
+| `git diff --check` | 0 | 공백 오류 없음 |
+
+이번 위임 실행에서 위 필수 검증의 실패는 없었다. 빌드/bootRun은 순차 실행했고 마지막 ML 검증이 full bootJar를 만들었으므로 현재 앱 JAR는 full 구성이다. 실제 OCR 실행 파일이 없어서 정상 이미지 디코딩 뒤 OCR 호출은 예상한 500 응답으로 검증했다(실제 인식 성공을 뜻하지 않는다).
+
+상세 아티팩트(공개 커밋 제외): `build/verification/stage4-final/`의 빌드·런타임 로그, `test-summary.json`, 모듈별 `*-tests/`, `measurement.json`, `smoke.txt`, `ml-measurement.json`, `exit.txt`, `changed-files.txt`.
