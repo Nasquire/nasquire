@@ -66,7 +66,11 @@ public class Storage {
                 new Identity(rs.getString("id"), lines(rs.getString("sources"))), hash, Instant.now().toEpochMilli());
         return found.isEmpty() ? null : found.getFirst();
     }
+    // 다운로드 티켓 사용 때 OAuth 토큰도 현재 승인·만료·소스 범위를 다시 확인한다.
+    private java.util.function.Function<String, Identity> oauthIdentity = id -> null;
+    public void oauthIdentity(java.util.function.Function<String, Identity> resolver) { this.oauthIdentity = resolver; }
     public Identity identity(String id) {
+        if (id.startsWith("oauth:")) return oauthIdentity.apply(id);
         var rows = db.query("SELECT id,sources FROM tokens WHERE id=? AND revoked=FALSE AND expires_at>?",
                 (r, n) -> new Identity(r.getString("id"), lines(r.getString("sources"))), id, Instant.now().toEpochMilli());
         return rows.isEmpty() ? null : rows.getFirst();

@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { useTheme } from './theme'
 import Files from './Files'
 import Security from './Security'
+import OAuth from './OAuth'
 
 const ko = navigator.language.toLowerCase().startsWith('ko')
 const t = (en: string, kr: string) => ko ? kr : en
@@ -144,7 +145,7 @@ export default function App() {
         <button disabled={busy} onClick={() => void run(async () => { await api('/embeddings/reindex', 'POST'); await refresh() })}>{t('Reindex all sources', '전체 소스 재색인')}</button></div><p role="status">{connection}</p>
         {sources.map(s => <p key={s.id}>{s.name}: {s.status.state === 'scanning' ? t('Indexing', '색인 중') : s.status.state} · {s.status.indexed} / {s.status.pending} / {s.status.errors}</p>)}
       </section></>}
-    {page === 'tokens' && <><h1>{t('Read-only access', '읽기 전용 접근')}</h1><p>{t('Issue a separate token for each client. Values appear once.', '클라이언트마다 토큰을 발급하세요. 값은 한 번만 표시합니다.')}</p>
+    {page === 'tokens' && <><OAuth api={api} /><h1>{t('Read-only access', '읽기 전용 접근')}</h1><p>{t('Issue a separate token for each client. Values appear once.', '클라이언트마다 토큰을 발급하세요. 값은 한 번만 표시합니다.')}</p>
       <form className="card" onSubmit={e => submit(e, async data => {
         const issued = await api<{ value: string }>('/tokens', 'POST', { name: data.get('name'), expiresAt: new Date(String(data.get('expiry'))).getTime(), sources: data.getAll('sources') }); setSecret(issued.value); await refresh()
       })}>

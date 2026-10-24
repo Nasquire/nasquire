@@ -16,7 +16,7 @@
 - [x] 4단계: full 모듈 기본 구현 — 원격/로컬 리랭커·격리된 Tesseract 처리 경로·Qdrant·ML 전용 모드 및 보안 잔여 수정.
 - [ ] 4단계 후속 구현·실측 — 실제 OCR 정확도/속도/RSS 비교·실제 Qdrant 서버·arm64·NAS/NFS/SMB·cgroup 검증은 미실측. PaddleOCR·원격 OCR 클라이언트·full 설정 UI는 미구현. 내장 모델의 512 MiB 초과는 유지한다.
 - [x] 5a단계: 배포 구성 — amd64·arm64 대상 `lite`·`full` Dockerfile, 태그 전용 GHCR CI, NAS 설치 안내·Unraid 템플릿. 실제 이미지 빌드/기동·cgroup·arm64 검증은 환경 부재로 미완료이며 `verification/deploy.md`에 구분한다.
-- [ ] 5b단계: MCP OAuth — 미착수.
+- [x] 5b단계: MCP OAuth — 내장 인가 서버·DCR·S256·소스 승인·회전/철회 구현. [검증](verification/oauth.md).
 
 ## 결정
 - Spring Boot + React, Gradle 멀티 모듈. 자바 유지 여부는 1단계 RSS 실측으로 판단.
@@ -66,7 +66,7 @@
 - [ ] 실제 NAS 대용량 자료·큰 PDF/손상 PDF·다중 클라이언트 부하와 파일 캐시 포함 메모리 측정.
 - [x] 로그인 시도 제한: IP·계정별 실패 지연/일시 잠금·감사·성공 초기화.
 - [x] 선택 TOTP·관리자 복구 절차·한/영 등록/해제 및 로그인 UI 구현(API 통합 검증, 실제 브라우저 검증은 아래 미완료 유지).
-- [ ] MCP OAuth(후속 보안 작업).
+- [x] MCP OAuth(5b): 기본 off·내장 인가 서버·관리자 소스 승인. [검증](verification/oauth.md).
 - [ ] 실제 브라우저에서 모바일·라이트/다크·접근성 시각 검증(이번 환경에는 브라우저 자동화 도구 없음). 프런트엔드는 TypeScript/Vite 빌드와 정적 리소스 제공을 검증했다.
 - [ ] 검색 하이라이트, 색인 오류 원인 상세 UI, 파일별 영속 변경 감지 스냅샷 최적화.
 - [ ] 리랭커·OCR의 전체 완료는 아래 4단계 체크리스트를 따른다(추가 형식은 3단계 완료).
@@ -169,7 +169,7 @@
 - [x] 권한 없는 로그인 대기 세션·최종 세션 ID/CSRF 교체·기존 LoginAttempts/감사 연계·복구 코드 10개 해시/일회 소모.
 - [x] 네트워크로 노출하지 않는 오프라인 관리자 복구 명령·README 절차·한/영 보안/로그인 UI.
 - [x] `./gradlew build -q` 종료 0(core 11개·app 10개), 실제 JAR 복구/DB 잠금 거부 종료 0, `VERIFY_PORT=8121 python3 scripts/verify-runtime.py` 종료 0 및 서버/포트 정리. 최대 RSS 283.0 MiB. 상세: [TOTP 검증](verification/totp.md).
-- [ ] 실제 브라우저 한/영·모바일·접근성 UI 검증(환경 미준비). MCP OAuth와 기존 배포/부하 한계는 별도 미완료로 유지.
+- [ ] 실제 브라우저 한/영·모바일·접근성 UI 검증(환경 미준비). MCP OAuth는 아래 5b에서 구현했다. 기존 배포/부하 한계는 미완료로 유지.
 
 ## TOTP 보안 교차 검토 반영 (2026-10-24)
 
@@ -262,4 +262,13 @@
 - [x] Docker 공통·Synology·Unraid·TrueNAS 설치 문서와 XML 템플릿. UID/GID·메모리 실측 한계·HTTPS/민감 로그 제외·백업·Qdrant 세대 재색인·오프라인 관리자 복구.
 - [ ] Docker 이미지 빌드/기동·HEALTHCHECK·512 MiB cgroup 측정 — Docker 실행 파일 없음. 정적 대체 검증과 필수 빌드 결과는 [배포 검증](verification/deploy.md).
 - [ ] arm64·NAS 실기·실제 OCR/전체 full 부하·GHCR 게시와 Actions 실실행 — 미실측/미수행. 게시·서버 접속은 이번 범위에서 실행하지 않는다.
-- [ ] 5b MCP OAuth — 미착수.
+- [x] 5b MCP OAuth — 아래 5b 구현·검증 절 참조.
+
+## 5b단계 MCP OAuth (2026-10-24, 기준 b724657)
+
+- [x] 기존 세션·TOTP·CSRF·JDBC·MCP 실행 문맥을 재사용하는 내장 인가 서버 구현. 공개 클라이언트와 단일 리소스만 필요하므로 Spring Authorization Server 대신 기존 의존성만 사용하는 최소 구현을 선택했다. 새 라이브러리 없음.
+- [x] 기본 off·HTTPS 공개 기본 주소 검증, 보호 리소스/인가 서버 메타데이터, S256 PKCE·DCR·resource/audience 검증, 승인/거부 HTML·관리 화면.
+- [x] 256비트 불투명 코드/토큰 SHA-256 저장, 60초 코드·1시간 액세스·30일 승인 상한, 리프레시 회전·재사용 계열 철회, 소스 재검증·감사·IP 속도 제한.
+- [x] 통합 테스트 8개·실제 bootRun/curl DCR→관리자 승인→token→MCP 검색→refresh→revoke, 종료 0·서버/포트 정리. 초기 다운로드 권한 조회 실패와 수정 근거는 [OAuth 검증](verification/oauth.md).
+- [x] `./gradlew build -q`·`./gradlew -Pfull build -q` 종료 0(프런트엔드 포함), core 27·app 33·full 19개 실패·오류·생략 0. README·설치 안내·CLAUDE 규칙 갱신, 내부 식별자·경로·토큰 패턴 일치 없음.
+- [ ] 실제 외부 MCP 클라이언트·HTTPS 프록시·브라우저 동작은 별도 실측 필요.

@@ -171,7 +171,7 @@ VERIFY_PORT=8101 python3 scripts/verify-runtime.py
 
 The runtime check generates 48 original sample documents (including all eight new formats), starts `:app:bootRun`, exercises setup → indexing → Korean/English search → tokens → all three MCP tools → anonymous signed-download curl, also streams a 16 MiB upload, checks uploaded-file search, trash/restore and anonymous external shares, records JVM RSS, and stops the server. Set `VERIFY_EMBEDDING=builtin` to fetch pinned SHA-256-verified model files into ignored build artifacts and test local hybrid search, or `VERIFY_EMBEDDING=remote` to exercise a fake HTTP provider. Do not run builds concurrently with bootRun verification because they share class output directories. It writes ignored artifacts under `build/verification`. [Stage 3 results and limits](docs/verification/formats-download.md); [MVP results](docs/verification/mvp.md).
 
-Use HTTPS and restrict initial setup/administrator access to trusted users. Secure session cookies should be enabled behind HTTPS. This MVP has one administrator, optional TOTP and offline administrator recovery; MCP OAuth remains planned. A sampled RSS measurement on small documents is not a guarantee for large PDFs or concurrent workloads; test your own corpus under a real container limit. The source mount must be read-only to enforce isolation against filesystem races.
+Use HTTPS and restrict initial setup/administrator access to trusted users. Secure session cookies should be enabled behind HTTPS. This MVP has one administrator, optional TOTP and offline administrator recovery; MCP OAuth is optional and requires explicit enablement, an HTTPS public URL, and administrator source approval. A sampled RSS measurement on small documents is not a guarantee for large PDFs or concurrent workloads; test your own corpus under a real container limit. The source mount must be read-only to enforce isolation against filesystem races.
 
 ## License
 
@@ -200,3 +200,9 @@ java -jar app/build/libs/app-0.1.0.jar --recover-admin --data=/data
 콘솔에서 새 비밀번호(12자 이상, UTF-8 72바이트 이하)를 숨김 입력하고 한 번 더 확인 입력합니다(불일치 시 실패). 표준 입력 줄 끝의 CR(CRLF)은 제거합니다. 콘솔이 없는 환경에서는 보호된 표준 입력으로 한 줄을 전달할 수 있습니다. 비밀번호를 명령 인자·환경변수·셸 기록에 넣지 마세요. 기존 관리자 이름은 유지하고 비밀번호를 재설정하며 TOTP·복구 코드를 해제하고 `admin-recovery` 감사를 남긴 뒤 종료합니다. 기존 데이터 폴더/관리자가 없거나 DB가 잠겼으면 실패합니다. 정상 종료 후 앱을 다시 시작하고 로그인하여 TOTP를 새로 등록하세요. 세션은 메모리에 있으므로 재시작으로 기존 세션이 사라집니다. API 토큰은 유지되므로 침해가 의심되면 별도로 폐기하세요. 오프라인 복구는 초기화나 소스 원본 변경을 하지 않습니다.
 
 구현·검증 기록: [TOTP 검증](docs/verification/totp.md).
+
+### MCP OAuth
+
+기존 API 토큰과 함께 OAuth 인가 코드 + PKCE(S256)를 지원합니다. 기본 off이며 `nasquire.oauth.enabled=true`와 `nasquire.public-url=https://nasquire.example.com`을 설정하세요. HTTPS가 필수이며 루프백 HTTP만 개발용으로 허용합니다. Claude·ChatGPT 등의 원격 MCP 연결 URL에 `https://nasquire.example.com/mcp`를 입력한 뒤 관리자 로그인(TOTP 활성 시 추가 확인)과 소스별 승인을 진행합니다. OAuth 토큰은 읽기 전용 `/mcp` 전용이고 REST에는 기존 API 토큰이 필요합니다. 관리 화면 **API 토큰 → MCP OAuth**에서 승인·클라이언트를 철회할 수 있습니다.
+
+상세 설정·제한·연결 예는 [OAuth 설치 안내](docs/install/oauth.md), 검증 범위는 [OAuth 검증](docs/verification/oauth.md)을 참고하세요.

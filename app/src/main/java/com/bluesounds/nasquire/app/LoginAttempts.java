@@ -74,6 +74,18 @@ class LoginAttempts {
         if (state == null) return;
         if (state.inFlight == 0) states.remove(key); else { state.count = 0; state.retryAt = 0; }
     }
+    private record Window(long start, int count) { }
+    private final Map<String, Window> windows = new LinkedHashMap<>();
+    /** OAuth 공개 엔드포인트의 성공 요청도 포함하는 IP별 고정 창 제한. 활성 항목은 축출하지 않는다. */
+    synchronized boolean allowOAuth(String endpoint, String ip, long now) {
+        windows.entrySet().removeIf(e -> now - e.getValue().start >= 60000);
+        String key = endpoint + ":" + ip;
+        var window = windows.get(key);
+        int maximum = endpoint.equals("register") ? 10 : 60;
+        if (window == null && windows.size() >= 4096 || window != null && window.count >= maximum) return false;
+        windows.put(key, new Window(window == null ? now : window.start, window == null ? 1 : window.count + 1));
+        return true;
+    }
     /** 실패 기록을 지운다(테스트·운영 초기화). */
     synchronized void reset(String prefix, String ip, String account) {
         for (String key : keys(prefix, ip, account)) clear(key);

@@ -68,3 +68,7 @@
 - OCR 복사는 자식 실행과 같은 시간 상한을 쓰며 setsid 프로세스 그룹·자손 종료 확인 뒤 결과를 검사하고 슬롯을 반환한다(종료 확인 지연 시 회수자가 슬롯 유지). 부모도 PNG 쪽당 16 MiB·합계 256 MiB와 열린 fd 일반 파일을 재검사한다. ocr-worker 직접 실행은 실경로 `ocr-tmp/job-*`·현재 사용자 소유·0700 폴더만 허용한다. SearchIndex의 두 번째 종료 대기 뒤에도 활성 작업이 있으면 공급자·저장소 폐기는 마지막 exit()까지 미루며 실제 close는 공통 잠금 밖에서 한다.
 
 - 공유 전송은 열린 fd의 fstat dev/ino를 저장된 fileKey와 대조하고 그 fd만 사용한다. 폴더 공유는 확인한 루트 핸들을 유지하며 core SecureFiles의 openat·NOFOLLOW로 하위를 연다. OCR 회수의 `/proc` 열거·stat 읽기/파싱 실패는 종료 미확인으로 처리해 슬롯·작업 폴더를 보유한다. NAS/NFS 일반 파일 I/O 자체가 반환하지 않으면 복사·추출 시간 상한은 보장하지 못한다(일반 텍스트와 동일).
+
+- MCP OAuth: `nasquire.oauth.enabled` 기본 off, HTTPS 공개 origin 필요(루프백 HTTP 개발 예외). JDBC 내장 인가 서버·DCR 공개 클라이언트·S256 PKCE·resource/audience 고정, 외부 토큰 전달 금지.
+- OAuth 코드는 60초·1회용, 액세스는 1시간·MCP 전용, 리프레시는 회전·30일 상한·재사용 시 계열 철회. 원문 저장/로그 금지, 관리자 승인·관리 철회는 기존 세션(TOTP 포함)+CSRF.
+- OAuth 소스는 명시 승인 집합만 허용하며 빈 집합은 권한 없음이다. `oauth:` 식별자의 현재 권한 재검사를 다운로드에도 적용한다. 검증은 `VERIFY_PORT=8103 python3 scripts/verify-oauth.py`, 상세는 `docs/verification/oauth.md`.
