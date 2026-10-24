@@ -18,7 +18,9 @@ public final class EmbeddingSettings {
     private final Properties settings = new Properties();
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(EmbeddingSettings.class);
     /** AES-GCM AAD 용도. 같은 키로 만든 다른 용도의 암호문을 서로 바꿔 쓸 수 없다. */
-    static final String TOTP = "totp", EMBEDDING = "embedding";
+    static final String TOTP = "totp", EMBEDDING = "embedding", QDRANT = "qdrant";
+    /** embedding.properties에 함께 저장하는 비밀값. 저장 때 파일 전체를 다시 쓴다. */
+    private static final Set<String> SECRETS = Set.of("apiKey", "qdrantApiKey");
     /** 용도별 AAD를 적용한 형식. 접두어가 없는 기존 암호문은 AAD 없이 읽고 다음 저장 때 이 형식으로 바꾼다. */
     private static final String VERSION = "v2:";
     static final String RECOVERY_HINT = "embedding.key를 백업에서 복원하거나, 서버를 멈추고 --recover-admin --data=<데이터 폴더>로 TOTP를 해제한 뒤 임베딩 원격 키를 다시 저장하세요";
@@ -27,7 +29,8 @@ public final class EmbeddingSettings {
     private java.util.function.BooleanSupplier storedSecrets = () -> false;
     private boolean keyError;
     private static final Set<String> FIELDS = Set.of("provider", "baseUrl", "model", "apiKey", "dimensions", "batchSize", "timeoutSeconds",
-            "modelPath", "tokenizerPath", "download", "modelUrl", "tokenizerUrl", "modelSha256", "tokenizerSha256");
+            "modelPath", "tokenizerPath", "download", "modelUrl", "tokenizerUrl", "modelSha256", "tokenizerSha256",
+            "vectorStore", "qdrantUrl", "qdrantCollection", "qdrantApiKey", "qdrantTimeoutSeconds");
     public EmbeddingSettings(SearchIndex index, Path dataFolder, Environment environment) throws Exception {
         this.index = index; folder = dataFolder; file = folder.resolve("embedding.properties");
         settings.setProperty("provider", "off"); settings.setProperty("baseUrl", "https://api.example.com/v1");
@@ -40,20 +43,38 @@ public final class EmbeddingSettings {
         settings.setProperty("tokenizerUrl", "https://huggingface.co/Xenova/multilingual-e5-small/resolve/" + revision + "/tokenizer.json");
         settings.setProperty("modelSha256", "f80102d3f2a1229f387d3c81909990d8945513e347b0eab049f7de3c6f98c193");
         settings.setProperty("tokenizerSha256", "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39");
+        settings.setProperty("vectorStore", "lucene"); settings.setProperty("qdrantUrl", "http://127.0.0.1:6333");
+        settings.setProperty("qdrantCollection", "nasquire"); settings.setProperty("qdrantTimeoutSeconds", "10");
         for (String field : FIELDS) {
             String value = environment.getProperty("nasquire.embedding." + field);
             if (value != null) settings.setProperty(field, value);
         }
         if (Files.exists(file)) {
             var stored = new Properties(); try (var in = Files.newInputStream(file)) { stored.load(in); }
-            String encrypted = (String)stored.remove("encryptedKey");
+            String encrypted = (String)stored.remove("encryptedKey"), qdrant = (String)stored.remove("encryptedQdrantKey");
             settings.putAll(stored);
             if (encrypted != null) {
                 try { settings.setProperty("apiKey", decrypt(EMBEDDING, encrypted)); }
                 catch (KeyUnavailable e) { keyError = true; LOG.error("임베딩 원격 키를 복호화할 수 없습니다: {}", e.getMessage()); }
             }
+            if (qdrant != null) {
+                // 임베딩 키와 같이 오류를 표시하고 관리자가 키를 다시 저장하게 한다. 키 없는 요청은 Qdrant가 거부한다.
+                try { settings.setProperty("qdrantApiKey", decrypt(QDRANT, qdrant)); }
+                catch (KeyUnavailable e) { keyError = true; LOG.error("Qdrant 키를 복호화할 수 없습니다: {}", e.getMessage()); }
+            }
         }
-        index.configureEmbedding(create(settings));
+        var provider = create(settings);
+        index.configureVectors(provider, store(settings));
+    }
+    private static VectorStore store(Properties p) {
+        return switch (p.getProperty("vectorStore")) {
+            case "lucene" -> null;
+            case "qdrant" -> {
+                int timeout = Integer.parseInt(p.getProperty("qdrantTimeoutSeconds"));
+                yield new QdrantVectorStore(p.getProperty("qdrantUrl"), p.getProperty("qdrantCollection"), p.getProperty("qdrantApiKey", ""), timeout);
+            }
+            default -> throw new IllegalArgumentException("벡터 저장소 오류");
+        };
     }
     private Providers.EmbeddingProvider create(Properties p) {
         return switch (p.getProperty("provider")) {
@@ -67,9 +88,9 @@ public final class EmbeddingSettings {
     public Map<String, Object> view() {
         synchronized (index) {
             var result = new LinkedHashMap<String, Object>();
-            for (String field : settings.stringPropertyNames()) if (!field.equals("apiKey")) result.put(field, settings.getProperty(field));
+            for (String field : settings.stringPropertyNames()) if (!SECRETS.contains(field)) result.put(field, settings.getProperty(field));
             result.put("builtinAvailable", ServiceLoader.load(Providers.FullProvider.class).findFirst().isPresent());
-            result.put("hasKey", !settings.getProperty("apiKey", "").isEmpty()); result.put("keyError", keyError); result.put("status", index.embeddingStatus());
+            result.put("hasKey", !settings.getProperty("apiKey", "").isEmpty()); result.put("hasQdrantKey", !settings.getProperty("qdrantApiKey", "").isEmpty()); result.put("keyError", keyError); result.put("status", index.embeddingStatus());
             return result;
         }
     }
@@ -79,20 +100,23 @@ public final class EmbeddingSettings {
             for (var e : input.entrySet()) {
                 if (!FIELDS.contains(e.getKey()) || e.getValue() == null || e.getValue().length() > 4096) throw new IllegalArgumentException("설정 오류");
                 // 빈 키는 기존 키 유지. clearKey 대신 off로 공급자를 끄거나 새 키를 입력한다.
-                if (!e.getKey().equals("apiKey") || !e.getValue().isEmpty()) next.setProperty(e.getKey(), e.getValue());
+                if (!SECRETS.contains(e.getKey()) || !e.getValue().isEmpty()) next.setProperty(e.getKey(), e.getValue());
             }
             var provider = create(next);
+            VectorStore store = null;
             try {
-                var stored = new Properties(); stored.putAll(next); stored.remove("apiKey");
+                store = store(next);
+                var stored = new Properties(); stored.putAll(next); SECRETS.forEach(stored::remove);
                 if (!next.getProperty("apiKey", "").isEmpty()) stored.setProperty("encryptedKey", encrypt(EMBEDDING, next.getProperty("apiKey")));
+                if (!next.getProperty("qdrantApiKey", "").isEmpty()) stored.setProperty("encryptedQdrantKey", encrypt(QDRANT, next.getProperty("qdrantApiKey")));
                 Path temporary = Files.createTempFile(folder, "embedding-", ".properties");
                 try {
                     privateFile(temporary);
                     try (var out = Files.newOutputStream(temporary)) { stored.store(out, "Nasquire embedding settings"); }
                     Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
                 } finally { Files.deleteIfExists(temporary); }
-                index.configureEmbedding(provider); settings.clear(); settings.putAll(next); keyError = false;
-            } catch (Exception e) { if (provider != null) provider.close(); throw e; }
+                index.configureVectors(provider, store); settings.clear(); settings.putAll(next); keyError = false;
+            } catch (Exception e) { if (provider != null) provider.close(); if (store != null) store.close(); throw e; }
         }
     }
     public Map<String, Object> test() {
@@ -107,7 +131,7 @@ public final class EmbeddingSettings {
     private boolean embeddingCiphertext() throws Exception {
         if (!Files.exists(file)) return false;
         var stored = new Properties(); try (var in = Files.newInputStream(file)) { stored.load(in); }
-        return stored.containsKey("encryptedKey");
+        return stored.containsKey("encryptedKey") || stored.containsKey("encryptedQdrantKey");
     }
     private boolean fullCiphertext() throws Exception {
         Path full = folder.resolve("full.properties");
@@ -119,7 +143,7 @@ public final class EmbeddingSettings {
         Path path = folder.resolve("embedding.key");
         if (!Files.exists(path)) {
             // 임베딩 저장은 기존 임베딩 암호문을 통째로 바꾸므로 그 암호문만 있으면 새 키를 허용한다.
-            if (!create || storedSecrets.getAsBoolean() || fullCiphertext() || (!purpose.equals(EMBEDDING) && embeddingCiphertext()))
+            if (!create || storedSecrets.getAsBoolean() || fullCiphertext() || (!purpose.equals(EMBEDDING) && !purpose.equals(QDRANT) && embeddingCiphertext()))
                 throw new KeyUnavailable("암호화 키 파일(embedding.key)이 없지만 기존 암호문이 있습니다. " + RECOVERY_HINT);
             byte[] bytes = new byte[32]; new SecureRandom().nextBytes(bytes);
             try { Files.createFile(path, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------"))); }

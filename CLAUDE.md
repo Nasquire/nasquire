@@ -22,7 +22,7 @@
 ## 명령
 - 빌드·테스트(기본 lite): `./gradlew build -q` (`:app:verifyLiteClasspath`가 full/ONNX/DJL 유입 검사)
 - full 선택 빌드·실행: `./gradlew -Pfull build -q`, `./gradlew -Pfull :app:bootRun`; 공급자 테스트 `./gradlew :full:test -q`. 앱 JAR 경로는 같으므로 마지막 빌드 구성에 유의한다. 기존 Dockerfile은 lite다.
-- 코어/통합 테스트: `./gradlew :core:test :app:test -q`
+- 코어/통합 테스트: `./gradlew :core:test :app:test -q` (가짜 Qdrant는 core testFixtures `FakeQdrant`)
 - 실행: `./gradlew :app:bootRun` (포트 8080, 저장소 루트 `./data`)
 - 별도 설정: `./gradlew :app:bootRun --args='--server.port=8101 --nasquire.data=./data'`
 - 자체 작성 문서 48개 생성(PDF·Markdown 40개와 Office/HWP 8개): `./gradlew :core:generateSamples -q` (`build/samples`)
@@ -36,7 +36,7 @@
 - 계정·토큰 원문을 로그·DB에 남기지 않는다. 토큰은 읽기 전용, DB에는 SHA-256. 관리 작업은 관리자 세션 + CSRF가 필요하다.
 - MCP는 세션 쿠키만으로 접근할 수 없다. 매 요청 Bearer 필수, HTTP 요청에서 추출한 소스 범위를 SDK 실행 문맥으로 전달한다.
 - 일반 원본 폴더는 읽기 전용 마운트한다. 소스 밖 파일 링크·디렉터리 링크는 따라가지 않는다. 파일 이름 NFC, 크기/추출 문자 상한을 유지한다.
-- 추출 형식은 TextExtractor, 선택 AI 기능은 Providers 인터페이스로 확장한다. 임베딩은 원격/ONNX 구현을 제공한다. 리랭커·OCR 구현은 full 모듈에만 둔다. Qdrant·ML 전용 모드는 아직 미구현이다.
+- 추출 형식은 TextExtractor, 선택 AI 기능은 Providers 인터페이스로 확장한다. 임베딩은 원격/ONNX 구현을 제공한다. 리랭커·OCR·ML 전용 서버 구현은 full 모듈에만 둔다. Qdrant는 core `VectorStore`/`QdrantVectorStore`(REST, 추가 의존성 없음)이며 기본은 Lucene HNSW다.
 - 임베딩은 기본 off, 설정은 관리자 세션+CSRF, 키는 별도 로컬 키로 AES-GCM 암호화하고 API에서 비공개. 모델·차원이 바뀌면 전체 재색인 전 벡터 검색을 차단한다. 모델 파일은 이미지·저장소에 넣지 않는다. 자동 다운로드는 데이터 폴더 안에서만 허용한다. 내장 모델은 현재 512 MiB 목표를 초과하며 실측 제한을 반드시 명시한다.
 - 메모리: 단일 색인 작업자, Lucene RAM 8 MiB, PDF 쪽 단위·디스크 scratch, 추출 상한, H2 연결 2개, Tomcat 스레드 16개.
 - 긴 작업은 ROADMAP 체크리스트로 남기고 끝나기 전 빌드·테스트를 수행한다.
@@ -60,4 +60,6 @@
 - full 설정은 `/api/full` GET/PUT(관리자 세션+헤더 CSRF). 기본 off, 리랭커 키는 기존 embedding.key를 공유하고 AES-GCM v2 + AAD `reranker`, full.properties 0600. full 암호문이 남으면 공유 키 재생성 금지. 키 복호화 실패·full 미포함 상태의 활성 설정은 시작 거부하며 키 백업 복원/기능 off 뒤 구성 전환이 필요하다.
 - 리랭커는 일반 `/rerank` API만 구현, REST `rerank=true`·MCP `rerank: true` 선택. 소스 권한 적용 후 최대 topN만 전송하고 외부 순위만 수용하며 근거·원래 score 유지. 전체 시간/64 KiB/동시 외부 호출 1개 상한, 실패·혼잡 시 원래 순서.
 - OCR은 full 전용 Tesseract CLI(`/usr/bin/prlimit`, `/usr/bin/tesseract`, kor+eng 데이터 사전 준비). 이미지 프레임/텍스트 없는 PDF 쪽만 처리, `location.type=ocr`·쪽 보존. 임시 파일은 데이터 폴더 ocr-tmp, 소스 쓰기 금지. 쪽당 시간/주소 공간/출력·파일당 쪽·픽셀/문자 제한. 실제 OCR 비교·full 메모리 보장은 미완료, `docs/verification/full.md` 참조.
-- `nasquire.mode`는 현재 `search`만 지원. 미구현 `ml`을 주면 시작 거부한다. 일반 검색 서버를 ML 전용 서버로 안내하지 않는다.
+- Qdrant: 설정은 `/api/embeddings`(`vectorStore`, `qdrantUrl`, `qdrantCollection`, `qdrantApiKey`, `qdrantTimeoutSeconds`), 키는 AAD `qdrant`로 `encryptedQdrantKey`에 저장·비공개. 검색은 소스 범위를 payload 필터로 보내고 응답을 앱에서 재검사한 뒤 Lucene `chunk` ID(범위 필터 포함)로만 본문을 얻는다. Qdrant에 본문을 보내지 않는다. 저장소 식별자 `vector.store`가 바뀌면 재색인 전 벡터 검색 차단.
+- ML 전용 모드: `--nasquire.mode=ml`/`NASQUIRE_MODE=ml`이면 main에서 Spring 없이 full의 `MlServer`(JDK HTTP)를 띄운다. `/v1/embeddings`·`/v1/rerank`·`/v1/ocr`·`/v1/models`만, 모든 요청 Bearer(SHA-256 상수 시간 비교). 토큰은 `nasquire.ml.token`(설정 파일·환경변수)·`nasquire.ml.token-file`만, 명령행 토큰 거부. Spring 컨텍스트의 `nasquire.mode`는 `search`만 허용한다. 실측: `VERIFY_PORT=8102 python3 scripts/verify-ml.py`(full bootJar를 다시 만든다).
+- 로컬 리랭커: cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 고정 커밋 qint8·SHA-256, 데이터 폴더 안 다운로드만. 512 MiB 목표 초과(실측은 `docs/verification/full.md`).

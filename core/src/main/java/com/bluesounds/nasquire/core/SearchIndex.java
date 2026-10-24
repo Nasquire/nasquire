@@ -26,25 +26,36 @@ public final class SearchIndex implements AutoCloseable {
     private final IndexWriter writer;
     private final SearcherManager searchers;
     private Providers.EmbeddingProvider embedding;
-    private String indexedModel = "off";
+    private VectorStore store;
+    private String indexedModel = "off", indexedStore = "lucene";
     private int indexedDimensions;
     private boolean reindexRequired, rebuilding, rebuildRequested;
     public record EmbeddingStatus(String modelId, int dimensions, String indexedModelId, int indexedDimensions,
-            boolean reindexRequired, boolean rebuilding) { }
+            boolean reindexRequired, boolean rebuilding, String vectorStore, String indexedVectorStore) { }
     private String model() { return embedding == null ? "off" : embedding.modelId(); }
     private int dimensions() { return embedding == null ? 0 : embedding.dimensions(); }
-    public synchronized void configureEmbedding(Providers.EmbeddingProvider provider) {
-        var old = embedding; embedding = provider;
+    /** 저장소 식별자. 외부 저장소는 임베딩이 켜져 있을 때만 사용한다. */
+    private String storeId() { return store == null ? "lucene" : store.id(); }
+    private boolean external() { return store != null && embedding != null; }
+    public synchronized void configureEmbedding(Providers.EmbeddingProvider provider) { configureVectors(provider, store); }
+    /** 모델·차원·벡터 저장소 중 하나라도 색인 당시와 다르면 재색인 전까지 벡터 검색을 막는다. */
+    public synchronized void configureVectors(Providers.EmbeddingProvider provider, VectorStore vectorStore) {
+        var old = embedding; var oldStore = store; embedding = provider; store = vectorStore;
         if (rebuilding) { rebuilding = false; reindexRequired = true; }
-        reindexRequired = reindexRequired || rebuilding || !model().equals(indexedModel) || dimensions() != indexedDimensions;
+        reindexRequired = reindexRequired || rebuilding || !model().equals(indexedModel) || dimensions() != indexedDimensions
+                || embedding != null && !storeId().equals(indexedStore);
         if (old != null && old != provider) old.close();
+        if (oldStore != null && oldStore != vectorStore) oldStore.close();
     }
     public synchronized EmbeddingStatus embeddingStatus() {
-        return new EmbeddingStatus(model(), dimensions(), indexedModel, indexedDimensions, reindexRequired, rebuilding);
+        return new EmbeddingStatus(model(), dimensions(), indexedModel, indexedDimensions, reindexRequired, rebuilding,
+                store == null ? "lucene" : "qdrant", indexedStore.startsWith("qdrant:") ? "qdrant" : indexedStore);
     }
     public synchronized void requestRebuild() { rebuildRequested = true; }
     public synchronized boolean beginRebuild() throws IOException {
         if (!rebuildRequested) return false;
+        // 외부 저장소를 먼저 비운다. 실패하면 요청을 유지하고 다음 검사에서 다시 시도한다.
+        if (external()) store.reset(dimensions());
         writer.deleteAll();
         rebuildRequested = false; rebuilding = true; reindexRequired = true;
         refresh();
@@ -52,7 +63,7 @@ public final class SearchIndex implements AutoCloseable {
     }
     public synchronized boolean indexingAllowed() { return embedding == null || !reindexRequired || rebuilding; }
     public synchronized void finishRebuild(boolean complete) {
-        if (complete && rebuilding) { indexedModel = model(); indexedDimensions = dimensions(); reindexRequired = false; rebuilding = false; }
+        if (complete && rebuilding) { indexedModel = model(); indexedDimensions = dimensions(); indexedStore = embedding == null ? "lucene" : storeId(); reindexRequired = false; rebuilding = false; }
     }
     public synchronized float[] testEmbedding() {
         if (embedding == null) throw new IllegalStateException("공급자 없음");
@@ -71,6 +82,7 @@ public final class SearchIndex implements AutoCloseable {
                 indexedModel = meta.getOrDefault("embedding.model", "off");
                 indexedDimensions = Integer.parseInt(meta.getOrDefault("embedding.dimensions", "0"));
                 reindexRequired = Boolean.parseBoolean(meta.getOrDefault("embedding.incomplete", "false"));
+                indexedStore = meta.getOrDefault("vector.store", "lucene");
             }
         }
         writer = new IndexWriter(directory, config);
@@ -87,6 +99,12 @@ public final class SearchIndex implements AutoCloseable {
             for (int i = 0; i < chunks.size(); i += batch)
                 vectors.addAll(embedding.embedBatch(chunks.subList(i, Math.min(i + batch, chunks.size())).stream().map(Chunk::text).toList()));
         }
+        if (external()) {
+            var points = new ArrayList<VectorStore.Point>();
+            for (int i = 0; i < chunks.size(); i++) points.add(new VectorStore.Point(source.id(), key, chunks.get(i).offset(), vectors.get(i)));
+            // 외부 점을 먼저 바꾼다. 실패하면 Lucene 문서를 게시하지 않아 파일 오류로 남는다.
+            store.replace(key, points, dimensions());
+        }
         int position = 0;
         for (Chunk c : chunks) {
             var doc = new Document();
@@ -99,17 +117,24 @@ public final class SearchIndex implements AutoCloseable {
             doc.add(new StoredField("offset", c.offset()));
             doc.add(new StoredField("mtime", mtime));
             doc.add(new TextField("text", c.text(), Field.Store.YES));
-            if (embedding != null) doc.add(new KnnFloatVectorField("embedding", vectors.get(position++), VectorSimilarityFunction.COSINE));
+            if (external()) doc.add(new StringField("chunk", key + "\0" + c.offset(), Field.Store.NO));
+            else if (embedding != null) doc.add(new KnnFloatVectorField("embedding", vectors.get(position++), VectorSimilarityFunction.COSINE));
             documents.add(doc);
         }
         writer.updateDocuments(new Term("key", key), documents);
     }
 
-    public synchronized void delete(String path) throws IOException { writer.deleteDocuments(new Term("key", path)); }
-    public synchronized void deleteSource(String source) throws IOException { writer.deleteDocuments(new Term("source", source)); }
+    public synchronized void delete(String path) throws IOException {
+        writer.deleteDocuments(new Term("key", path));
+        if (external()) store.deleteKey(path);
+    }
+    public synchronized void deleteSource(String source) throws IOException {
+        writer.deleteDocuments(new Term("source", source));
+        if (external()) store.deleteSource(source);
+    }
     public synchronized void refresh() throws IOException {
         writer.setLiveCommitData(Map.of("embedding.model", indexedModel, "embedding.dimensions", String.valueOf(indexedDimensions),
-                "embedding.incomplete", String.valueOf(reindexRequired || rebuilding)).entrySet());
+                "embedding.incomplete", String.valueOf(reindexRequired || rebuilding), "vector.store", indexedStore).entrySet());
         writer.commit(); searchers.maybeRefreshBlocking();
     }
 
@@ -128,7 +153,8 @@ public final class SearchIndex implements AutoCloseable {
         if (embedding == null || reindexRequired || rebuilding) throw new IllegalStateException("공급자 또는 재색인 필요");
         if (sources.isEmpty()) return List.of();
         int candidates = Math.max(100, limit);
-        var vector = find(new KnnFloatVectorQuery("embedding", embedding.embedQuery(query), candidates, scope(sources)), candidates);
+        var vector = external() ? external(embedding.embedQuery(query), sources, candidates)
+                : find(new KnnFloatVectorQuery("embedding", embedding.embedQuery(query), candidates, scope(sources)), candidates);
         return mode.equals("vector") ? vector.stream().limit(limit).toList() : rrf(find(keyword, candidates), vector, limit);
     }
 
@@ -143,6 +169,25 @@ public final class SearchIndex implements AutoCloseable {
                 .thenComparing(Map.Entry::getKey)).limit(limit).map(e -> {
                     var h = e.getValue(); return new Hit(h.source(), h.sourceName(), h.path(), h.page(), h.offset(), h.text(), h.mtime(), scores.get(e.getKey()).floatValue(), h.location());
                 }).toList();
+    }
+
+    /** 외부 저장소의 조각 식별자를 소스 범위 필터를 건 Lucene 조회로 바꾼다. 범위 밖·삭제된 조각은 버린다. */
+    private List<Hit> external(float[] vector, Set<String> sources, int candidates) throws IOException {
+        var matches = store.search(vector, sources, candidates);
+        if (matches.isEmpty()) return List.of();
+        var ids = new ArrayList<org.apache.lucene.util.BytesRef>();
+        for (var m : matches) if (sources.contains(m.source())) ids.add(new org.apache.lucene.util.BytesRef(m.key() + "\0" + m.offset()));
+        if (ids.isEmpty()) return List.of();
+        var found = new HashMap<String, Hit>();
+        for (var h : find(new BooleanQuery.Builder().add(new TermInSetQuery("chunk", ids), BooleanClause.Occur.MUST)
+                .add(scope(sources), BooleanClause.Occur.FILTER).build(), ids.size())) found.put(h.path() + "\0" + h.offset(), h);
+        var hits = new ArrayList<Hit>();
+        for (var m : matches) {
+            var h = found.remove(m.key() + "\0" + m.offset());
+            if (h == null || !sources.contains(h.source()) || !h.source().equals(m.source())) continue;
+            hits.add(new Hit(h.source(), h.sourceName(), h.path(), h.page(), h.offset(), h.text(), h.mtime(), m.score(), h.location()));
+        }
+        return hits;
     }
 
     public List<Hit> document(String path, Set<String> sources) throws IOException {
@@ -171,5 +216,5 @@ public final class SearchIndex implements AutoCloseable {
         } finally { searchers.release(searcher); }
     }
 
-    public void close() throws IOException { if (embedding != null) embedding.close(); searchers.close(); writer.close(); analyzer.close(); directory.close(); }
+    public void close() throws IOException { if (embedding != null) embedding.close(); if (store != null) store.close(); searchers.close(); writer.close(); analyzer.close(); directory.close(); }
 }

@@ -15,7 +15,8 @@ public final class FullSettings implements AutoCloseable {
     private Properties settings = defaults();
     private Providers.RerankerProvider reranker;
     private TextExtractor ocr;
-    private static final Set<String> FIELDS = Set.of("reranker", "baseUrl", "model", "apiKey", "topN", "timeoutSeconds", "ocr", "ocrTimeoutSeconds", "ocrMemoryMiB", "ocrMaxPages");
+    private static final Set<String> FIELDS = Set.of("reranker", "baseUrl", "model", "apiKey", "topN", "timeoutSeconds", "ocr", "ocrTimeoutSeconds", "ocrMemoryMiB", "ocrMaxPages",
+            "localModelPath", "localTokenizerPath", "localDownload");
     public FullSettings(Path dataFolder, EmbeddingSettings secrets) throws Exception {
         folder = dataFolder; file = folder.resolve("full.properties"); this.secrets = secrets;
         if (Files.exists(file)) {
@@ -29,6 +30,8 @@ public final class FullSettings implements AutoCloseable {
         var p = new Properties(); p.setProperty("reranker", "off"); p.setProperty("baseUrl", "https://api.example.com/v1");
         p.setProperty("model", "reranker"); p.setProperty("topN", "20"); p.setProperty("timeoutSeconds", "5");
         p.setProperty("ocr", "off"); p.setProperty("ocrTimeoutSeconds", "15"); p.setProperty("ocrMemoryMiB", "512"); p.setProperty("ocrMaxPages", "20");
+        // 빈 경로는 데이터 폴더의 models/<모델 이름>/ 기본 위치를 뜻한다.
+        p.setProperty("localModelPath", ""); p.setProperty("localTokenizerPath", ""); p.setProperty("localDownload", "false");
         return p;
     }
     public synchronized Map<String, Object> view() {
@@ -70,6 +73,13 @@ public final class FullSettings implements AutoCloseable {
         return switch (p.getProperty("reranker")) {
             case "off" -> null;
             case "remote" -> Providers.full().reranker(p.getProperty("baseUrl"), p.getProperty("model"), p.getProperty("apiKey", ""), top, timeout);
+            case "builtin" -> {
+                String name = "mmarco-mMiniLMv2-L12-H384-v1";
+                Path model = p.getProperty("localModelPath", "").isBlank() ? folder.resolve("models").resolve(name).resolve("model-qint8.onnx") : Path.of(p.getProperty("localModelPath"));
+                Path tokenizer = p.getProperty("localTokenizerPath", "").isBlank() ? folder.resolve("models").resolve(name).resolve("tokenizer.json") : Path.of(p.getProperty("localTokenizerPath"));
+                if (!Set.of("true", "false").contains(p.getProperty("localDownload"))) throw new IllegalArgumentException("다운로드 설정 오류");
+                yield Providers.full().localReranker(model, tokenizer, Boolean.parseBoolean(p.getProperty("localDownload")), folder, top, timeout);
+            }
             default -> throw new IllegalArgumentException("리랭커 공급자 오류");
         };
     }

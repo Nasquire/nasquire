@@ -94,6 +94,7 @@ class ApplicationIntegrationTest {
         verifySecurityReview(token, id, source);
         verifyUploadsShares(token, id, source, other);
         verifyRemoteEmbedding(token, id);
+        verifyQdrant(token, id, otherId);
         storage.addToken("expired", "expired", SecurityConfiguration.hash("expired-test-value"), System.currentTimeMillis() - 1, List.of(id));
         assertEquals(401, call("/api/search?query=ocean", "GET", null, "expired-test-value", false).statusCode());
         assertEquals(200, call("/api/tokens/" + tokenId, "DELETE", null, null, true).statusCode());
@@ -114,6 +115,7 @@ class ApplicationIntegrationTest {
         if (!defaults.get("available").asBoolean()) {
             assertEquals(409, call("/api/full", "PUT", Map.of("reranker", "remote"), null, true).statusCode());
             assertEquals(409, call("/api/full", "PUT", Map.of("ocr", "tesseract"), null, true).statusCode());
+            assertEquals(409, call("/api/full", "PUT", Map.of("reranker", "builtin"), null, true).statusCode());
             return;
         }
         var server = com.sun.net.httpserver.HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -142,6 +144,17 @@ class ApplicationIntegrationTest {
             assertFalse(result.at("/result/isError").asBoolean());
             assertEquals(reranked, mapper.readTree(result.at("/result/content/0/text").asText()));
             assertEquals(2, calls.get());
+            // 로컬 리랭커: 모델이 없으면 네트워크 다운로드 없이 원래 순서를 유지한다.
+            assertEquals(400, call("/api/full", "PUT", Map.of("reranker", "builtin", "localDownload", "maybe"), null, true).statusCode());
+            assertEquals(200, call("/api/full", "PUT", Map.of("reranker", "builtin"), null, true).statusCode());
+            JsonNode local = null;
+            for (int i = 0; i < 100; i++) {
+                local = json(call("/api/search?query=ocean&rerank=true", "GET", null, token, false), 200);
+                if (local.size() == 2) break; Thread.sleep(100);
+            }
+            assertEquals(new HashSet<>(original.findValuesAsString("path")), new HashSet<>(local.findValuesAsString("path")));
+            assertFalse(Files.exists(TEMP.resolve("data/models/mmarco-mMiniLMv2-L12-H384-v1/model-qint8.onnx")));
+            assertEquals(200, call("/api/full", "PUT", Map.of("reranker", "remote"), null, true).statusCode());
             assertFalse(call("/api/full", "GET", null, null, true).body().contains("full-test-secret"));
             String stored = Files.readString(TEMP.resolve("data/full.properties"));
             assertFalse(stored.contains("full-test-secret")); assertTrue(stored.contains("v2"));
@@ -524,6 +537,73 @@ class ApplicationIntegrationTest {
             assertEquals(200, call("/api/embeddings", "PUT", Map.of("model", "fake-v2"), null, true).statusCode());
             assertTrue(json(call("/api/embeddings", "GET", null, null, true), 200).at("/status/reindexRequired").asBoolean());
             assertEquals(200, call("/api/embeddings", "PUT", Map.of("provider", "off"), null, true).statusCode());
+            assertEquals(1, json(call("/api/search?query=ocean", "GET", null, token, false), 200).size());
+        } finally { fake.stop(0); }
+    }
+    /** 가짜 Qdrant가 서버 필터를 무시해도 토큰 범위 밖 조각이 REST/MCP로 나가지 않아야 한다. */
+    void verifyQdrant(String token, String source, String otherSource) throws Exception {
+        var fake = com.sun.net.httpserver.HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        fake.createContext("/v1/embeddings", exchange -> {
+            var input = mapper.readTree(exchange.getRequestBody().readAllBytes()).get("input");
+            var data = new ArrayList<Map<String, Object>>();
+            for (int i = 0; i < input.size(); i++) data.add(Map.of("index", i, "embedding", input.get(i).asText().contains("ocean") ? List.of(1, 0.1) : List.of(0.1, 1)));
+            byte[] response = mapper.writeValueAsBytes(Map.of("data", data));
+            exchange.sendResponseHeaders(200, response.length); exchange.getResponseBody().write(response); exchange.close();
+        }); fake.start();
+        try (var qdrant = new com.bluesounds.nasquire.core.FakeQdrant("qdrant-test-value")) {
+            var settings = new HashMap<String, String>(Map.of("provider", "remote", "baseUrl", "http://127.0.0.1:" + fake.getAddress().getPort() + "/v1",
+                    "model", "fake-q", "dimensions", "2", "batchSize", "2", "timeoutSeconds", "5", "vectorStore", "qdrant",
+                    "qdrantUrl", qdrant.url(), "qdrantCollection", "nasquire_test", "qdrantApiKey", "qdrant-test-value"));
+            settings.put("qdrantTimeoutSeconds", "5");
+            assertEquals(403, call("/api/embeddings", "PUT", settings, null, false).statusCode());
+            assertEquals(403, call("/api/embeddings", "PUT", settings, token, false).statusCode());
+            assertEquals(200, call("/api/embeddings", "PUT", settings, null, true).statusCode());
+            var view = json(call("/api/embeddings", "GET", null, null, true), 200);
+            assertFalse(view.toString().contains("qdrant-test-value")); assertFalse(view.has("qdrantApiKey"));
+            assertTrue(view.get("hasQdrantKey").asBoolean()); assertEquals("qdrant", view.at("/status/vectorStore").asText());
+            String stored = Files.readString(TEMP.resolve("data/embedding.properties"));
+            assertFalse(stored.contains("qdrant-test-value")); assertTrue(stored.contains("encryptedQdrantKey=v2\\:"), stored);
+            assertTrue(view.at("/status/reindexRequired").asBoolean());
+            assertEquals(409, call("/api/search?query=ocean&mode=vector", "GET", null, token, false).statusCode());
+            call("/api/embeddings/reindex", "POST", null, null, true);
+            for (int i = 0; i < 100; i++) {
+                view = json(call("/api/embeddings", "GET", null, null, true), 200);
+                if (!view.at("/status/reindexRequired").asBoolean()) break;
+                Thread.sleep(100);
+            }
+            assertFalse(view.at("/status/reindexRequired").asBoolean());
+            assertEquals(Set.of(source, otherSource), qdrant.payloadValues("nasquire_test", "source"));
+            assertTrue(qdrant.requests.stream().allMatch(r -> "qdrant-test-value".equals(r.apiKey())));
+            assertTrue(qdrant.requests.stream().noneMatch(r -> r.body().contains("confidential")), "본문은 Qdrant로 보내지 않음");
+            var hits = json(call("/api/search?query=ocean&mode=vector", "GET", null, token, false), 200);
+            assertEquals(1, hits.size()); assertEquals(source, hits.get(0).get("source").asText());
+            String query = qdrant.requests("/points/query").getLast().body();
+            assertTrue(query.contains("\"any\":[\"" + source + "\"]"), query); assertFalse(query.contains(otherSource));
+            // 손상/악의적 서버가 필터를 무시해도 범위 밖 결과는 나오지 않는다.
+            qdrant.ignoreFilter = true;
+            for (String mode : List.of("vector", "hybrid")) {
+                var scoped = call("/api/search?query=ocean&mode=" + mode, "GET", null, token, false);
+                assertEquals(200, scoped.statusCode()); assertFalse(scoped.body().contains("confidential")); assertFalse(scoped.body().contains(otherSource));
+                var tool = mcp(token, "search_documents", Map.of("query", "ocean", "mode", mode));
+                assertFalse(tool.at("/result/isError").asBoolean(), tool.toString());
+                assertFalse(tool.toString().contains("confidential")); assertFalse(tool.toString().contains(otherSource));
+            }
+            assertEquals(403, call("/api/search?query=ocean&mode=vector&source=" + otherSource, "GET", null, token, false).statusCode());
+            assertEquals(2, json(call("/api/search?query=ocean&mode=vector", "GET", null, null, true), 200).size());
+            qdrant.ignoreFilter = false;
+            try (var reopened = new com.bluesounds.nasquire.core.SearchIndex(TEMP.resolve("reopened-qdrant-index"))) {
+                var restored = new EmbeddingSettings(reopened, TEMP.resolve("data"), new org.springframework.mock.env.MockEnvironment());
+                assertTrue((Boolean)restored.view().get("hasQdrantKey")); assertFalse((Boolean)restored.view().get("keyError"));
+            }
+            // 소스 삭제 시 Qdrant 점도 지운다.
+            assertEquals(200, call("/api/sources/" + otherSource, "DELETE", null, null, true).statusCode());
+            for (int i = 0; i < 100 && qdrant.payloadValues("nasquire_test", "source").contains(otherSource); i++) Thread.sleep(100);
+            assertEquals(Set.of(source), qdrant.payloadValues("nasquire_test", "source"));
+            qdrant.fail = true;
+            var failed = call("/api/search?query=ocean&mode=vector", "GET", null, token, false);
+            assertNotEquals(200, failed.statusCode()); assertFalse(failed.body().contains("secret-qdrant-body"));
+            qdrant.fail = false;
+            assertEquals(200, call("/api/embeddings", "PUT", Map.of("provider", "off", "vectorStore", "lucene"), null, true).statusCode());
             assertEquals(1, json(call("/api/search?query=ocean", "GET", null, token, false), 200).size());
         } finally { fake.stop(0); }
     }

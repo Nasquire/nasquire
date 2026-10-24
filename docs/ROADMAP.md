@@ -13,7 +13,7 @@
 - [x] 3단계: 형식 확장 — Word·PPT·Excel(POI, 스트리밍), HWP·HWPX, download_file 짧은 주소.
 - [x] 3.5단계: 업로드·공유 — 선택 기능 "업로드 소스"(기본 끔, 별도 쓰기 가능 폴더만 쓰고 일반 소스는 계속 읽기 전용, 웹 업로드·폴더·휴지통), 외부 공유 링크(파일 또는 폴더 하나, 무작위 토큰 `/s/{token}`, 만료·비밀번호·다운로드 횟수 제한·철회·감사 로그, 실경로 범위 검사·심볼릭 링크 탈출 차단·속도 제한, 범위 밖 목록·검색·MCP 노출 없음).
 - [ ] 3.6단계: 임베드용 core 라이브러리 — 앱 의존 없는 공개 API 정리, Maven 패키지 배포(`nasquire-core`), 버전 정책(SemVer), 사용 예제. 확장 지점(인증·저장 위치·원본 열기 주소)을 설정·인터페이스로.
-- [ ] 4단계: full 모듈 — OCR(PaddleOCR ONNX vs Tesseract 실측), 리랭커, Qdrant, ML 전용 모드.
+- [ ] 4단계: full 모듈 — OCR(PaddleOCR ONNX vs Tesseract 실측), 리랭커, Qdrant, ML 전용 모드. (구현 완료: 원격/로컬 리랭커·Tesseract 경로·Qdrant·ML 전용 모드. 미완료: 실제 OCR 실측·PaddleOCR·실제 Qdrant 서버 검증)
 - [ ] 5단계: 배포 — amd64·arm64 이미지 `:lite`·`:full`, CI, NAS 설치 안내(Synology·Unraid·TrueNAS), MCP OAuth.
 
 ## 결정
@@ -187,10 +187,25 @@
 - [x] 원격 일반 rerank HTTP API, 검색 결과 상위 N만 재정렬·근거 보존·전체 시간/응답 상한·오류/혼잡 시 원래 순서, REST/MCP 요청별 opt-in과 범위 밖 내용 미전송 통합 테스트.
 - [x] Tesseract CLI 공급자와 이미지/텍스트 없는 PDF 쪽 추출 경로, kor+eng·시간/주소 공간/출력/쪽/픽셀/문자 상한, `location.type=ocr`와 원래 쪽 번호. 가짜 프로세스·생성 이미지/스캔 PDF·Lucene 근거 보존 테스트.
 - [ ] **실제 OCR 실행·정확도/속도/RSS 비교는 미완료.** Tesseract 실행 파일이 없어 종료 127, 두 언어 데이터 미준비. PaddleOCR ONNX는 공급자 계약만 유지하고 구현·고정 모델·전후처리 없음. Tesseract의 격리 용이성을 근거로 잠정 구현 선택했으며 인식 성능 우위를 입증하지 않았다.
-- [ ] 로컬 ONNX 다국어 cross-encoder·AGPL 호환 모델 선정/고정 리비전/SHA-256·데이터 폴더 다운로드·실측. 이번에는 원격 리랭커만 구현.
-- [ ] Qdrant 저장소와 REST 클라이언트, 암호화 키·컬렉션 모델/차원 메타·불일치 검색 차단/재색인·소스 범위 필터·가짜 HTTP 통합 테스트. 전부 미구현, 기본 Lucene HNSW 유지.
-- [ ] ML 전용 HTTP 서버·Bearer 필수·소스/관리 화면 차단·기존 원격 프로토콜 호환·요청 크기/동시성 상한. 전부 미구현, `nasquire.mode=ml`은 시작 거부.
+- [x] 로컬 ONNX 다국어 cross-encoder·AGPL 호환 모델 선정/고정 리비전/SHA-256·데이터 폴더 다운로드·실측. 아래 나머지 구현 절 참고.
+- [x] Qdrant 저장소와 REST 클라이언트, 암호화 키·컬렉션 모델/차원 메타·불일치 검색 차단/재색인·소스 범위 필터·가짜 HTTP 통합 테스트. 아래 나머지 구현 절 참고.
+- [x] ML 전용 HTTP 서버·Bearer 필수·소스/관리 화면 차단·기존 원격 프로토콜 호환·요청 크기/동시성 상한. 아래 나머지 구현 절 참고.
 - [ ] full 설정 UI, full OCR 실행 파일/언어 데이터 배포, 별도 lite/full 이미지·산출물 명명(5단계), arm64·Docker/cgroup·외부 실제 서비스/대규모 부하 검증.
 
 - [x] 최종 `./gradlew build -q`·`./gradlew -Pfull build -q` 종료 0, core 11개·app 15개·full 4개 테스트 통과. lite 실제 실행 검증 2회·기준 비교 1회 종료 0, 각 서버 종료/포트 정리. 기본 JAR에서 full/ONNX/DJL 제외 확인.
-- [ ] **lite RSS 기존 수준 동등성은 미완료.** 기준 커밋 재측정 282.8 MiB, 현재 309.9/309.8 MiB(약 +27 MiB, +9.6%). 증가 원인 미확정. JVM RSS는 512 MiB 아래지만 full 미포함만으로 메모리 무영향을 주장하지 않는다. 회귀 분석·실제 cgroup 검증 필요.
+- [x] lite RSS 원인 분석(0d2ff95 당시 미확정 → 나머지 구현 절에서 분석): 기준 282.8 MiB, 당시 309.9/309.8 MiB. 원인은 의존성이 아닌 Serial GC 구세대 점유 시점 차이로 확인. 실제 cgroup 검증은 미완료.
+
+## 4단계 나머지 구현 (2026-10-24, 기준 0d2ff95)
+
+상세 근거·숫자는 [full 검증](verification/full.md)의 "나머지 구현" 절을 따른다.
+
+- [x] Qdrant 선택 벡터 저장소(core `VectorStore`/`QdrantVectorStore`, 의존성 추가 없음). 기본은 Lucene HNSW. 설정은 기존 `/api/embeddings`(관리자 세션+CSRF), API 키는 `embedding.key` AES-GCM v2 + AAD `qdrant`로 `encryptedQdrantKey`에 저장·응답 비공개(`hasQdrantKey`만).
+- [x] 검색 시 소스 범위를 Qdrant payload `match.any` 필터로 전송하고, 응답은 앱에서 소스 재검사 후 Lucene `chunk` ID 조회(같은 범위 필터)로만 본문을 얻는다. Qdrant에는 본문을 보내지 않는다(벡터·소스 ID·key·offset만).
+- [x] 저장소 식별자(`vector.store`)를 색인 메타에 기록하여 모델·차원·저장소·컬렉션 변경 시 재색인 전 벡터 검색 차단. 재색인 시작 시 컬렉션 재생성, 파일 교체·삭제·소스 삭제 시 점 동기화, 외부 저장 실패 시 Lucene 미게시.
+- [x] ML 전용 모드(`--nasquire.mode=ml` 또는 `NASQUIRE_MODE=ml`, full 필요). Spring 컨텍스트 없이 JDK HTTP 서버로 `/v1/embeddings`(OpenAI 호환)·`/v1/rerank`·`/v1/ocr`·`/v1/models`만 제공. 모든 경로 Bearer 필수(SHA-256 상수 시간 비교), 토큰은 설정 파일·환경변수·토큰 파일에서만(명령행 거부), 미설정·32자 미만·기능 전부 off면 시작 거부. 관리 화면·소스·검색·MCP·DB 없음.
+- [x] 로컬 ONNX 리랭커 `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`(Apache-2.0) 고정 커밋·qint8·SHA-256, 데이터 폴더 안 다운로드만(기본 off). `/api/full`의 `reranker=builtin`, ML 서버 `nasquire.ml.reranker=builtin`. RSS 실측 기록.
+- [x] lite RSS 증가 원인 조사: 의존성 유입 없음, NMT 커밋 합계 동일, 차이는 RssAnon의 Serial GC 구세대 점유(조기 승격) 시점 차이. 코드 변경으로 되돌리지 않음(근거 숫자는 full 검증 문서).
+- [x] 가짜 HTTP Qdrant(필터 무시 모드 포함)·가짜 공급자 ML 서버로 단위/통합 테스트, 실제 모델 ML 서버 실측 스크립트 `scripts/verify-ml.py`.
+- [ ] PaddleOCR ONNX 구현·실제 OCR 정확도/속도/RSS 비교: 미완료(Tesseract 유지 근거는 full 검증 문서).
+- [ ] 실제 Qdrant 서버·인증/TLS·대규모 컬렉션 검증, 원격 OCR 클라이언트(검색 서버→ML 서버 OCR), full 설정 UI, ML 서버 컨테이너 이미지·arm64·cgroup 검증: 미완료.
+- [ ] 로컬 리랭커·내장 임베딩·ML 서버는 512 MiB 목표를 초과한다(리랭커 단독 약 615~632 MiB). 메모리 축소 미완료.

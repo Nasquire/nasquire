@@ -107,7 +107,7 @@ export default function App() {
     {page === 'embeddings' && embedding && <><h1>{t('Embedding provider', '임베딩 공급자')}</h1>
       <p>{t('Off uses keyword search. Save settings, test the connection, then rebuild all sources after changing the model or dimensions.', '없음은 키워드 검색을 사용합니다. 설정 저장·연결 시험 후 모델이나 차원을 바꾸면 전체 재색인하세요.')}</p>
       <form id="embedding-form" className="card" key={String(embedding.provider)} onSubmit={e => submit(e, async data => {
-        const form = globalThis.document.getElementById('embedding-form') as HTMLFormElement; await api('/embeddings', 'PUT', Object.fromEntries(data)); const keyInput = form.elements.namedItem('apiKey') as HTMLInputElement | null; if (keyInput) keyInput.value = ''; setConnection(''); await refresh()
+        const form = globalThis.document.getElementById('embedding-form') as HTMLFormElement; await api('/embeddings', 'PUT', Object.fromEntries(data)); for (const name of ['apiKey', 'qdrantApiKey']) { const keyInput = form.elements.namedItem(name) as HTMLInputElement | null; if (keyInput) keyInput.value = '' } setConnection(''); await refresh()
       })}>
         <label>{t('Provider', '공급자')}<select name="provider" defaultValue={String(embedding.provider)} onChange={e => { setProvider(e.target.value); setConnection('') }}>
           <option value="off">{t('Off', '없음')}</option><option value="builtin" disabled={!embedding.builtinAvailable}>{t('Built-in ONNX (full)', '내장 ONNX (full)')}</option><option value="remote">{t('Remote (OpenAI compatible)', '원격 (OpenAI 호환)')}</option>
@@ -125,6 +125,12 @@ export default function App() {
           {(['modelPath', 'tokenizerPath', 'modelSha256', 'tokenizerSha256', 'modelUrl', 'tokenizerUrl'] as const).map((f, i) => <label key={f}>{[t('Model path', '모델 경로'), t('Tokenizer path', '토크나이저 경로'), t('Model SHA-256', '모델 SHA-256'), t('Tokenizer SHA-256', '토크나이저 SHA-256'), t('Model HTTPS URL', '모델 HTTPS 주소'), t('Tokenizer HTTPS URL', '토크나이저 HTTPS 주소')][i]}<input name={f} required defaultValue={String(embedding[f])} /></label>)}
           <label>{t('Download missing files on first use (verifies SHA-256)', '첫 사용 시 없는 파일 다운로드 (SHA-256 확인)')}<select name="download" defaultValue={String(embedding.download)}><option value="false">{t('Disabled', '끔')}</option><option value="true">{t('Enabled', '켬')}</option></select></label>
         </>}
+        {(provider || embedding.provider) !== 'off' && <fieldset><legend>{t('Vector store', '벡터 저장소')}</legend>
+          <label>{t('Store', '저장소')}<select name="vectorStore" defaultValue={String(embedding.vectorStore)}><option value="lucene">{t('Built-in Lucene HNSW (default)', '내장 Lucene HNSW (기본)')}</option><option value="qdrant">Qdrant (REST)</option></select></label>
+          <p>{t('Qdrant stores only vectors, source IDs, paths and offsets. Text stays in the local index. Changing the store requires a full reindex.', 'Qdrant에는 벡터·소스 ID·경로·offset만 저장하고 본문은 로컬 색인에 둡니다. 저장소를 바꾸면 전체 재색인이 필요합니다.')}</p>
+          <div className="row"><label>{t('Qdrant URL', 'Qdrant 주소')}<input name="qdrantUrl" type="url" defaultValue={String(embedding.qdrantUrl)} /></label><label>{t('Collection', '컬렉션')}<input name="qdrantCollection" pattern="[A-Za-z0-9_\-]{1,64}" defaultValue={String(embedding.qdrantCollection)} /></label><label>{t('Timeout seconds', '타임아웃 (초)')}<input name="qdrantTimeoutSeconds" type="number" min="1" max="60" defaultValue={String(embedding.qdrantTimeoutSeconds)} /></label></div>
+          <label>{t('Qdrant API key (blank keeps saved key)', 'Qdrant API 키 (빈 값은 기존 키 유지)')}<input name="qdrantApiKey" type="password" autoComplete="new-password" placeholder={embedding.hasQdrantKey ? t('Saved; hidden', '저장됨·비공개') : ''} /></label>
+        </fieldset>}
         <button className="primary" disabled={busy}>{t('Save settings', '설정 저장')}</button>
       </form>
       <section className="card"><p role="status">{Boolean((embedding.status as Record<string, unknown>)?.reindexRequired) ? t('Reindex required', '재색인 필요') : t('Index model is current', '색인 모델 일치')} · {Boolean((embedding.status as Record<string, unknown>)?.rebuilding) ? t('Rebuilding', '재색인 중') : ''}</p>

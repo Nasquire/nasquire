@@ -60,6 +60,21 @@ public final class OcrTextExtractor implements TextExtractor {
             }
         }
     }
+    /** ML 서버용: 단일 프레임 이미지를 같은 픽셀 상한으로 검사하고 PNG로 다시 인코딩해 OCR한다. */
+    static String recognizeImage(Providers.OcrProvider provider, byte[] data) throws IOException {
+        try (var input = ImageIO.createImageInputStream(new ByteArrayInputStream(data))) {
+            if (input == null) throw new IllegalArgumentException("이미지 읽기 실패");
+            var readers = ImageIO.getImageReaders(input);
+            if (!readers.hasNext()) throw new IllegalArgumentException("지원하지 않는 이미지");
+            var reader = readers.next();
+            try {
+                reader.setInput(input);
+                if (reader.getNumImages(true) != 1) throw new IllegalArgumentException("단일 프레임 이미지만 지원");
+                try { checkPixels(reader.getWidth(0), reader.getHeight(0)); } catch (IOException e) { throw new IllegalArgumentException("OCR 픽셀 상한 초과"); }
+                return new OcrTextExtractor(provider, 1).recognize(reader.read(0));
+            } finally { reader.dispose(); }
+        }
+    }
     private String recognize(BufferedImage image) throws IOException {
         try {
             var bytes = new ByteArrayOutputStream();

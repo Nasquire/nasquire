@@ -22,6 +22,10 @@ public final class Providers {
         EmbeddingProvider embedding(java.util.Properties settings, java.nio.file.Path dataFolder);
         RerankerProvider reranker(String baseUrl, String model, String key, int topN, int timeoutSeconds);
         TextExtractor ocr(java.nio.file.Path dataFolder, int timeoutSeconds, int memoryMiB, int maxPages);
+        /** 고정 리비전·SHA-256 로컬 ONNX cross-encoder. download가 true여도 데이터 폴더 안에만 받는다. */
+        RerankerProvider localReranker(java.nio.file.Path model, java.nio.file.Path tokenizer, boolean download, java.nio.file.Path dataFolder, int topN, int timeoutSeconds);
+        /** 임베딩·리랭크·OCR만 제공하는 ML 전용 서버를 시작한다. 인증 토큰은 설정 파일·환경변수에서만 읽는다. */
+        AutoCloseable ml(String[] args, java.util.Map<String, String> environment) throws Exception;
     }
     public static FullProvider full() {
         return java.util.ServiceLoader.load(FullProvider.class).findFirst()

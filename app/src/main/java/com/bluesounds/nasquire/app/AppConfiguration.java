@@ -14,7 +14,8 @@ import org.springframework.context.annotation.*;
 public class AppConfiguration {
     @Bean
     Path dataFolder(@Value("${nasquire.data:./data}") String folder, @Value("${nasquire.mode:search}") String mode) throws IOException {
-        if (!"search".equals(mode)) throw new IllegalArgumentException("지원하지 않는 모드: ML 전용 모드는 아직 구현되지 않았습니다");
+        // ML 전용 모드는 main에서 별도 서버로 분기한다. 검색 서버 컨텍스트에서는 search만 허용한다.
+        if (!"search".equals(mode)) throw new IllegalArgumentException("지원하지 않는 모드: ML 전용 모드는 --nasquire.mode=ml 또는 NASQUIRE_MODE=ml로 full 빌드에서 실행하세요");
         var path = Path.of(folder).toAbsolutePath().normalize();
         Files.createDirectories(path);
         return path.toRealPath();
