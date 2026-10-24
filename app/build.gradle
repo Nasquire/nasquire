@@ -1,0 +1,25 @@
+plugins { id 'org.springframework.boot' }
+configurations.configureEach { exclude group: 'org.springframework.boot', module: 'spring-boot-starter-logging' }
+dependencies {
+    implementation platform('org.springframework.boot:spring-boot-dependencies:4.1.2')
+    implementation project(':core')
+    implementation 'org.springframework.boot:spring-boot-starter-log4j2'
+    implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+    implementation 'org.springframework.boot:spring-boot-starter-security'
+    implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+    implementation 'com.h2database:h2'
+    implementation 'io.modelcontextprotocol.sdk:mcp:2.1.0'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.springframework.security:spring-security-test'
+    testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
+}
+processResources {
+    dependsOn ':frontend:npm_run_build'
+    from(project(':frontend').layout.projectDirectory.dir('dist')) { into 'static' }
+    from(rootProject.file('LICENSE')) { into 'static'; rename { 'LICENSE.txt' } }
+    from(rootProject.file('LICENSE-EXCEPTIONS.md')) { into 'static' }
+}
+tasks.named('bootRun') {
+    workingDir rootProject.projectDir
+    jvmArgs '-Xms64m', '-Xmx256m', '-XX:+UseSerialGC', '-XX:MaxMetaspaceSize=128m', '-XX:ReservedCodeCacheSize=48m', '-Xss512k', '-XX:MaxDirectMemorySize=32m'
+}

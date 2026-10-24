@@ -1,0 +1,17 @@
+plugins { id 'java-library' }
+dependencies {
+    api 'org.apache.lucene:lucene-core:10.5.2'
+    implementation 'org.apache.lucene:lucene-analysis-nori:10.5.2'
+    implementation 'org.apache.lucene:lucene-analysis-common:10.5.2'
+    implementation 'org.apache.lucene:lucene-queryparser:10.5.2'
+    implementation 'org.apache.pdfbox:pdfbox:3.0.8'
+    implementation 'com.ibm.icu:icu4j:79.1'
+    testImplementation 'org.apache.pdfbox:pdfbox:3.0.8'
+}
+
+tasks.register('generateSamples', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.bluesounds.nasquire.core.SampleDocuments'
+    args rootProject.layout.buildDirectory.dir('samples').get().asFile.absolutePath
+}

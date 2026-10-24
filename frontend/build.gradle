@@ -1,0 +1,13 @@
+plugins { id 'base'; id 'com.github.node-gradle.node' }
+node { version = '22.22.0'; download = true; npmInstallCommand = 'ci'; nodeProjectDir = projectDir }
+tasks.named('npmInstall') { args = ['--no-audit', '--no-fund'] }
+tasks.register('npm_run_build', com.github.gradle.node.npm.task.NpmTask) {
+    dependsOn tasks.npmInstall
+    args = ['run', 'build']
+    inputs.files(fileTree('src'), fileTree('public'), 'index.html', 'package.json', 'package-lock.json', 'tsconfig.json', 'vite.config.ts')
+    outputs.dir 'dist'
+}
+assemble.dependsOn tasks.npm_run_build
+tasks.withType(com.github.gradle.node.npm.task.NpmTask).configureEach {
+    environment = ['npm_config_cache': layout.buildDirectory.dir('npm-cache').get().asFile.absolutePath]
+}
