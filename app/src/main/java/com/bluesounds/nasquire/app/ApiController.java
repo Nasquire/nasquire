@@ -30,8 +30,8 @@ public class ApiController {
     @PutMapping("/embeddings") void embeddings(@RequestBody Map<String, String> input) throws Exception { embeddings.save(input); storage.audit("admin", "embedding-save", 200); }
     @PostMapping("/embeddings/test") Map<String, Object> testEmbedding() { return embeddings.test(); }
     @PostMapping("/embeddings/reindex") void reindexEmbeddings() { embeddings.reindex(); }
-    @GetMapping("/auth") Map<String, Object> auth(CsrfToken csrf, Authentication authentication) {
-        return Map.of("configured", storage.configured(), "authenticated", authentication != null && authentication.getAuthorities().stream().anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN")),
+    @GetMapping("/auth") Map<String, Object> auth(CsrfToken csrf, Authentication authentication, HttpServletRequest request) {
+        return Map.of("totpRequired", TotpController.pending(request) != null, "configured", storage.configured(), "authenticated", authentication != null && authentication.getAuthorities().stream().anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN")),
                 "csrfToken", csrf.getToken(), "csrfHeader", csrf.getHeaderName());
     }
     @PostMapping("/setup") void setup(@RequestBody Setup input) { storage.setup(input.username, input.password); storage.audit("admin", "setup", 200); }

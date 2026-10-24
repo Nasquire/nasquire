@@ -371,6 +371,11 @@ class ApplicationIntegrationTest {
             assertThrows(ShareService.Delayed.class, () -> service.authorize(value, "", password));
             time.addAndGet(i == 4 ? 900000 : 1000L << i);
         }
+        // 잠금이 끝난 뒤 실패해도 횟수를 1로 되돌려 1초 대기로 줄이지 않고 다시 15분 잠근다.
+        assertThrows(ShareService.PasswordRequired.class, () -> service.authorize(value, "", "wrong-password"));
+        time.addAndGet(60000);
+        assertThrows(ShareService.Delayed.class, () -> service.authorize(value, "", password));
+        time.addAndGet(840000);
         assertNotNull(service.authorize(value, "", password));
         var passwordLink = service.create(id, "folder/renamed.md", null, password, null);
         String publicPasswordUrl = "http://127.0.0.1:" + port + passwordLink.get("url");

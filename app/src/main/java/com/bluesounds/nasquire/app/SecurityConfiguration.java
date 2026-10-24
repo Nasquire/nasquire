@@ -29,9 +29,9 @@ public class SecurityConfiguration {
     }
     @Bean UserDetailsService users(Storage store) { return store::user; }
     @Bean BCryptPasswordEncoder passwordEncoder() { return new BCryptPasswordEncoder(12); }
-    @Bean SecurityFilterChain security(HttpSecurity http, Storage storage, LoginAttempts attempts, ClientAddresses addresses, @Value("${nasquire.upload-max-bytes:33554432}") long maximum, @Value("${nasquire.mcp-allowed-origins:}") String allowedOrigins) throws Exception {
+    @Bean SecurityFilterChain security(HttpSecurity http, Storage storage, LoginAttempts attempts, ClientAddresses addresses, TotpService totp, @Value("${nasquire.upload-max-bytes:33554432}") long maximum, @Value("${nasquire.mcp-allowed-origins:}") String allowedOrigins) throws Exception {
         http.authorizeHttpRequests(a -> a
-                .requestMatchers("/", "/index.html", "/assets/**", "/icon.svg", "/LICENSE.txt", "/react-LICENSE.txt", "/LICENSE-EXCEPTIONS.md", "/api/auth", "/api/setup", "/api/login", "/download", "/error").permitAll()
+                .requestMatchers("/", "/index.html", "/assets/**", "/icon.svg", "/LICENSE.txt", "/react-LICENSE.txt", "/LICENSE-EXCEPTIONS.md", "/api/auth", "/api/setup", "/api/login", "/api/login/totp", "/download", "/error").permitAll()
                 .requestMatchers("/mcp").authenticated()
                 .requestMatchers("/api/search", "/api/document", "/api/download").authenticated()
                 .anyRequest().hasRole("ADMIN"))
@@ -47,9 +47,24 @@ public class SecurityConfiguration {
             .addFilterBefore(new MultipartGuard(maximum), CsrfFilter.class)
             .addFilterBefore(new LoginGuard(attempts, addresses, storage), org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class)
             .addFilterBefore(new BearerFilter(storage, Arrays.stream(allowedOrigins.split(",")).map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toSet())), CsrfFilter.class)
-            .formLogin(f -> f.loginProcessingUrl("/api/login")
-                    .successHandler((req, res, auth) -> { attempts.succeeded(addresses.address(req), auth.getName()); storage.audit("admin", "login", 200); res.setStatus(200); })
-                    .failureHandler((req, res, ex) -> { attempts.failed(addresses.address(req), req.getParameter("username"), System.currentTimeMillis()); storage.audit("anonymous", "login", 401); res.setStatus(401); }))
+            .formLogin(f -> f.securityContextRepository(new PasswordContextRepository(totp::enabled)).loginProcessingUrl("/api/login")
+                    .successHandler((req, res, auth) -> {
+                        if (totp.enabled()) {
+                            var context = SecurityContextHolder.createEmptyContext();
+                            SecurityContextHolder.setContext(context);
+                            new org.springframework.security.web.context.HttpSessionSecurityContextRepository().saveContext(context, req, res);
+                            req.getSession().setAttribute("totp.pending", new TotpController.Pending(auth.getName(), System.currentTimeMillis(), new java.util.concurrent.atomic.AtomicInteger()));
+                            storage.audit("anonymous", "login-totp-required", 202); res.setStatus(202);
+                        } else {
+                            req.getSession().removeAttribute("totp.pending");
+                            var ticket = LoginGuard.ticket(req); if (ticket != null) attempts.succeeded(ticket);
+                            storage.audit("admin", "login", 200); res.setStatus(200);
+                        }
+                    })
+                    .failureHandler((req, res, ex) -> {
+                        var ticket = LoginGuard.ticket(req); if (ticket != null) attempts.failed(ticket, System.currentTimeMillis());
+                        storage.audit("anonymous", "login", 401); res.setStatus(401);
+                    }))
             .logout(l -> l.logoutUrl("/api/logout").logoutSuccessHandler((req, res, auth) -> res.setStatus(204)))
             .exceptionHandling(e -> e.authenticationEntryPoint((req, res, ex) -> res.setStatus(401))
                     .accessDeniedHandler((req, res, ex) -> res.setStatus(403)))
@@ -57,6 +72,14 @@ public class SecurityConfiguration {
         return http.build();
     }
 
+    /** 성공 핸들러보다 먼저 실행되는 기본 세션 저장에서도 ADMIN 노출을 차단한다. */
+    static class PasswordContextRepository extends org.springframework.security.web.context.HttpSessionSecurityContextRepository {
+        private final java.util.function.BooleanSupplier requiresTotp;
+        PasswordContextRepository(java.util.function.BooleanSupplier requiresTotp) { this.requiresTotp = requiresTotp; }
+        @Override public void saveContext(org.springframework.security.core.context.SecurityContext context, HttpServletRequest request, HttpServletResponse response) {
+            super.saveContext(requiresTotp.getAsBoolean() ? SecurityContextHolder.createEmptyContext() : context, request, response);
+        }
+    }
     static class MultipartGuard extends OncePerRequestFilter {
         private final long maximum;
         MultipartGuard(long maximum) { this.maximum = maximum + 1048576; }
@@ -77,12 +100,15 @@ public class SecurityConfiguration {
         private final Storage storage;
         LoginGuard(LoginAttempts attempts, ClientAddresses addresses, Storage storage) { this.attempts = attempts; this.addresses = addresses; this.storage = storage; }
         protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain) throws IOException, ServletException {
-            if (req.getServletPath().equals("/api/login") && req.getMethod().equals("POST")
-                    && !attempts.allowed(addresses.address(req), req.getParameter("username"), System.currentTimeMillis())) {
-                storage.audit("anonymous", "login-rate-limit", 429); res.setHeader("Retry-After", "900"); res.setStatus(429); return;
-            }
-            chain.doFilter(req, res);
+            if (!req.getServletPath().equals("/api/login") || !req.getMethod().equals("POST")) { chain.doFilter(req, res); return; }
+            // 확인과 진행 중 시도 예약을 원자적으로 처리하고, 성공/실패 핸들러가 같은 표로 기록한다.
+            var ticket = attempts.acquire("", addresses.address(req), req.getParameter("username"), System.currentTimeMillis());
+            if (ticket == null) { storage.audit("anonymous", "login-rate-limit", 429); res.setHeader("Retry-After", "900"); res.setStatus(429); return; }
+            req.setAttribute(TICKET, ticket);
+            try (ticket) { chain.doFilter(req, res); }
         }
+        static final String TICKET = "nasquire.loginTicket";
+        static LoginAttempts.Ticket ticket(HttpServletRequest req) { return (LoginAttempts.Ticket)req.getAttribute(TICKET); }
     }
 
     static class BearerFilter extends OncePerRequestFilter {
