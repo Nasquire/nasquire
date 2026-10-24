@@ -17,6 +17,7 @@ class OAuthService {
     static final String SCOPE = "mcp:read";
     static final long LIFETIME = 30L * 86400000;
     static final int MAX_CLIENTS = 1000;
+    int maxClients = MAX_CLIENTS;
     private final JdbcTemplate db;
     private final Storage storage;
     private final TransactionTemplate tx;
@@ -68,10 +69,17 @@ class OAuthService {
         if (input.containsKey("response_types") && !List.of("code").equals(input.get("response_types"))) throw invalid("invalid_client_metadata");
         if (!(input.get("redirect_uris") instanceof List<?> redirects) || redirects.isEmpty() || redirects.size() > 10
                 || redirects.stream().anyMatch(v -> !(v instanceof String s) || !safeUri(s))) throw invalid("invalid_redirect_uri");
-        if (db.queryForObject("SELECT COUNT(*) FROM oauth_clients", Integer.class) >= MAX_CLIENTS) throw new Error("temporarily_unavailable", 503);
         String id = UUID.randomUUID().toString();
-        db.update("INSERT INTO oauth_clients(id,name,redirects,created) VALUES (?,?,?,?)", id, name, String.join("\n", redirects.stream().map(Object::toString).distinct().toList()), now());
-        audit("register", 201);
+        tx.executeWithoutResult(status -> {
+            if (db.queryForObject("SELECT COUNT(*) FROM oauth_clients", Integer.class) >= maxClients) {
+                var candidates = db.queryForList("SELECT c.id FROM oauth_clients c WHERE c.approved=FALSE AND NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id=c.id) ORDER BY c.created,c.id LIMIT 1", String.class);
+                if (candidates.isEmpty()) throw new Error("temporarily_unavailable", 503);
+                db.update("DELETE FROM oauth_clients WHERE id=? AND approved=FALSE", candidates.getFirst());
+                audit("register-evict", 200);
+            }
+            db.update("INSERT INTO oauth_clients(id,name,redirects,created) VALUES (?,?,?,?)", id, name, String.join("\n", redirects.stream().map(Object::toString).distinct().toList()), now());
+            audit("register", 201);
+        });
         return Map.of("client_id", id, "client_name", name, "redirect_uris", redirects, "token_endpoint_auth_method", "none", "grant_types", List.of("authorization_code", "refresh_token"), "response_types", List.of("code"), "client_id_issued_at", now() / 1000);
     }
     private void cleanup() {
@@ -101,7 +109,7 @@ class OAuthService {
     void checkResource(String value) { if (!resource.equals(value)) throw invalid("invalid_target"); }
     synchronized String approve(Authorization a, List<String> sources) {
         requireEnabled(); client(a.client);
-        if (now() - a.created > 600000 || sources.size() > 100) throw invalid("invalid_request");
+        if (now() - a.created > 600000 || sources.isEmpty() || sources.size() > 100) throw invalid("invalid_request");
         for (String source : sources) storage.source(source);
         if (db.queryForObject("SELECT COUNT(*) FROM oauth_grants WHERE client_id=? AND expires>?", Integer.class, a.client, now()) >= 100) throw invalid("temporarily_unavailable");
         String code = random(), family = UUID.randomUUID().toString();

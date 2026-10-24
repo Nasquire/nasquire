@@ -158,18 +158,24 @@ public class SecurityConfiguration {
         protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain) throws IOException, ServletException {
             String header = req.getHeader("Authorization");
             boolean mcp = req.getServletPath().equals("/mcp");
-            if (mcp && oauth.enabled()) res.setHeader("WWW-Authenticate", "Bearer resource_metadata=\"" + oauth.issuer + "/.well-known/oauth-protected-resource/mcp\"");
+            String metadata = mcp && oauth.enabled() ? " resource_metadata=\"" + oauth.issuer + "/.well-known/oauth-protected-resource/mcp\"" : "";
             if (mcp && req.getHeader("Origin") != null && !allowedOrigins.contains(req.getHeader("Origin"))) {
                 res.setStatus(403); return;
             }
             if (header == null && !mcp) { chain.doFilter(req, res); return; }
-            if (header == null || !header.startsWith("Bearer ") || header.length() > 256) { res.setStatus(401); return; }
+            if (header == null || !header.startsWith("Bearer ") || header.length() > 256) {
+                if (!metadata.isEmpty()) res.setHeader("WWW-Authenticate", "Bearer" + metadata);
+                res.setStatus(401); return;
+            }
             var identity = storage.authenticate(hash(header.substring(7)));
             if (identity == null && mcp) identity = oauth.authenticate(hash(header.substring(7)));
             if (identity != null && identity.tokenId().startsWith("oauth:") && identity.sources().isEmpty()) {
-                res.setHeader("WWW-Authenticate", "Bearer error=\"insufficient_scope\", scope=\"mcp:read\""); res.setStatus(403); return;
+                res.setHeader("WWW-Authenticate", "Bearer error=\"insufficient_scope\", scope=\"mcp:read\"" + (metadata.isEmpty() ? "" : "," + metadata)); res.setStatus(403); return;
             }
-            if (identity == null) { storage.audit("invalid-token", req.getMethod() + " " + req.getServletPath(), 401); res.setStatus(401); return; }
+            if (identity == null) {
+                if (!metadata.isEmpty()) res.setHeader("WWW-Authenticate", "Bearer" + metadata);
+                storage.audit("invalid-token", req.getMethod() + " " + req.getServletPath(), 401); res.setStatus(401); return;
+            }
             req.setAttribute("nasquire.token", identity);
             var context = SecurityContextHolder.createEmptyContext();
             context.setAuthentication(new UsernamePasswordAuthenticationToken(identity, null, List.of()));

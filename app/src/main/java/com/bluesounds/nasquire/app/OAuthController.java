@@ -65,17 +65,25 @@ class OAuthController {
                 <form id="totp" hidden><label>TOTP / 복구 코드 <input name="code" autocomplete="one-time-code" required></label><button>Verify / 확인</button></form><p id="error" role="alert"></p>
                 <script src="/oauth/login.js"></script>
                 """);
+        return consentPage(request, a, csrf, "");
+    }
+    private String consentPage(HttpServletRequest request, OAuthService.Authorization a, CsrfToken csrf, String error) {
         String nonce = OAuthService.random();
         // 세션마다 승인 대기는 하나만 두어 임의 클라이언트 요청의 메모리 사용을 제한한다.
         request.getSession().setAttribute("oauth.pending", a);
         request.getSession().setAttribute("oauth.nonce", nonce);
         StringBuilder body = new StringBuilder("<p>Client / 클라이언트: <strong>" + esc(oauth.client(a.client()).get("NAME").toString()) + "</strong></p><p>Redirect host / 이동 호스트: " + esc(URI.create(a.redirect()).getHost()) + "</p><p>Scope / 요청 범위: mcp:read (Read only / 읽기 전용)</p><form method=\"post\" action=\"/oauth/authorize\">");
         body.append(hidden(csrf.getParameterName(), csrf.getToken())).append(hidden("nonce", nonce));
-        for (var s : storage.sources()) body.append("<label><input type=\"checkbox\" name=\"sources\" value=\"").append(esc(s.id())).append("\">").append(esc(s.name())).append("</label>");
-        body.append("<button name=\"decision\" value=\"approve\">Allow / 승인</button><button name=\"decision\" value=\"deny\">Deny / 거부</button></form>");
+        if (!error.isEmpty()) body.append("<p role=\"alert\">").append(esc(error)).append("</p>");
+        var sources = storage.sources();
+        for (var s : sources) body.append("<label><input type=\"checkbox\" name=\"sources\" value=\"").append(esc(s.id())).append("\">").append(esc(s.name())).append("</label>");
+        if (sources.isEmpty()) body.append("<p>No sources available. Add a source first / 소스를 먼저 등록하세요.</p>");
+        else body.append("<button name=\"decision\" value=\"approve\">Allow / 승인</button>");
+        body.append("<button name=\"decision\" value=\"deny\">Deny / 거부</button></form>");
         return page("Approve MCP access / MCP 접근 승인", body.toString());
     }
-    @PostMapping("/oauth/authorize") void consent(HttpServletRequest request, HttpServletResponse response, Authentication auth) {
+    @PostMapping(value = "/oauth/authorize", produces = MediaType.TEXT_HTML_VALUE)
+    String consent(HttpServletRequest request, HttpServletResponse response, Authentication auth, CsrfToken csrf) {
         oauth.requireEnabled(); secure(response);
         if (!admin(auth)) throw new OAuthService.Error("access_denied", 401);
         var session = request.getSession(false);
@@ -90,11 +98,16 @@ class OAuthController {
         String decision = request.getParameter("decision"), result;
         if ("approve".equals(decision)) {
             String[] sources = request.getParameterValues("sources");
-            result = "code=" + enc(oauth.approve(a, sources == null ? List.of() : Arrays.asList(sources)));
+            if (sources == null || sources.length == 0) {
+                var pending = new OAuthService.Authorization(a.client(), a.redirect(), a.state(), a.challenge(), oauth.now());
+                return consentPage(request, pending, csrf, "Select at least one source / 소스를 하나 이상 선택하세요.");
+            }
+            result = "code=" + enc(oauth.approve(a, Arrays.asList(sources)));
         } else if ("deny".equals(decision)) { oauth.audit("deny", 200); result = "error=access_denied"; }
         else throw OAuthService.invalid("invalid_request");
         response.setStatus(302);
         response.setHeader("Location", a.redirect() + (a.redirect().contains("?") ? "&" : "?") + result + "&state=" + enc(a.state()) + "&iss=" + enc(oauth.issuer));
+        return null;
     }
     @GetMapping(value = "/oauth/login.js", produces = "text/javascript") String loginScript() {
         oauth.requireEnabled();

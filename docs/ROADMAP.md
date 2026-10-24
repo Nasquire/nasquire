@@ -271,4 +271,5 @@
 - [x] 256비트 불투명 코드/토큰 SHA-256 저장, 60초 코드·1시간 액세스·30일 승인 상한, 리프레시 회전·재사용 계열 철회, 소스 재검증·감사·IP 속도 제한.
 - [x] 통합 테스트 8개·실제 bootRun/curl DCR→관리자 승인→token→MCP 검색→refresh→revoke, 종료 0·서버/포트 정리. 초기 다운로드 권한 조회 실패와 수정 근거는 [OAuth 검증](verification/oauth.md).
 - [x] `./gradlew build -q`·`./gradlew -Pfull build -q` 종료 0(프런트엔드 포함), core 27·app 33·full 19개 실패·오류·생략 0. README·설치 안내·CLAUDE 규칙 갱신, 내부 식별자·경로·토큰 패턴 일치 없음.
+- [x] 5b 교차 검토 반영: DCR 미승인 최장기 행 교체·빈 소스 승인 재표시·응답별 Bearer challenge 수정과 회귀 테스트 추가. [상세](verification/oauth.md#교차-검토-반영).
 - [ ] 실제 외부 MCP 클라이언트·HTTPS 프록시·브라우저 동작은 별도 실측 필요.

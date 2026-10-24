@@ -10,7 +10,7 @@
 
 ## 자동 검증
 
-`OAuthIntegrationTest` 6개, `OAuthDisabledTest` 1개, `OAuthMissingPublicUrlTest` 1개에서 다음을 확인한다.
+`OAuthIntegrationTest` 10개, `OAuthDisabledTest` 1개, `OAuthMissingPublicUrlTest` 1개에서 다음을 확인한다.
 
 | 검증 영역 | 확인한 내용 |
 | --- | --- |
@@ -18,7 +18,7 @@
 | 등록 | 원격 HTTP·userinfo·fragment URI 거부, 루프백 IPv4/IPv6/localhost 허용, 이름·URI 개수·24 KiB 본문·총 1000개 상한, 미승인 24시간 만료, IP별 등록·토큰 속도 제한 |
 | 관리자 승인 | 미로그인 및 TOTP 대기 세션의 승인 차단, 최종 TOTP 로그인 뒤 승인 화면, CSRF 없는 POST 거부, frame-ancestors, 거부 응답, state·iss 반환 |
 | 코드 교환 | 승인 없는 임의 코드, S256 누락/plain/불일치, redirect/client/resource 불일치, 60초 만료, 코드 재사용과 동시 교환 시 계열 철회 |
-| MCP 경계 | SDK 문맥의 승인 소스 검색만 반환, 범위 밖 검색/문서/다운로드 불가, 세 도구만 제공·쓰기 도구 없음, 빈/삭제 소스 403 insufficient_scope, 다른 audience 거부, 세션만 접근 불가 |
+| MCP 경계 | SDK 문맥의 승인 소스 검색만 반환, 범위 밖 검색/문서/다운로드 불가, 세 도구만 제공·쓰기 도구 없음, 빈 승인 차단·빈/삭제 소스 토큰 403 insufficient_scope, 다른 audience 거부, 세션만 접근 불가 |
 | 병행·다운로드 | 기존 API 토큰의 REST/MCP 접근, OAuth 토큰의 REST 거부, 다운로드 티켓 발급·수신·소스 삭제 뒤 수신 거부 |
 | 갱신·철회 | 회전, 갱신 client/resource 결합, 재사용·동시 재사용 시 계열 철회, 1시간 액세스·30일 승인 상한, RFC 7009 철회, 관리자 클라이언트 철회·CSRF |
 | 비밀·감사 | DB/감사에 코드·토큰·verifier 원문 없음, 등록·승인·발급·갱신·재사용·철회 감사, token 응답 no-store |
@@ -33,6 +33,13 @@
 | `VERIFY_PORT=8103 python3 scripts/verify-oauth.py` | 0, 아래 실제 흐름 통과 |
 | `python3 -m py_compile scripts/verify-oauth.py` | 0 |
 | `git diff --check` | 0 |
+
+## 교차 검토 반영
+
+- 등록 상한에서는 grant 없는 가장 오래된 미승인 클라이언트만 교체하고 `oauth-register-evict` 감사를 남긴다. 승인 클라이언트와 grant 보유 행은 보존하며 퇴출 후보가 없으면 503을 유지한다.
+- 빈 소스 승인은 grant 없이 오류 화면과 새 pending·nonce를 발급하며, 서버에 소스가 없으면 승인 버튼 대신 등록 안내를 표시한다.
+- `/mcp`의 401에만 기본 Bearer 메타데이터를 제공하고, 범위 부족 403에는 error·scope·메타데이터를 함께 제공한다. 200·Origin 거부 403에는 challenge가 없다.
+- 회귀 테스트 포함 OAuth 12개와 `./gradlew build -q`·`./gradlew -Pfull build -q` 검증 결과는 `build/verification/oauth-review-results.json`에 기록한다.
 
 ## 실제 실행
 

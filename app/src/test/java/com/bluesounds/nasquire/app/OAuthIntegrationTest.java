@@ -74,10 +74,10 @@ class OAuthIntegrationTest {
 
     @BeforeEach void reset() {
         db.update("DELETE FROM oauth_tokens"); db.update("DELETE FROM oauth_grants"); db.update("DELETE FROM oauth_clients");
-        oauth.clock = Clock.systemUTC();
+        oauth.clock = Clock.systemUTC(); oauth.maxClients = OAuthService.MAX_CLIENTS;
         ((Map<?, ?>)ReflectionTestUtils.getField(attempts, "windows")).clear();
     }
-    @AfterEach void resetClock() { oauth.clock = Clock.systemUTC(); }
+    @AfterEach void resetClock() { oauth.clock = Clock.systemUTC(); oauth.maxClients = OAuthService.MAX_CLIENTS; }
     String register() throws Exception {
         return json(request(anonymous, "/oauth/register", "POST", Map.of("client_name", "Example client", "redirect_uris", List.of(REDIRECT)), false, false, null), 201).get("client_id").asText();
     }
@@ -126,16 +126,77 @@ class OAuthIntegrationTest {
         assertThrows(OAuthService.Error.class, () -> oauth.register(Map.of("redirect_uris", List.of(REDIRECT), "client_name", "x".repeat(201))));
         assertThrows(OAuthService.Error.class, () -> oauth.register(Map.of("redirect_uris", List.of(REDIRECT), "token_endpoint_auth_method", "client_secret_basic")));
         String id = register(); assertEquals(400, token(exchange(id, OAuthService.random(), OAuthService.random())).statusCode());
-        for (int i = 0; i < OAuthService.MAX_CLIENTS - 1; i++) oauth.register(Map.of("redirect_uris", List.of(REDIRECT)));
-        assertEquals(503, request(anonymous, "/oauth/register", "POST", Map.of("redirect_uris", List.of(REDIRECT)), false, false, null).statusCode());
+        oauth.maxClients = 3;
+        for (int i = 0; i < oauth.maxClients - 1; i++) oauth.register(Map.of("redirect_uris", List.of(REDIRECT)));
         db.update("UPDATE oauth_clients SET created=?", oauth.now() - 86400001);
         assertNotNull(register()); assertEquals(1, db.queryForObject("SELECT COUNT(*) FROM oauth_clients", Integer.class));
-        for (int i = 0; i < 6; i++) register();
+        oauth.maxClients = OAuthService.MAX_CLIENTS;
+        for (int i = 0; i < 7; i++) register();
         assertEquals(429, request(anonymous, "/oauth/register", "POST", Map.of("redirect_uris", List.of(REDIRECT)), false, false, null).statusCode());
         ((Map<?, ?>)ReflectionTestUtils.getField(attempts, "windows")).clear();
         assertEquals(413, request(anonymous, "/oauth/register", "POST", Map.of("client_name", "x".repeat(25000)), false, false, null).statusCode());
         for (int i = 0; i < 60; i++) assertEquals(400, token(Map.of()).statusCode());
         assertEquals(429, token(Map.of()).statusCode());
+    }
+    @Test void registrationEvictsOnlyOldestUnapprovedWithoutGrant() throws Exception {
+        oauth.maxClients = 3;
+        String approved = register(), verifier = OAuthService.random();
+        var active = issued(approved, verifier, List.of(source));
+        String oldest = register(), newest = register();
+        db.update("UPDATE oauth_clients SET created=? WHERE id=?", oauth.now() - 2000, approved);
+        db.update("UPDATE oauth_clients SET created=? WHERE id=?", oauth.now() - 1000, oldest);
+        String replacement = register();
+        assertThrows(OAuthService.Error.class, () -> oauth.client(oldest));
+        for (String id : List.of(approved, newest, replacement)) assertNotNull(oauth.client(id));
+        assertEquals(3, db.queryForObject("SELECT COUNT(*) FROM oauth_clients", Integer.class));
+        assertEquals(200, mcpResponse(active.get("access_token").asText(), "tools/list", Map.of()).statusCode());
+        assertTrue(storage.audit().toString().contains("oauth-register-evict"));
+        // grant를 가진 행은 미승인으로 표시되어도 퇴출하지 않는다.
+        db.update("UPDATE oauth_clients SET approved=TRUE");
+        db.update("UPDATE oauth_clients SET approved=FALSE WHERE id=?", approved);
+        assertEquals(503, request(anonymous, "/oauth/register", "POST", Map.of("redirect_uris", List.of(REDIRECT)), false, false, null).statusCode());
+        db.update("UPDATE oauth_clients SET approved=TRUE");
+        assertEquals(503, request(anonymous, "/oauth/register", "POST", Map.of("redirect_uris", List.of(REDIRECT)), false, false, null).statusCode());
+        assertEquals(3, db.queryForObject("SELECT COUNT(*) FROM oauth_clients", Integer.class));
+    }
+    @Test void emptyConsentRenewsPendingAndNonceWithoutGrant() throws Exception {
+        String id = register(), verifier = OAuthService.random();
+        var a = oauth.validate(authorization(id, verifier));
+        assertThrows(OAuthService.Error.class, () -> oauth.approve(a, List.of()));
+        String page = request(client, "/oauth/authorize?" + form(authorization(id, verifier)), "GET", null, false, false, null).body();
+        String oldNonce = hidden(page, "nonce");
+        var empty = request(client, "/oauth/authorize", "POST", Map.of("decision", "approve", "nonce", oldNonce), true, true, null);
+        assertEquals(200, empty.statusCode()); assertTrue(empty.headers().firstValue("Location").isEmpty());
+        assertTrue(empty.body().contains("소스를 하나 이상 선택"));
+        assertEquals("no-store", empty.headers().firstValue("Cache-Control").orElseThrow());
+        assertEquals(0, db.queryForObject("SELECT COUNT(*) FROM oauth_grants", Integer.class));
+        assertEquals(false, db.queryForObject("SELECT approved FROM oauth_clients WHERE id=?", Boolean.class, id));
+        String nonce = hidden(empty.body(), "nonce"); assertNotEquals(oldNonce, nonce);
+        assertEquals(400, request(client, "/oauth/authorize", "POST", Map.of("decision", "approve", "nonce", oldNonce, "sources", source), true, true, null).statusCode());
+        var approved = request(client, "/oauth/authorize", "POST", Map.of("decision", "approve", "nonce", nonce, "sources", source), true, true, null);
+        assertEquals(302, approved.statusCode());
+        var p = parse(URI.create(approved.headers().firstValue("Location").orElseThrow()).getRawQuery());
+        assertEquals("original state & value", p.get("state"));
+        assertEquals(200, token(exchange(id, p.get("code"), verifier)).statusCode());
+    }
+    @Test void consentWithoutServerSourcesHasNoApprovalButton() throws Exception {
+        String id = register(), verifier = OAuthService.random();
+        db.update("DELETE FROM sources");
+        try {
+            var page = request(client, "/oauth/authorize?" + form(authorization(id, verifier)), "GET", null, false, false, null);
+            assertEquals(200, page.statusCode());
+            assertTrue(page.body().contains("소스를 먼저 등록"));
+            assertFalse(page.body().contains("value=\"approve\""));
+            assertEquals(0, db.queryForObject("SELECT COUNT(*) FROM oauth_grants", Integer.class));
+        } finally { createSource(source, "source"); createSource(other, "other"); }
+    }
+    @Test void bearerChallengeOnlyForAuthenticationAndScopeFailures() throws Exception {
+        var invalid = mcpResponse(OAuthService.random(), "tools/list", Map.of());
+        assertEquals(401, invalid.statusCode());
+        assertEquals("Bearer resource_metadata=\"" + ISSUER + "/.well-known/oauth-protected-resource/mcp\"", invalid.headers().firstValue("WWW-Authenticate").orElseThrow());
+        var origin = HttpRequest.newBuilder(URI.create(url("/mcp"))).header("Origin", "https://other.example.com").POST(HttpRequest.BodyPublishers.noBody()).build();
+        var denied = anonymous.send(origin, HttpResponse.BodyHandlers.ofString());
+        assertEquals(403, denied.statusCode()); assertTrue(denied.headers().firstValue("WWW-Authenticate").isEmpty());
     }
     @Test void pkceRedirectResourceSessionAndCsrf() throws Exception {
         String id = register(), verifier = OAuthService.random();
@@ -225,7 +286,9 @@ class OAuthIntegrationTest {
     @Test void sourceIsolationReadOnlyAudienceAndApiCoexistence() throws Exception {
         String id = register(), verifier = OAuthService.random();
         var issued = issued(id, verifier, List.of(source)); String access = issued.get("access_token").asText();
-        var tools = json(mcpResponse(access, "tools/list", Map.of()), 200); assertEquals(3, tools.at("/result/tools").size());
+        var success = mcpResponse(access, "tools/list", Map.of());
+        assertTrue(success.headers().firstValue("WWW-Authenticate").isEmpty());
+        var tools = json(success, 200); assertEquals(3, tools.at("/result/tools").size());
         var searched = tool(access, "search_documents", Map.of("query", "ocean"));
         assertFalse(searched.at("/result/isError").asBoolean());
         var hits = mapper.readTree(searched.at("/result/content/0/text").asText()); assertEquals(1, hits.size()); assertEquals(source, hits.get(0).get("source").asText());
@@ -246,10 +309,12 @@ class OAuthIntegrationTest {
         db.update("UPDATE oauth_grants SET audience=?", RESOURCE);
         db.update("DELETE FROM sources WHERE id=?", source);
         var denied = mcpResponse(access, "tools/list", Map.of()); assertEquals(403, denied.statusCode()); assertTrue(denied.headers().firstValue("WWW-Authenticate").orElseThrow().contains("insufficient_scope"));
+        assertTrue(denied.headers().firstValue("WWW-Authenticate").orElseThrow().contains("scope=\"mcp:read\", resource_metadata=\"" + ISSUER));
         assertEquals(403, request(anonymous, downloadPath, "GET", null, false, false, null).statusCode());
         createSource(source, "source");
-        var empty = issued(id, verifier, List.of()); assertEquals(403, mcpResponse(empty.get("access_token").asText(), "tools/list", Map.of()).statusCode());
-        assertTrue(documents.scope(oauth.authenticate(SecurityConfiguration.hash(empty.get("access_token").asText())), null).isEmpty());
+        db.update("UPDATE oauth_grants SET sources=''");
+        assertEquals(403, mcpResponse(access, "tools/list", Map.of()).statusCode());
+        assertTrue(documents.scope(oauth.authenticate(SecurityConfiguration.hash(access)), null).isEmpty());
     }
     @Test void rotationReplayRevocationExpirationAndSecretAbsence() throws Exception {
         String id = register(), verifier = OAuthService.random();
