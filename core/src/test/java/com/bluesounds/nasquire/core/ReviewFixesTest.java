@@ -93,18 +93,18 @@ class ReviewFixesTest {
         QdrantVectorStore.openMillis = 300;
         try (var qdrant = new FakeQdrant(null); var store = new QdrantVectorStore(qdrant.url(), "docs", "", 1)) {
             qdrant.fail = true;
-            for (int i = 0; i < QdrantVectorStore.FAILURES; i++) assertThrows(IOException.class, () -> store.search(new float[] {1, 0}, Set.of("a"), 5));
+            for (int i = 0; i < QdrantVectorStore.FAILURES; i++) assertThrows(IOException.class, () -> store.search(new float[] {1, 0}, Set.of("a"), 5, 0));
             int before = qdrant.requests.size();
-            var open = assertThrows(IOException.class, () -> store.search(new float[] {1, 0}, Set.of("a"), 5));
+            var open = assertThrows(IOException.class, () -> store.search(new float[] {1, 0}, Set.of("a"), 5, 0));
             assertTrue(open.getMessage().contains("차단")); assertThrows(IOException.class, () -> store.deleteKey("a:x"));
             assertEquals(before, qdrant.requests.size(), "차단 중에는 원격 요청 없음");
             Thread.sleep(400); qdrant.fail = false;
             store.reset(2);
-            assertTrue(store.search(new float[] {1, 0}, Set.of("a"), 5).isEmpty(), "차단 시간 뒤 복구");
+            assertTrue(store.search(new float[] {1, 0}, Set.of("a"), 5, 0).isEmpty(), "차단 시간 뒤 복구");
             // 응답이 늦어도 작업 전체 상한(설정 1초)에서 끝난다.
             qdrant.delayMillis = 3000;
             long start = System.nanoTime();
-            assertThrows(IOException.class, () -> store.search(new float[] {1, 0}, Set.of("a"), 5));
+            assertThrows(IOException.class, () -> store.search(new float[] {1, 0}, Set.of("a"), 5, 0));
             assertTrue(System.nanoTime() - start < 2_500_000_000L);
         } finally { QdrantVectorStore.openMillis = previous; }
     }

@@ -36,6 +36,8 @@ public class UploadService {
     }
     @jakarta.annotation.PostConstruct
     public void cleanupStaging() throws IOException {
+        // OCR을 끈 상태로 재시작해도 이전 OCR 작업이 남긴 임시 폴더를 정리한다.
+        com.bluesounds.nasquire.core.OcrScratch.cleanStale(data);
         long before = System.currentTimeMillis() - 86400000L;
         Path multipart = data.resolve("multipart");
         if (Files.isDirectory(multipart, LinkOption.NOFOLLOW_LINKS)) {

@@ -22,6 +22,7 @@ public final class FullProviders implements Providers.FullProvider {
         return MlServer.start(MlConfig.load(args, environment));
     }
     public TextExtractor ocr(Path data, int seconds, int memory, int pages) {
-        return new OcrTextExtractor(new TesseractOcrProvider(data, seconds, memory), pages);
+        return new OcrTextExtractor(new TesseractOcrProvider(data, seconds, memory), pages, data);
     }
+    public int ocrWorker(String[] args) { return OcrWorker.run(args); }
 }

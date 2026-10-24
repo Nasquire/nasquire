@@ -27,7 +27,7 @@ class MlServerTest {
         };
         Providers.OcrProvider ocr = (image, language) -> { ocrLanguage.set(language); return "인식 결과"; };
         return new MlServer(new InetSocketAddress("127.0.0.1", 0), MlServer.sha256(TOKEN), embedding, "e5-test",
-                all ? scorer : null, "rerank-test", 5, all ? ocr : null, 2);
+                all ? scorer : null, "rerank-test", 5, all ? new OcrTextExtractor(ocr, 1, temp) : null, 2);
     }
     private HttpResponse<String> call(MlServer server, String method, String path, String auth, String type, byte[] body) throws Exception {
         var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + path))

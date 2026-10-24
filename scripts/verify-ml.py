@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """ML 전용 모드 실측: full bootJar → 고정 모델 준비 → java -jar(ML 모드) → curl 검증 → RSS·지연 측정 → 종료.
 
-VERIFY_ML_FEATURES: reranker(기본) | embedding | both. 토큰은 임의 생성하여 환경변수로만 전달하고 출력하지 않는다.
+VERIFY_ML_FEATURES: reranker(기본) | embedding | both. OCR(tesseract)도 함께 켜서 실행 JAR에서 /v1/ocr의 자식 프로세스
+렌더링·디코딩 격리 경로를 확인한다(Tesseract가 없으면 정상 디코딩 이미지는 500, 상한 위반은 400). 토큰은 임의 생성하여 환경변수로만 전달하고 출력하지 않는다.
 결과는 무시되는 build/verification/ml/에 남긴다. 빌드와 동시에 실행하지 않는다.
 """
 import json
@@ -16,6 +17,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import zlib
 
 root = pathlib.Path(__file__).resolve().parent.parent
 port = int(os.environ.get('VERIFY_PORT', '8102'))
@@ -42,6 +44,27 @@ def rss(pid):
     return 0
 
 
+def png(width, height):
+    """자체 생성 회색조 PNG."""
+    def chunk(kind, data):
+        return len(data).to_bytes(4, 'big') + kind + data + zlib.crc32(kind + data).to_bytes(4, 'big')
+    rows = b''.join(b'\x00' + b'\xff' * width for _ in range(height))
+    header = width.to_bytes(4, 'big') + height.to_bytes(4, 'big') + bytes([8, 0, 0, 0, 0])
+    return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', header) + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b'')
+
+
+def children(pid):
+    found = []
+    for stat in pathlib.Path('/proc').glob('[0-9]*/stat'):
+        try:
+            fields = stat.read_text().rsplit(')', 1)[1].split()
+        except OSError:
+            continue
+        if int(fields[1]) == pid:
+            found.append(int(stat.parent.name))
+    return found
+
+
 def call(path, body=None, auth=True, method=None, content='application/json'):
     data = None if body is None else (body if isinstance(body, bytes) else json.dumps(body).encode())
     request = urllib.request.Request(url + path, data=data, method=method or ('POST' if data is not None else 'GET'))
@@ -60,7 +83,8 @@ with tempfile.TemporaryDirectory(prefix='ml-', dir=artifacts) as folder, (artifa
     env = os.environ.copy()
     env.update({'MALLOC_ARENA_MAX': '2', 'TOKENIZERS_PARALLELISM': 'false', 'DJL_CACHE_DIR': str(root / 'build/verification/djl-cache'),
                 'NASQUIRE_ML_TOKEN': token})
-    args = ['--nasquire.mode=ml', f'--server.port={port}', '--server.address=127.0.0.1', f'--nasquire.data={folder}/data']
+    args = ['--nasquire.mode=ml', f'--server.port={port}', '--server.address=127.0.0.1', f'--nasquire.data={folder}/data',
+            '--nasquire.ml.ocr=tesseract']
     if features in ('embedding', 'both'):
         args += ['--nasquire.ml.embedding=builtin', f'--nasquire.ml.embedding-model-path={models}/model-int8.onnx',
                  f'--nasquire.ml.embedding-tokenizer-path={models}/tokenizer.json']
@@ -116,6 +140,16 @@ with tempfile.TemporaryDirectory(prefix='ml-', dir=artifacts) as folder, (artifa
             for _ in range(10):
                 call('/v1/embeddings', {'input': ['문서 검색 시험 ' * 40] * 8})
                 peak = max(peak, rss(server.pid))
+        tesseract = pathlib.Path('/usr/bin/tesseract').exists()
+        status, _ = call('/v1/ocr', png(40, 30), content='image/png')
+        checks['ocrChildDecodes'] = status == (200 if tesseract else 500)
+        checks['ocrLimit400'] = call('/v1/ocr', png(17000, 4), content='image/png')[0] == 400
+        checks['ocrInvalid400'] = call('/v1/ocr', b'not an image', content='image/png')[0] == 400
+        peak = max(peak, rss(server.pid))
+        checks['ocrNoLeftoverChildren'] = children(server.pid) == []
+        ocr_tmp = pathlib.Path(folder) / 'data' / 'ocr-tmp'
+        checks['ocrTmpClean'] = not ocr_tmp.exists() or not any(ocr_tmp.iterdir())
+        result['tesseractInstalled'] = tesseract
         result['checks'] = checks
         result['peakRssKiB'] = max(peak, rss(server.pid))
         result['peakRssMiB'] = round(result['peakRssKiB'] / 1024, 1)

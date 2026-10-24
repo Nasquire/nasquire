@@ -28,14 +28,14 @@ public final class MlServer implements AutoCloseable {
     private final byte[] tokenHash;
     private final Providers.EmbeddingProvider embedding;
     private final Scorer scorer;
-    private final Providers.OcrProvider ocr;
+    private final OcrTextExtractor ocr;
     private final String embeddingModel, rerankerModel;
     private final int rerankSeconds;
     // 기능별 동시 추론 1개. 기다리지 않고 503으로 거절하여 대기열이 메모리를 키우지 않게 한다.
     private final Semaphore embeddingSlot = new Semaphore(1), rerankSlot = new Semaphore(1), ocrSlot = new Semaphore(1);
 
     public MlServer(InetSocketAddress address, byte[] tokenHash, Providers.EmbeddingProvider embedding, String embeddingModel,
-            Scorer scorer, String rerankerModel, int rerankSeconds, Providers.OcrProvider ocr, int threads) throws IOException {
+            Scorer scorer, String rerankerModel, int rerankSeconds, OcrTextExtractor ocr, int threads) throws IOException {
         if (tokenHash == null || tokenHash.length != 32) throw new IllegalArgumentException("ML 토큰 필요");
         if (embedding == null && scorer == null && ocr == null) throw new IllegalArgumentException("ML 기능 없음");
         this.tokenHash = tokenHash.clone(); this.embedding = embedding; this.embeddingModel = embeddingModel;
@@ -72,7 +72,7 @@ public final class MlServer implements AutoCloseable {
             if (System.getProperty(limit[0]) == null) System.setProperty(limit[0], limit[1]);
         Files.createDirectories(c.data());
         Path data = c.data().toRealPath();
-        Providers.EmbeddingProvider embedding = null; Scorer scorer = null; Providers.OcrProvider ocr = null;
+        Providers.EmbeddingProvider embedding = null; Scorer scorer = null; OcrTextExtractor ocr = null;
         try {
             if (c.embedding().equals("builtin")) {
                 embedding = new OnnxEmbeddingProvider(c.embeddingModelPath(), c.embeddingTokenizerPath(),
@@ -88,7 +88,7 @@ public final class MlServer implements AutoCloseable {
                 };
                 local.scores("warm-up", List.of("warm-up"), local.deadline());
             }
-            if (c.ocr().equals("tesseract")) ocr = new TesseractOcrProvider(data, c.ocrTimeoutSeconds(), c.ocrMemoryMiB());
+            if (c.ocr().equals("tesseract")) ocr = new OcrTextExtractor(new TesseractOcrProvider(data, c.ocrTimeoutSeconds(), c.ocrMemoryMiB()), 1, data);
             var server = new MlServer(new InetSocketAddress(c.address(), c.port()), c.tokenHash(), embedding, c.embeddingModel(),
                     scorer, c.rerankerModel(), c.rerankTimeoutSeconds(), ocr, c.threads());
             LOG.log(System.Logger.Level.INFO, "Nasquire ML 서버 시작: " + c);
@@ -236,7 +236,7 @@ public final class MlServer implements AutoCloseable {
         String text;
         try {
             text = infer(() -> {
-                try { return OcrTextExtractor.recognizeImage(ocr, image); } catch (IOException e) { throw new IllegalArgumentException("이미지 오류"); }
+                try { return ocr.recognizeImage(image); } catch (IOException e) { throw new IllegalArgumentException("이미지 오류"); }
             });
         }
         finally { ocrSlot.release(); }

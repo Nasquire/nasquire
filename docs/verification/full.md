@@ -55,7 +55,7 @@
 
 쪽당 시간·CPU 초, 주소 공간(RLIMIT_AS), 출력 파일(RLIMIT_FSIZE 1 MiB) 상한을 둔다. 주소 공간 상한은 RSS 실측값이 아니다. 페이지당 최대 16백만 픽셀·변 길이 8192(보안 검토 반영에서 6백만 픽셀·부분 샘플링으로 강화), 전달 PNG 최대 16 MiB, 최종 텍스트는 기존 추출 문자 상한을 따른다. 다중 이미지 프레임/스캔 쪽 수가 상한을 넘으면 파일 추출 오류이며 일부 쪽만 성공으로 게시하지 않는다. 시간 초과 시 살아 있는 프로세스와 자손을 종료한다. 외부 OCR 실패는 파일 색인 오류로 남는다. 원본 파일 크기·경로·안정화 검사는 기존 색인기를 사용한다.
 
-외부 프로세스 메모리는 JVM 밖이다. 이미지 디코딩/PDF 렌더링 자체는 full JVM에서 수행하므로 **OCR full은 lite의 512 MiB 목표를 보장하지 않는다.** 쪽당 상한이며 파일 전체 시간은 쪽 수에 비례한다. 악의적인 PDF/이미지의 디코더 CPU 시간·JVM 메모리를 별도 프로세스로 격리하는 것은 남은 작업이다. TIFF 코덱·회전·손글씨·표 구조·실제 한국어 인식 품질도 검증하지 않았다.
+외부 프로세스 메모리는 JVM 밖이다. 이미지 디코딩/PDF 렌더링 자체는 full JVM에서 수행하므로(재검토 반영에서 자식 JVM으로 격리, 아래 절) **OCR full은 lite의 512 MiB 목표를 보장하지 않는다.** 쪽당 상한이며 파일 전체 시간은 쪽 수에 비례한다. 악의적인 PDF/이미지의 디코더 CPU 시간·JVM 메모리를 별도 프로세스로 격리하는 것은 남은 작업이다. TIFF 코덱·회전·손글씨·표 구조·실제 한국어 인식 품질도 검증하지 않았다.
 
 ## OCR 후보 비교와 판단한 것
 
@@ -246,3 +246,27 @@ PaddleOCR ONNX는 이번에도 구현하지 않고 Tesseract CLI 경로를 유�
 | `git diff --check` | 0 | 공백 오류 없음 |
 
 못 한 검증: 실제 Tesseract(실행 파일 없음)·실제 Qdrant 서버·TLS 리버스 프록시 앞 ML 서버·악성 PDF/이미지 코퍼스 퍼징·cgroup 메모리 제한. 상세 아티팩트(공개 커밋 제외): `build/verification/stage4-review/`(`full-build.log`, `lite-build.log`, `lite-build-final.log`, `lite-runtime.txt`, `ml-runtime.txt`, `exit.txt`).
+
+## 재검토 반영 (기준 23a4c61)
+
+검증일: 2026-10-24. 위 보안 검토 반영에 대한 재검토의 중간 2개·낮음 2개 항목을 반영했다. 기존 보안 동작(관리자 세션+CSRF, 소스 범위 재검사, 키 비공개·AAD, 기본 off, 소스 읽기 전용)은 그대로다.
+
+| 항목 | 처리 | 남은 한계 |
+| --- | --- | --- |
+| R1 OCR 렌더링·디코딩이 같은 JVM 스레드(검사 일부는 시간 제한 밖, 잔류 스레드로 풀 영구 소진) | `OcrSandbox`가 파일마다 같은 클래스 경로의 java 자식(`OcrWorker`)을 `prlimit`(주소 공간 2 GiB·CPU 초·파일 크기 256 MiB·core 0) 아래 `-Xmx192m`·SerialGC·C1·프로세서 1개로 실행한다. 환경은 `PATH`·`LANG`·`MALLOC_ARENA_MAX`만, 표준 입력 `/dev/null`, 출력 폐기. 실행 JAR(`java -jar`)이면 앱 main이 첫 인자 `--nasquire.mode=ocr-worker`로 Spring보다 먼저 분기하고, 그 밖에는 `-cp`로 실행한다(클래스 경로·작업 폴더 절대 경로). 부모는 원본을 마지막 요소 NOFOLLOW·읽기 전용으로 열어(일반 파일·크기 재확인) 데이터 폴더 `ocr-tmp/job-*`(0700)에 복사하고 자식은 이 폴더만 읽고 쓴다(`java.io.tmpdir`·PDFBox 글꼴 캐시도 작업 폴더). 파일 열기·이미지 헤더/`getNumImages`·PDF 내장 이미지/색 공간 검사·렌더링·디코딩·PNG 인코딩이 모두 자식에서 실행된다. 파일 단위 전체 시간 = 15초 + 대상 쪽(이미지는 최대 쪽 수)×10초, 최대 300초. 초과·중단 시 자손→자식 순으로 `destroyForcibly` 후 회수하며 정상 종료 뒤에도 자손을 정리한다. 자식 실행은 프로세스 전체에서 동시에 1개(공정 세마포어, 대기도 시간 상한). 결과 PNG는 쪽당 16 MiB·합계 256 MiB 상한이며 부모가 NOFOLLOW·일반 파일·크기를 다시 확인해 읽는다. 종료 코드 2(상한·입력 오류)는 ML 서버에서 400, 그 밖의 실패는 그 파일만 색인 오류다. 기존 렌더 스레드 풀(`limited`)은 제거했다. ML 서버 `/v1/ocr`도 같은 경로(단일 프레임). | Tesseract 호출은 기존처럼 부모가 쪽마다 별도 `prlimit` 프로세스로 실행한다(자식 JVM의 주소 공간 상한과 운영자 `ocrMemoryMiB` 상한이 충돌하지 않게 분리). 파일마다 JVM을 새로 띄우므로 OCR 대상 파일당 시작 비용이 있다. 부모의 텍스트 PDF 파싱(PDFBox, 기존 lite와 같은 경로)은 격리 대상이 아니다. 자식 JVM 메모리(아래 실측)는 컨테이너 전체 메모리에 더해진다. |
+| R2 `SearchIndex.close()` 수명 | 종료 플래그로 신규 작업 거부 → 세대 증가 → 잠금 밖 활성 작업 완료를 최대 10초 대기 → 초과 시 그 스레드들을 중단(원격 HTTP 호출 취소)하고 다시 최대 10초 대기 → 교체 대기 객체·공급자·저장소·Lucene 순으로 닫는다. 종료 중·후 호출은 `IllegalStateException("색인이 종료되었습니다")`, 종료와 겹친 게시는 하지 않는다. | 중단에도 응하지 않는 공급자는 두 번째 대기 뒤 사용 중에 닫힐 수 있다(공급자 쪽 자체 시간 상한에 의존). |
+| R3 삭제와 원격 쓰기 경쟁·이전 세대 점 | 진행 중 replace를 목록으로 두고 `delete(key)`·`deleteSource(source)`가 같은 key·source를 무효로 표시한다. 게시 직전 잠금 안에서 종료·삭제·세대를 검사하고 무효면 게시하지 않으며 이미 쓴 Qdrant 점을 `deleteKey`로 지운다(쓰기 도중 실패해도 삭제가 끼어들었으면 정리). 외부 점 payload에 영속 색인 세대 `epoch`(Lucene 커밋 `vector.epoch`, 재색인 시작 때 증가)를 쓰고 Qdrant 검색 필터·앱 재검사 모두 현재 세대만 허용한다. 세대 기록이 없는 기존 Qdrant 색인은 시작 시 재색인 필요로 표시한다. | 기존 Qdrant 사용 설치는 업그레이드 후 1회 전체 재색인이 필요하다. 같은 key를 여러 스레드가 동시에 replace하는 경우는 색인 작업자 단일 구조에 의존한다. |
+| R4 OCR 임시 폴더 정리 | 앱 시작(`UploadService` 시작 정리)에서 OCR 사용 여부와 무관하게 `ocr-tmp`의 24시간 지난 `page-*`·`job-*`를 링크를 따르지 않고(링크 자체만) 깊이 4까지 지운다. OCR·ML 서버 생성 때도 같은 정리를 한다. | 24시간 이내 잔여물은 다음 시작까지 남는다. |
+
+회귀 테스트: core `RereviewFixesTest`(원격 임베딩 중 close 시 완료 전 미종료·사용 중 닫기 없음·종료 후 예외, 대기 초과 시 중단 후 닫기, 임베딩 대기 중 key/source 삭제 → 삭제 유지·Qdrant 점 없음, 이전 세대 점 무시·서버 필터 무시 시 앱 재검사, 세대 없는 기존 Qdrant 색인 재색인 요구, `ocr-tmp` 정리의 링크 미추적), full `ReviewFixesFullTest`(손자 프로세스를 띄우고 중단을 무시하는 무한 루프 가짜 자식 → 1.5초 상한 뒤 시간 초과, 관찰한 자식·손자 프로세스 모두 종료·잔존 0, 다음 파일 실제 `OcrWorker` OCR 정상, 작업 폴더 정리, 상대 경로 데이터 폴더, 손상 이미지·소스 링크 실패, 부분 샘플링·상한·ML 단일 프레임), 기존 OCR/ML 테스트는 실제 자식 프로세스로 실행.
+
+| 명령 | 종료 코드 | 결과 |
+| --- | ---: | --- |
+| `./gradlew -Pfull build -q` | 0 | core 24·app 20·full 13, 합계 57개 테스트, 실패·생략 0 |
+| `VERIFY_PORT=8102 python3 scripts/verify-ml.py` (첫 실행) | 1 | `ocrChildDecodes` 실패: 실행 JAR 경로가 상대 경로라 작업 폴더를 작업 디렉터리로 쓰는 자식이 JAR를 찾지 못함. 클래스 경로·작업 폴더 절대 경로화로 수정 |
+| `VERIFY_PORT=8102 python3 scripts/verify-ml.py` (수정 후) | 0 | 실행 JAR ML 서버(리랭커+OCR): 기존 검사 + `/v1/ocr` 자식 디코딩 성공(Tesseract 없음 → 500), 픽셀 상한·손상 이미지 400, 서버의 자식 프로세스 잔존 0, `ocr-tmp` 비어 있음. 최대 628.7 MiB |
+| `./gradlew build -q` | 0 | lite, `verifyLiteClasspath` 통과 |
+| `VERIFY_PORT=8101 python3 scripts/verify-runtime.py` | 0 | lite 48문서·업로드/공유·REST/MCP·TOTP, 시작 최대 174,804 KiB, 작업 최대 290,160 KiB(283.4 MiB), 서버·포트 정리 |
+| 실행 JAR 자식 단독(자체 생성 4000×3000 회색조 PNG, 위와 같은 prlimit·JVM 옵션) | 0 | 0.28초, 자식 최대 RSS 61,252 KiB(부분 샘플링 결과 1쪽) |
+
+정리 회귀 테스트·문서 추가 뒤 `./gradlew -Pfull build -q`와 최종 `./gradlew build -q`(마지막 구성 lite)를 다시 실행해 각각 0이었고(57개 테스트, 실패·생략 0), `git diff --check`도 0이다. 런타임 실측 뒤에는 테스트·문서만 바뀌었다. 못 한 검증: 실제 Tesseract(실행 파일 없음)·실제 Qdrant 서버·악성 PDF/이미지 코퍼스 퍼징·큰 스캔 PDF에서 자식 JVM 메모리·cgroup 제한. 상세 아티팩트(공개 커밋 제외): `build/verification/stage4-rereview/`.

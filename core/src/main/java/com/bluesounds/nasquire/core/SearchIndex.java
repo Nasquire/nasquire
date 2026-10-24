@@ -35,9 +35,24 @@ public final class SearchIndex implements AutoCloseable {
      * 결과를 게시·사용하기 전에 잠금 안에서 세대가 그대로인지 확인한다.
      */
     private long generation;
-    /** 잠금 밖에서 공급자·저장소를 쓰는 작업 수. 교체된 객체는 사용이 끝난 뒤 닫는다. */
+    /** 잠금 밖에서 공급자·저장소를 쓰는 작업 수와 스레드. 교체된 객체는 사용이 끝난 뒤 닫는다. 종료 시간 초과면 스레드를 중단시킨다. */
     private int active;
+    private final List<Thread> activeThreads = new ArrayList<>();
     private final List<AutoCloseable> retired = new ArrayList<>();
+    /**
+     * 외부 점 세대. 재색인 시작 때 증가하고 Lucene 커밋에 남는다. 외부 점 payload에 기록하고 검색은 현재 값만 허용하므로
+     * 설정 교체·재색인과 겹쳐 게시되지 못한 이전 세대 점은 보이지 않는다.
+     */
+    private long epoch;
+    /** 진행 중 replace. 같은 key·source 삭제가 끼어들면 게시하지 않고 이미 쓴 외부 점을 지운다. */
+    private static final class Pending {
+        final String source, key; volatile boolean deleted;
+        Pending(String source, String key) { this.source = source; this.key = key; }
+    }
+    private final List<Pending> pending = new ArrayList<>();
+    private volatile boolean closed;
+    /** close()가 활성 작업을 기다리는 시간. 초과하면 원격 호출 스레드를 중단시키고 같은 시간만큼 더 기다린다. */
+    long closeWaitMillis = 10_000;
     public record EmbeddingStatus(String modelId, int dimensions, String indexedModelId, int indexedDimensions,
             boolean reindexRequired, boolean rebuilding, String vectorStore, String indexedVectorStore) { }
     private String model() { return embedding == null ? "off" : embedding.modelId(); }
@@ -48,6 +63,7 @@ public final class SearchIndex implements AutoCloseable {
     public synchronized void configureEmbedding(Providers.EmbeddingProvider provider) { configureVectors(provider, store); }
     /** 모델·차원·벡터 저장소 중 하나라도 색인 당시와 다르면 재색인 전까지 벡터 검색을 막는다. */
     public synchronized void configureVectors(Providers.EmbeddingProvider provider, VectorStore vectorStore) {
+        ensureOpen();
         var old = embedding; var oldStore = store; embedding = provider; store = vectorStore; generation++;
         if (rebuilding) { rebuilding = false; reindexRequired = true; }
         reindexRequired = reindexRequired || rebuilding || !model().equals(indexedModel) || dimensions() != indexedDimensions
@@ -60,7 +76,13 @@ public final class SearchIndex implements AutoCloseable {
         for (var c : retired) { try { c.close(); } catch (Exception ignored) { } }
         retired.clear();
     }
-    private synchronized void exit() { if (--active == 0) closeRetired(); }
+    private void ensureOpen() { if (closed) throw new IllegalStateException("색인이 종료되었습니다"); }
+    /** 잠금을 쥔 상태에서 호출한다. 종료가 시작되면 새 작업을 받지 않는다. */
+    private void enter() { ensureOpen(); active++; activeThreads.add(Thread.currentThread()); }
+    private synchronized void exit() {
+        activeThreads.remove(Thread.currentThread());
+        if (--active == 0) { closeRetired(); notifyAll(); }
+    }
     private synchronized void checkGeneration(long expected) {
         if (expected != generation) throw new IllegalStateException("벡터 설정 변경, 다시 시도");
     }
@@ -72,16 +94,18 @@ public final class SearchIndex implements AutoCloseable {
     public boolean beginRebuild() throws IOException {
         VectorStore target; int dims; long expected;
         synchronized (this) {
+            ensureOpen();
             if (!rebuildRequested) return false;
-            target = external() ? store : null; dims = dimensions(); expected = generation; active++;
+            target = external() ? store : null; dims = dimensions(); expected = generation; enter();
         }
         // 외부 저장소를 잠금 밖에서 먼저 비운다. 실패하면 요청을 유지하고 다음 검사에서 다시 시도한다.
         try { if (target != null) target.reset(dims); } finally { exit(); }
         synchronized (this) {
             // 그 사이 설정이 바뀌었으면 요청을 유지하고 다음 검사에서 새 저장소로 다시 시작한다.
+            ensureOpen();
             if (expected != generation || !rebuildRequested) return false;
             writer.deleteAll();
-            rebuildRequested = false; rebuilding = true; reindexRequired = true; generation++;
+            rebuildRequested = false; rebuilding = true; reindexRequired = true; generation++; epoch++;
             refresh();
             return true;
         }
@@ -94,7 +118,7 @@ public final class SearchIndex implements AutoCloseable {
         Providers.EmbeddingProvider provider;
         synchronized (this) {
             if (embedding == null) throw new IllegalStateException("공급자 없음");
-            provider = embedding; active++;
+            provider = embedding; enter();
         }
         try { return provider.embedQuery("연결 시험 / connection test"); } finally { exit(); }
     }
@@ -112,22 +136,31 @@ public final class SearchIndex implements AutoCloseable {
                 indexedDimensions = Integer.parseInt(meta.getOrDefault("embedding.dimensions", "0"));
                 reindexRequired = Boolean.parseBoolean(meta.getOrDefault("embedding.incomplete", "false"));
                 indexedStore = meta.getOrDefault("vector.store", "lucene");
+                epoch = Long.parseLong(meta.getOrDefault("vector.epoch", "0"));
+                // 세대 기록 이전의 외부 점은 세대 payload가 없어 검색에서 걸러지므로 한 번 재색인한다.
+                if (indexedStore.startsWith("qdrant:") && !meta.containsKey("vector.epoch")) reindexRequired = true;
             }
         }
         writer = new IndexWriter(directory, config);
         searchers = new SearcherManager(writer, new SearcherFactory());
     }
 
-    /** 임베딩·외부 저장소 호출은 잠금 밖에서 하고, Lucene 게시는 세대가 같을 때만 잠금 안에서 한다. */
+    /**
+     * 임베딩·외부 저장소 호출은 잠금 밖에서 하고, Lucene 게시는 세대가 같고 그 사이 같은 key·source가 삭제되지 않았을 때만 잠금 안에서 한다.
+     * 게시하지 못하면 이미 쓴 외부 점을 지운다(재색인으로 세대가 바뀐 경우는 검색 세대 필터가 거른다).
+     */
     public void replace(Source source, String relative, long mtime, List<Chunk> chunks) throws IOException {
         String key = source.id() + ":" + relative;
-        Providers.EmbeddingProvider provider; VectorStore target; int dims; long expected;
+        Providers.EmbeddingProvider provider; VectorStore target; int dims; long expected, startEpoch;
+        var mine = new Pending(source.id(), key);
         synchronized (this) {
+            ensureOpen();
             if (!indexingAllowed()) throw new IllegalStateException("재색인 필요");
-            provider = embedding; target = external() ? store : null; dims = dimensions(); expected = generation; active++;
+            provider = embedding; target = external() ? store : null; dims = dimensions(); expected = generation; startEpoch = epoch;
+            enter(); pending.add(mine);
         }
-        var vectors = new ArrayList<float[]>();
         try {
+            var vectors = new ArrayList<float[]>();
             if (provider != null) {
                 int batch = provider.batchSize();
                 for (int i = 0; i < chunks.size(); i += batch)
@@ -135,15 +168,31 @@ public final class SearchIndex implements AutoCloseable {
             }
             if (target != null) {
                 var points = new ArrayList<VectorStore.Point>();
-                for (int i = 0; i < chunks.size(); i++) points.add(new VectorStore.Point(source.id(), key, chunks.get(i).offset(), vectors.get(i)));
+                for (int i = 0; i < chunks.size(); i++) points.add(new VectorStore.Point(source.id(), key, chunks.get(i).offset(), vectors.get(i), startEpoch));
                 // 외부 점을 먼저 바꾼다. 실패하면 Lucene 문서를 게시하지 않아 파일 오류로 남는다.
                 target.replace(key, points, dims);
             }
-        } finally { exit(); }
-        synchronized (this) {
-            // 설정·재색인이 끼어들었으면 게시하지 않는다. 파일 오류로 남아 다음 검사에서 다시 처리한다.
-            checkGeneration(expected);
-            publish(source, key, mtime, chunks, provider, target != null, vectors);
+            String reason; boolean visible;
+            synchronized (this) {
+                pending.remove(mine);
+                if (closed) reason = "색인이 종료되었습니다";
+                else if (mine.deleted) reason = "색인 중 삭제됨";
+                else if (expected != generation) reason = "벡터 설정 변경, 다시 시도";
+                else { publish(source, key, mtime, chunks, provider, target != null, vectors); return; }
+                visible = mine.deleted || epoch == startEpoch;
+            }
+            // 설정·재색인·삭제가 끼어들었으면 게시하지 않는다. 파일 오류로 남아 다음 검사에서 다시 처리한다.
+            if (target != null && visible) { try { target.deleteKey(key); } catch (IOException | RuntimeException ignored) { } }
+            throw new IllegalStateException(reason);
+        } catch (IOException | RuntimeException | Error e) {
+            // 외부 쓰기 도중 실패해도 삭제가 끼어들었으면 일부 쓴 점을 지운다.
+            if (target != null && mine.deleted && !(e instanceof IllegalStateException)) {
+                try { target.deleteKey(key); } catch (IOException | RuntimeException ignored) { }
+            }
+            throw e;
+        } finally {
+            synchronized (this) { pending.remove(mine); }
+            exit();
         }
     }
     private void publish(Source source, String key, long mtime, List<Chunk> chunks, Providers.EmbeddingProvider provider, boolean external,
@@ -171,23 +220,34 @@ public final class SearchIndex implements AutoCloseable {
     /** Lucene을 먼저 지운 뒤 잠금 밖에서 외부 점을 지운다. 남은 점은 Lucene 조회에서 버려진다. */
     public void delete(String path) throws IOException {
         VectorStore target;
-        synchronized (this) { writer.deleteDocuments(new Term("key", path)); target = external() ? store : null; if (target != null) active++; }
+        synchronized (this) {
+            ensureOpen(); writer.deleteDocuments(new Term("key", path));
+            for (var p : pending) if (p.key.equals(path)) p.deleted = true;
+            target = external() ? store : null; if (target != null) enter();
+        }
         if (target != null) { try { target.deleteKey(path); } finally { exit(); } }
     }
     public void deleteSource(String source) throws IOException {
         VectorStore target;
-        synchronized (this) { writer.deleteDocuments(new Term("source", source)); target = external() ? store : null; if (target != null) active++; }
+        synchronized (this) {
+            ensureOpen(); writer.deleteDocuments(new Term("source", source));
+            for (var p : pending) if (p.source.equals(source)) p.deleted = true;
+            target = external() ? store : null; if (target != null) enter();
+        }
         if (target != null) { try { target.deleteSource(source); } finally { exit(); } }
     }
     public synchronized void refresh() throws IOException {
+        ensureOpen();
         writer.setLiveCommitData(Map.of("embedding.model", indexedModel, "embedding.dimensions", String.valueOf(indexedDimensions),
-                "embedding.incomplete", String.valueOf(reindexRequired || rebuilding), "vector.store", indexedStore).entrySet());
+                "embedding.incomplete", String.valueOf(reindexRequired || rebuilding), "vector.store", indexedStore,
+                "vector.epoch", String.valueOf(epoch)).entrySet());
         writer.commit(); searchers.maybeRefreshBlocking();
     }
 
     public List<Hit> search(String query, Set<String> sources, int limit) throws IOException { return search(query, sources, limit, null); }
     /** keyword 검색과 원격 호출은 공통 잠금 없이 수행한다. 외부 결과는 세대 확인 뒤 잠금 안의 Lucene 조회로만 본문을 얻는다. */
     public List<Hit> search(String query, Set<String> sources, int limit, String mode) throws IOException {
+        ensureOpen();
         if (mode == null || mode.isBlank()) { synchronized (this) { mode = embedding == null ? "keyword" : "hybrid"; } }
         if (!Set.of("keyword", "vector", "hybrid").contains(mode)) throw new IllegalArgumentException("검색 mode 오류");
         if (query == null || query.isBlank() || query.length() > 1000 || limit < 1 || limit > 100)
@@ -198,19 +258,20 @@ public final class SearchIndex implements AutoCloseable {
         var keyword = new BooleanQuery.Builder().add(textQuery, BooleanClause.Occur.MUST)
                 .add(scope(sources), BooleanClause.Occur.FILTER).build();
         if (mode.equals("keyword")) return find(keyword, limit);
-        Providers.EmbeddingProvider provider; VectorStore target; long expected;
+        Providers.EmbeddingProvider provider; VectorStore target; long expected, currentEpoch;
         synchronized (this) {
+            ensureOpen();
             if (embedding == null || reindexRequired || rebuilding) throw new IllegalStateException("공급자 또는 재색인 필요");
             if (sources.isEmpty()) return List.of();
-            provider = embedding; target = external() ? store : null; expected = generation; active++;
+            provider = embedding; target = external() ? store : null; expected = generation; currentEpoch = epoch; enter();
         }
         int candidates = Math.max(100, limit);
         List<Hit> vector;
         try {
             float[] embedded = provider.embedQuery(query);
-            var matches = target == null ? null : target.search(embedded, sources, candidates);
+            var matches = target == null ? null : target.search(embedded, sources, candidates, currentEpoch);
             synchronized (this) {
-                checkGeneration(expected);
+                ensureOpen(); checkGeneration(expected);
                 if (reindexRequired || rebuilding) throw new IllegalStateException("공급자 또는 재색인 필요");
                 vector = target != null ? external(matches, sources)
                         : find(new KnnFloatVectorQuery("embedding", embedded, candidates, scope(sources)), candidates);
@@ -251,6 +312,7 @@ public final class SearchIndex implements AutoCloseable {
     }
 
     public List<Hit> document(String path, Set<String> sources) throws IOException {
+        ensureOpen();
         var hits = find(new BooleanQuery.Builder()
                 .add(new TermQuery(new Term("key", path)), BooleanClause.Occur.MUST)
                 .add(scope(sources), BooleanClause.Occur.FILTER).build(), 4096);
@@ -276,7 +338,32 @@ public final class SearchIndex implements AutoCloseable {
         } finally { searchers.release(searcher); }
     }
 
+    /**
+     * 신규 작업을 막고 세대를 바꾼 뒤 잠금 밖 원격 작업이 끝나기를 기다린다. 제한 시간을 넘기면 그 스레드를 중단시켜(원격 호출 취소)
+     * 한 번 더 기다리고, 그다음 공급자·저장소·Lucene을 닫는다. 종료 후 호출은 IllegalStateException이다.
+     */
     public void close() throws IOException {
-        synchronized (this) { closeRetired(); }
-        if (embedding != null) embedding.close(); if (store != null) store.close(); searchers.close(); writer.close(); analyzer.close(); directory.close(); }
+        synchronized (this) {
+            if (closed) return;
+            closed = true; generation++;
+            if (!awaitIdle(closeWaitMillis)) {
+                for (Thread t : activeThreads) t.interrupt();
+                awaitIdle(closeWaitMillis);
+            }
+            closeRetired();
+        }
+        try { if (embedding != null) embedding.close(); } catch (RuntimeException ignored) { }
+        try { if (store != null) store.close(); } catch (Exception ignored) { }
+        searchers.close(); writer.close(); analyzer.close(); directory.close();
+    }
+    private boolean awaitIdle(long millis) {
+        long deadline = System.nanoTime() + millis * 1_000_000;
+        while (active > 0) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) return false;
+            try { java.util.concurrent.TimeUnit.NANOSECONDS.timedWait(this, remaining); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); return false; }
+        }
+        return true;
+    }
 }

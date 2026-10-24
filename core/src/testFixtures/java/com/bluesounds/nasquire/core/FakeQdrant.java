@@ -108,7 +108,9 @@ public final class FakeQdrant implements AutoCloseable {
         if (filter == null) throw new IllegalArgumentException("filter 필요");
         for (var c : filter.getAsJsonArray("must")) {
             var condition = c.getAsJsonObject(); var match = condition.getAsJsonObject("match");
-            String actual = p.payload.get(condition.get("key").getAsString()).getAsString();
+            var field = p.payload.get(condition.get("key").getAsString());
+            if (field == null) return false;
+            String actual = field.getAsString();
             if (match.has("value") && !match.get("value").getAsString().equals(actual)) return false;
             if (match.has("any")) {
                 boolean found = false; for (var v : match.getAsJsonArray("any")) found |= v.getAsString().equals(actual);

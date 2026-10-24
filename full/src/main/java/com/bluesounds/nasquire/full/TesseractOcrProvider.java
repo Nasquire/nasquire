@@ -15,22 +15,8 @@ public final class TesseractOcrProvider implements Providers.OcrProvider {
     }
     TesseractOcrProvider(Path data, int seconds, int memoryMiB, String executable) {
         if (seconds < 1 || seconds > 60 || memoryMiB < 128 || memoryMiB > 2048) throw new IllegalArgumentException("OCR 제한 오류");
-        this.temporary = data.resolve("ocr-tmp"); this.seconds = seconds; this.memoryMiB = memoryMiB; this.executable = executable;
-        cleanOldPages();
-    }
-    /** 이전 실행이 강제 종료되어 남은 24시간 지난 page-* 임시 폴더를 정리한다. 진행 중 작업과 겹치지 않게 오래된 것만 지운다. */
-    private void cleanOldPages() {
-        if (!Files.isDirectory(temporary, LinkOption.NOFOLLOW_LINKS)) return;
-        long cutoff = System.currentTimeMillis() - TimeUnit.HOURS.toMillis(24);
-        try (var pages = Files.newDirectoryStream(temporary, "page-*")) {
-            for (Path page : pages) {
-                if (!Files.isDirectory(page, LinkOption.NOFOLLOW_LINKS) || Files.getLastModifiedTime(page, LinkOption.NOFOLLOW_LINKS).toMillis() >= cutoff) continue;
-                try (var files = Files.newDirectoryStream(page)) {
-                    for (Path f : files) if (!Files.isDirectory(f, LinkOption.NOFOLLOW_LINKS)) Files.deleteIfExists(f);
-                }
-                try { Files.deleteIfExists(page); } catch (DirectoryNotEmptyException ignored) { }
-            }
-        } catch (IOException ignored) { }
+        this.temporary = com.bluesounds.nasquire.core.OcrScratch.folder(data); this.seconds = seconds; this.memoryMiB = memoryMiB; this.executable = executable;
+        com.bluesounds.nasquire.core.OcrScratch.cleanStale(data);
     }
     public synchronized String recognize(byte[] image, String language) {
         if (!"kor+eng".equals(language) || image.length == 0 || image.length > 16 * 1024 * 1024) throw new IllegalArgumentException("OCR 입력 오류");

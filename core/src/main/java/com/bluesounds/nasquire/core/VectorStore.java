@@ -5,7 +5,8 @@ import java.util.*;
 
 /** 외부 벡터 저장소. 검색 결과는 조각 식별자뿐이며 본문·경로는 소스 범위를 적용한 Lucene 조회로만 얻는다. */
 public interface VectorStore extends AutoCloseable {
-    record Point(String source, String key, int offset, float[] vector) { }
+    /** epoch는 색인 세대다. 검색은 현재 세대 점만 돌려줘야 한다. */
+    record Point(String source, String key, int offset, float[] vector, long epoch) { }
     record Match(String source, String key, int offset, float score) { }
     /** 색인 메타에 기록하는 저장소 식별자. 바뀌면 재색인 전 벡터 검색을 막는다. */
     String id();
@@ -15,7 +16,7 @@ public interface VectorStore extends AutoCloseable {
     void replace(String key, List<Point> points, int dimensions) throws IOException;
     void deleteKey(String key) throws IOException;
     void deleteSource(String source) throws IOException;
-    /** sources는 비어 있지 않아야 하며 저장소 쪽 필터로 전달해야 한다. */
-    List<Match> search(float[] vector, Set<String> sources, int limit) throws IOException;
+    /** sources는 비어 있지 않아야 하며 소스 범위와 epoch를 저장소 쪽 필터로 전달하고 응답도 다시 검사해야 한다. */
+    List<Match> search(float[] vector, Set<String> sources, int limit, long epoch) throws IOException;
     default void close() { }
 }

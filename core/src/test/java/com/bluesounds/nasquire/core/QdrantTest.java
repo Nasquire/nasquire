@@ -40,7 +40,7 @@ class QdrantTest {
                 var hits = index.search("sea", Set.of("a"), 10, "vector");
                 assertEquals(List.of("a:sea.txt"), hits.stream().map(SearchIndex.Hit::path).toList());
                 var query = qdrant.requests("/points/query").getLast().body();
-                assertTrue(query.contains("\"filter\":{\"must\":[{\"key\":\"source\",\"match\":{\"any\":[\"a\"]}}]}"), query);
+                assertTrue(query.contains("\"filter\":{\"must\":[{\"key\":\"source\",\"match\":{\"any\":[\"a\"]}},{\"key\":\"epoch\",\"match\":{\"value\":"), query);
                 // 서버가 필터를 무시해도 앱이 범위 밖 조각을 버린다.
                 qdrant.ignoreFilter = true;
                 assertEquals(List.of("a:sea.txt"), index.search("sea", Set.of("a"), 10, "vector").stream().map(SearchIndex.Hit::path).toList());

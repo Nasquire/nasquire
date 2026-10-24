@@ -77,7 +77,7 @@ class FullProviderTest {
     }
     @Test void ocrImagesPdfPageEvidenceAndCharacterPagePixelLimits() throws Exception {
         var calls = new AtomicInteger();
-        var extractor = new OcrTextExtractor((image, language) -> { assertEquals("kor+eng", language); calls.incrementAndGet(); return "인식 OCR"; }, 1);
+        var extractor = new OcrTextExtractor((image, language) -> { assertEquals("kor+eng", language); calls.incrementAndGet(); return "인식 OCR"; }, 1, temp);
         Path image = temp.resolve("scan.png");
         javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(20, 20, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", image.toFile());
         var locations = new ArrayList<Location>();
@@ -103,7 +103,7 @@ class FullProviderTest {
             doc.save(pdf.toFile());
         }
         assertThrows(java.io.IOException.class, () -> extractor.extract(pdf, (p, t) -> {}, 100));
-        var pdfExtractor = new OcrTextExtractor((bytes, language) -> "스캔 결과", 2); locations.clear();
+        var pdfExtractor = new OcrTextExtractor((bytes, language) -> "스캔 결과", 2, temp); locations.clear();
         pdfExtractor.extractLocated(pdf, (p, l, t) -> locations.add(l), 100);
         assertEquals(List.of(1, 2), locations.stream().map(Location::page).toList()); assertTrue(locations.stream().allMatch(l -> l.type().equals("ocr")));
         try (var index = new SearchIndex(temp.resolve("index"))) {

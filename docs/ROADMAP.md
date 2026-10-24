@@ -221,4 +221,15 @@
 - [x] M5 원격 임베딩·Qdrant·원격 리랭커의 비루프백 평문 http 거부(`allowInsecureHttp=true` 명시 시만, 화면 경고). 기존 설정은 시작하되 해당 기능만 끄고 `disabledReason` 표시. ML 서버 기본 바인드 127.0.0.1.
 - [x] L1 시작 시 `ocr-tmp`의 24시간 지난 `page-*` 정리. L2 주소 변경 시 저장 키 폐기. L3 OCR 필드 변경 시에만 전체 재색인. L4 tesseract 자식 환경 초기화. L5 키 삭제 API(`DELETE /api/embeddings/key`, `/api/embeddings/qdrant-key`, `/api/full/key`)와 임베딩 화면 삭제 버튼.
 - [ ] L6(선택) 스캔 PDF 이중 로드 개선·OCR 쪽 단위 건너뛰기: 미구현(기존 "일부 쪽만 게시하지 않음" 정책 유지).
-- [ ] 렌더러·디코더의 별도 프로세스 격리, 중첩 Form/인라인 이미지 사전 검사, 실제 Qdrant·TLS 리버스 프록시 앞 ML 서버 실측: 미완료.
+- [x] 렌더러·디코더의 별도 프로세스 격리: 아래 재검토 R1에서 반영.
+- [ ] 중첩 Form/인라인 이미지 사전 검사, 실제 Qdrant·TLS 리버스 프록시 앞 ML 서버 실측: 미완료.
+
+## 4단계 재검토 잔여 수정 (2026-10-24, 기준 23a4c61)
+
+상세는 [full 검증](verification/full.md)의 "재검토 반영" 절.
+
+- [x] R1 OCR 파일 열기·헤더/프레임/자원 검사·렌더링·디코딩을 자식 JVM(`OcrWorker`, 작은 힙·prlimit·환경 초기화·0700 작업 폴더)으로 격리. 파일 단위 시간 상한 초과 시 자손까지 강제 종료·회수, 동시 1개, 출력 상한·NOFOLLOW 읽기, 스레드 풀 제거. ML `/v1/ocr`도 같은 경로.
+- [x] R2 `SearchIndex.close()`: 신규 작업 차단 → 세대 변경 → 활성 작업 대기(초과 시 스레드 중단) → 공급자·저장소·Lucene 닫기. 종료 후 호출은 예외.
+- [x] R3 진행 중 replace를 key·source 삭제가 무효화하고 이미 쓴 Qdrant 점 정리. Qdrant 점 payload에 영속 색인 세대(`vector.epoch`)를 두고 검색은 현재 세대만 허용(세대 기록 없는 기존 Qdrant 색인은 1회 재색인).
+- [x] R4 앱 시작 때 OCR 사용 여부와 무관하게 `ocr-tmp`의 24시간 지난 `page-*`/`job-*` 정리.
+- [ ] Tesseract 호출은 기존처럼 쪽마다 별도 prlimit 프로세스(부모가 실행)이며 자식 JVM 안으로 옮기지 않았다. 실제 Tesseract·악성 코퍼스 퍼징·cgroup 검증 미완료.

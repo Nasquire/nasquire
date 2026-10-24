@@ -26,6 +26,8 @@ public final class Providers {
         RerankerProvider localReranker(java.nio.file.Path model, java.nio.file.Path tokenizer, boolean download, java.nio.file.Path dataFolder, int topN, int timeoutSeconds);
         /** 임베딩·리랭크·OCR만 제공하는 ML 전용 서버를 시작한다. 인증 토큰은 설정 파일·환경변수에서만 읽는다. */
         AutoCloseable ml(String[] args, java.util.Map<String, String> environment) throws Exception;
+        /** OCR 렌더링·디코딩 자식 프로세스 본체. 종료 코드를 돌려준다. */
+        int ocrWorker(String[] args);
     }
     public static FullProvider full() {
         return java.util.ServiceLoader.load(FullProvider.class).findFirst()

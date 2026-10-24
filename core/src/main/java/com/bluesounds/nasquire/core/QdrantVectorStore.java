@@ -9,7 +9,7 @@ import java.time.Duration;
 import java.util.*;
 
 /**
- * Qdrant REST 저장소. 점 payload에는 소스 ID·색인 key·offset만 두고 본문은 보내지 않는다.
+ * Qdrant REST 저장소. 점 payload에는 소스 ID·색인 key·offset·색인 세대만 두고 본문은 보내지 않는다.
  * 검색은 소스 범위를 Qdrant payload 필터로 보내고, 응답도 다시 범위를 검사한다. 응답·예외에 서버 본문이나 키를 남기지 않는다.
  */
 public final class QdrantVectorStore implements VectorStore {
@@ -61,8 +61,8 @@ public final class QdrantVectorStore implements VectorStore {
         var body = new JsonObject(); body.add("vectors", vectors);
         call("PUT", "", body, false, deadline);
         // 범위 필터와 삭제 필터가 쓰는 payload 필드를 색인한다.
-        for (String field : List.of("source", "key")) {
-            var index = new JsonObject(); index.addProperty("field_name", field); index.addProperty("field_schema", "keyword");
+        for (String field : List.of("source", "key", "epoch")) {
+            var index = new JsonObject(); index.addProperty("field_name", field); index.addProperty("field_schema", field.equals("epoch") ? "integer" : "keyword");
             call("PUT", "/index?wait=true", index, false, deadline);
         }
         ensured = dimensions;
@@ -90,6 +90,7 @@ public final class QdrantVectorStore implements VectorStore {
                 var point = new JsonObject(); point.addProperty("id", pointId(p.key(), p.offset()));
                 var vector = new JsonArray(); for (float v : p.vector()) vector.add(v); point.add("vector", vector);
                 var payload = new JsonObject(); payload.addProperty("source", p.source()); payload.addProperty("key", p.key()); payload.addProperty("offset", p.offset());
+                payload.addProperty("epoch", p.epoch());
                 point.add("payload", payload); array.add(point);
             }
             var body = new JsonObject(); body.add("points", array);
@@ -102,14 +103,17 @@ public final class QdrantVectorStore implements VectorStore {
         var body = new JsonObject(); body.add("filter", must(field, match("value", new JsonPrimitive(value))));
         call("POST", "/points/delete?wait=true", body, true, deadline);
     }
-    public List<Match> search(float[] vector, Set<String> sources, int limit) throws IOException {
+    public List<Match> search(float[] vector, Set<String> sources, int limit, long epoch) throws IOException {
         if (sources.isEmpty()) return List.of();
         if (limit < 1 || limit > 1000) throw new IllegalArgumentException("결과 수 오류");
         var query = new JsonArray(); for (float v : vector) query.add(v);
         var any = new JsonArray(); sources.stream().sorted().forEach(any::add);
         var body = new JsonObject(); body.add("query", query); body.addProperty("limit", limit);
-        body.add("filter", must("source", match("any", any)));
-        var fields = new JsonArray(); fields.add("source"); fields.add("key"); fields.add("offset");
+        var filter = must("source", match("any", any));
+        var current = new JsonObject(); current.addProperty("key", "epoch"); current.add("match", match("value", new JsonPrimitive(epoch)));
+        filter.getAsJsonArray("must").add(current);
+        body.add("filter", filter);
+        var fields = new JsonArray(); fields.add("source"); fields.add("key"); fields.add("offset"); fields.add("epoch");
         body.add("with_payload", fields); body.addProperty("with_vector", false);
         var response = guarded(1, deadline -> call("POST", "/points/query", body, false, deadline));
         var matches = new ArrayList<Match>();
@@ -118,7 +122,8 @@ public final class QdrantVectorStore implements VectorStore {
                 var point = element.getAsJsonObject(); var payload = point.getAsJsonObject("payload");
                 String source = payload.get("source").getAsString(), key = payload.get("key").getAsString();
                 int offset = payload.get("offset").getAsInt(); float score = point.get("score").getAsFloat();
-                // 서버 필터가 무시되거나 손상돼도 범위 밖 점은 버린다.
+                // 서버 필터가 무시되거나 손상돼도 범위 밖·이전 세대 점은 버린다.
+                if (!payload.has("epoch") || payload.get("epoch").getAsLong() != epoch) continue;
                 if (!sources.contains(source) || !key.startsWith(source + ":") || !Float.isFinite(score) || offset < 0) continue;
                 matches.add(new Match(source, key, offset, score));
                 if (matches.size() >= limit) break;
