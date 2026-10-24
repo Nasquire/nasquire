@@ -3,6 +3,7 @@ configurations.configureEach { exclude group: 'org.springframework.boot', module
 dependencies {
     implementation platform('org.springframework.boot:spring-boot-dependencies:4.1.2')
     implementation project(':core')
+    if (providers.gradleProperty('full').isPresent()) runtimeOnly project(':full')
     implementation 'org.springframework.boot:spring-boot-starter-log4j2'
     implementation 'org.springframework.boot:spring-boot-starter-webmvc'
     implementation 'org.springframework.boot:spring-boot-starter-security'
@@ -25,3 +26,16 @@ tasks.named('bootRun') {
 }
 
 tasks.named('test') { jvmArgs '--enable-native-access=ALL-UNNAMED' }
+
+// lite 실행 산출물에 full·네이티브 ML 의존성이 다시 유입되는 것을 막는다.
+tasks.register('verifyLiteClasspath') {
+    onlyIf { !providers.gradleProperty('full').isPresent() }
+    doLast {
+        def forbidden = configurations.runtimeClasspath.resolvedConfiguration.resolvedArtifacts.findAll {
+            it.moduleVersion.id.group.startsWith('ai.djl') || it.moduleVersion.id.group == 'com.microsoft.onnxruntime' ||
+                (it.moduleVersion.id.group == 'com.bluesounds' && it.name == 'full')
+        }
+        if (!forbidden.empty) throw new GradleException('lite 클래스 경로에 full 의존성이 있습니다')
+    }
+}
+tasks.named('check') { dependsOn 'verifyLiteClasspath' }

@@ -5,8 +5,6 @@ dependencies {
     implementation 'kr.dogfoot:hwplib:1.1.11'
     implementation 'kr.dogfoot:hwpxlib:1.0.9'
     implementation 'com.google.code.gson:gson:2.14.0'
-    implementation 'com.microsoft.onnxruntime:onnxruntime:1.31.0'
-    implementation 'ai.djl.huggingface:tokenizers:0.39.0'
     api 'org.apache.lucene:lucene-core:10.5.2'
     implementation 'org.apache.lucene:lucene-analysis-nori:10.5.2'
     implementation 'org.apache.lucene:lucene-analysis-common:10.5.2'

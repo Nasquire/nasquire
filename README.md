@@ -19,6 +19,12 @@ Open `http://localhost:8080`, create the administrator (password: at least 12 ch
 
 The app uses `./data` by default. Stop the application before copying its data directory for backup; restore the entire directory together. Sources can always be reindexed. Only one application instance may use a data directory.
 
+## 선택 full 모듈
+
+기본 빌드는 lite이며 OCR·리랭커는 off입니다. `./gradlew -Pfull build -q` 또는 `./gradlew -Pfull :app:bootRun`으로 ONNX 임베딩·원격 리랭커·외부 Tesseract OCR 구현을 포함합니다. 기존 내장 임베딩도 이제 full 빌드가 필요합니다. 원격 임베딩은 lite에서 사용할 수 있습니다. 두 빌드의 앱 JAR 경로가 같으므로 마지막 빌드 구성을 확인하세요.
+
+OCR 실행 파일과 kor+eng 데이터는 별도로 준비해야 합니다. 관리 설정 API와 제한은 [full 검증](docs/verification/full.md)을 참고하세요. Qdrant·ML 전용 모드·로컬 리랭커·실제 OCR 비교는 미완료입니다. 기존 Dockerfile은 lite입니다.
+
 ## Docker
 
 ```sh

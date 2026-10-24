@@ -60,9 +60,7 @@ public final class EmbeddingSettings {
             case "off" -> null;
             case "remote" -> new RemoteEmbeddingProvider(p.getProperty("baseUrl"), p.getProperty("model"), p.getProperty("apiKey", ""),
                     Integer.parseInt(p.getProperty("dimensions")), Integer.parseInt(p.getProperty("batchSize")), Integer.parseInt(p.getProperty("timeoutSeconds")));
-            case "builtin" -> new OnnxEmbeddingProvider(Path.of(p.getProperty("modelPath")), Path.of(p.getProperty("tokenizerPath")),
-                    Boolean.parseBoolean(p.getProperty("download")) ? p.getProperty("modelUrl") : "",
-                    Boolean.parseBoolean(p.getProperty("download")) ? p.getProperty("tokenizerUrl") : "", p.getProperty("modelSha256"), p.getProperty("tokenizerSha256"), folder);
+            case "builtin" -> Providers.full().embedding(p, folder);
             default -> throw new IllegalArgumentException("공급자 오류");
         };
     }
@@ -70,6 +68,7 @@ public final class EmbeddingSettings {
         synchronized (index) {
             var result = new LinkedHashMap<String, Object>();
             for (String field : settings.stringPropertyNames()) if (!field.equals("apiKey")) result.put(field, settings.getProperty(field));
+            result.put("builtinAvailable", ServiceLoader.load(Providers.FullProvider.class).findFirst().isPresent());
             result.put("hasKey", !settings.getProperty("apiKey", "").isEmpty()); result.put("keyError", keyError); result.put("status", index.embeddingStatus());
             return result;
         }
@@ -110,11 +109,17 @@ public final class EmbeddingSettings {
         var stored = new Properties(); try (var in = Files.newInputStream(file)) { stored.load(in); }
         return stored.containsKey("encryptedKey");
     }
+    private boolean fullCiphertext() throws Exception {
+        Path full = folder.resolve("full.properties");
+        if (!Files.exists(full)) return false;
+        var stored = new Properties(); try (var in = Files.newInputStream(full)) { stored.load(in); }
+        return stored.containsKey("encryptedKey");
+    }
     private byte[] key(boolean create, String purpose) throws Exception {
         Path path = folder.resolve("embedding.key");
         if (!Files.exists(path)) {
             // 임베딩 저장은 기존 임베딩 암호문을 통째로 바꾸므로 그 암호문만 있으면 새 키를 허용한다.
-            if (!create || storedSecrets.getAsBoolean() || (!purpose.equals(EMBEDDING) && embeddingCiphertext()))
+            if (!create || storedSecrets.getAsBoolean() || fullCiphertext() || (!purpose.equals(EMBEDDING) && embeddingCiphertext()))
                 throw new KeyUnavailable("암호화 키 파일(embedding.key)이 없지만 기존 암호문이 있습니다. " + RECOVERY_HINT);
             byte[] bytes = new byte[32]; new SecureRandom().nextBytes(bytes);
             try { Files.createFile(path, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------"))); }

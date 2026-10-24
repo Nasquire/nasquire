@@ -89,6 +89,7 @@ class ApplicationIntegrationTest {
         var denied = mcp(token, "get_document", Map.of("path", otherId + ":private.txt"));
         assertTrue(denied.at("/result/isError").asBoolean()); assertFalse(denied.toString().contains("confidential"));
         assertTrue(mcp(token, "get_document", Map.of("path", id + ":notes.md", "length", 100001)).at("/result/isError").asBoolean());
+        verifyFull(token, id, source);
         verifyDownloads(token, id, otherId, source, other);
         verifySecurityReview(token, id, source);
         verifyUploadsShares(token, id, source, other);
@@ -101,6 +102,71 @@ class ApplicationIntegrationTest {
         assertEquals(200, call("/api/sources/" + id, "DELETE", null, null, true).statusCode());
         assertEquals(204, call("/api/logout", "POST", null, null, true).statusCode());
         assertEquals(401, call("/api/search?query=ocean", "GET", null, null, false).statusCode());
+    }
+    void verifyFull(String token, String id, Path source) throws Exception {
+        var defaults = json(call("/api/full", "GET", null, null, true), 200);
+        assertEquals("off", defaults.get("reranker").asText()); assertEquals("off", defaults.get("ocr").asText());
+        assertEquals(403, call("/api/full", "PUT", Map.of("reranker", "off"), null, false).statusCode());
+        assertEquals(403, call("/api/full", "PUT", Map.of("reranker", "off"), token, false).statusCode());
+        assertEquals(403, call("/api/full", "GET", null, token, false).statusCode());
+        var anonymous = HttpClient.newHttpClient();
+        assertEquals(401, anonymous.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/full")).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+        if (!defaults.get("available").asBoolean()) {
+            assertEquals(409, call("/api/full", "PUT", Map.of("reranker", "remote"), null, true).statusCode());
+            assertEquals(409, call("/api/full", "PUT", Map.of("ocr", "tesseract"), null, true).statusCode());
+            return;
+        }
+        var server = com.sun.net.httpserver.HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var received = new java.util.concurrent.atomic.AtomicReference<String>();
+        server.createContext("/rerank", e -> {
+            received.set(new String(e.getRequestBody().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8)); calls.incrementAndGet();
+            byte[] body = "{\"results\":[{\"index\":0,\"relevance_score\":0},{\"index\":1,\"relevance_score\":1}]}".getBytes();
+            e.sendResponseHeaders(200, body.length); e.getResponseBody().write(body); e.close();
+        }); server.start();
+        Path extra = source.resolve("full.md");
+        try {
+            Files.writeString(extra, "ocean full allowed second");
+            assertEquals(200, call("/api/full", "PUT", Map.of("reranker", "remote", "baseUrl", "http://127.0.0.1:" + server.getAddress().getPort(),
+                    "model", "test-model", "apiKey", "full-test-secret", "topN", "2", "timeoutSeconds", "1"), null, true).statusCode());
+            JsonNode original = null;
+            for (int i = 0; i < 100; i++) {
+                original = json(call("/api/search?query=ocean", "GET", null, token, false), 200);
+                if (original.size() == 2) break; Thread.sleep(100);
+            }
+            assertEquals(2, original.size()); assertEquals(0, calls.get());
+            var reranked = json(call("/api/search?query=ocean&rerank=true", "GET", null, token, false), 200);
+            assertEquals(original.get(1), reranked.get(0)); assertEquals(original.get(0), reranked.get(1));
+            assertFalse(received.get().contains("confidential")); assertTrue(received.get().contains("allowed"));
+            var result = mcp(token, "search_documents", Map.of("query", "ocean", "rerank", true));
+            assertFalse(result.at("/result/isError").asBoolean());
+            assertEquals(reranked, mapper.readTree(result.at("/result/content/0/text").asText()));
+            assertEquals(2, calls.get());
+            assertFalse(call("/api/full", "GET", null, null, true).body().contains("full-test-secret"));
+            String stored = Files.readString(TEMP.resolve("data/full.properties"));
+            assertFalse(stored.contains("full-test-secret")); assertTrue(stored.contains("v2"));
+            // 재시작과 같은 로딩 경로, 용도별 AAD·키 누락 시 재생성 차단을 검증한다.
+            try (var reloadIndex = new com.bluesounds.nasquire.core.SearchIndex(TEMP.resolve("reload-index"))) {
+            var secretService = new EmbeddingSettings(reloadIndex, TEMP.resolve("data"), new org.springframework.mock.env.MockEnvironment());
+            try (var reloaded = new FullSettings(TEMP.resolve("data"), secretService)) { assertEquals(true, reloaded.view().get("hasKey")); }
+            var properties = new Properties(); try (var input = Files.newInputStream(TEMP.resolve("data/full.properties"))) { properties.load(input); }
+            assertThrows(EmbeddingSettings.KeyUnavailable.class, () -> secretService.decrypt("embedding", properties.getProperty("encryptedKey")));
+            Path key = TEMP.resolve("data/embedding.key"), savedKey = TEMP.resolve("saved-full-key");
+            Files.move(key, savedKey);
+            try {
+                assertThrows(EmbeddingSettings.KeyUnavailable.class, () -> secretService.encrypt("embedding", "replacement"));
+                assertFalse(Files.exists(key));
+            } finally { Files.move(savedKey, key); }
+            }
+        } finally {
+            assertEquals(200, call("/api/full", "PUT", Map.of("reranker", "off", "ocr", "off"), null, true).statusCode());
+            Files.deleteIfExists(extra); server.stop(0);
+            // 다음 테스트는 원래 한 파일만 있는 안정 상태를 전제로 한다.
+            for (int i = 0; i < 100; i++) {
+                if (json(call("/api/search?query=ocean", "GET", null, token, false), 200).size() == 1) break;
+                Thread.sleep(100);
+            }
+        }
     }
     void verifyDownloads(String token, String id, String otherId, Path source, Path other) throws Exception {
         String path = id + ":notes.md";

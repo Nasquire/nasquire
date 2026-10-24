@@ -20,6 +20,8 @@ OpenAI 호환 `POST {baseUrl}/embeddings`를 호출하며 `input` 배열, `model
 
 ## 내장 공급자
 
+4단계 모듈 분리 이후 내장 공급자는 `./gradlew -Pfull build -q`로 만든 full 앱에서만 제공한다. 기본 lite 앱에는 ONNX Runtime·DJL·네이티브 모델 구현을 포함하지 않으며 선택하면 거부한다. 원격 임베딩은 lite에서도 사용할 수 있다. 내장 공급자를 끄고 lite로 전환한다. full 선택 빌드와 OCR/리랭커의 현재 범위는 [4단계 검증](verification/full.md)을 참고한다.
+
 ONNX Runtime Java CPU로 int8 `multilingual-e5-small`을 실행한다. 모델 파일은 저장소·컨테이너 이미지에 포함하지 않는다. 모델 다운로드도 기본으로 꺼져 있다. 사전 준비한 파일을 읽거나 `download=true`를 명시하면 첫 연결 시험·임베딩 때 HTTPS로 내려받아 SHA-256을 확인한다. 기존 파일도 로드 전에 해시를 검사한다. 다운로드는 임시 파일 → 해시 검사 → 원자적 이동으로 게시하며 파일별 256 MiB 상한을 둔다. **자동 다운로드 대상은 데이터 디렉터리 안이어야 한다.** 외부 경로에 준비한 모델은 읽기만 한다. 원본 소스 볼륨은 항상 읽기 전용으로 마운트한다.
 
 | 설정 | 기본값 |

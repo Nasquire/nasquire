@@ -1,0 +1,8 @@
+plugins { id 'java-library' }
+dependencies {
+    api project(':core')
+    implementation 'com.google.code.gson:gson:2.14.0'
+    implementation 'org.apache.pdfbox:pdfbox:3.0.8'
+    implementation 'com.microsoft.onnxruntime:onnxruntime:1.31.0'
+    implementation 'ai.djl.huggingface:tokenizers:0.39.0'
+}

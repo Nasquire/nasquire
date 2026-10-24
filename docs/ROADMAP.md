@@ -67,7 +67,7 @@
 - [ ] MCP OAuth(후속 보안 작업).
 - [ ] 실제 브라우저에서 모바일·라이트/다크·접근성 시각 검증(이번 환경에는 브라우저 자동화 도구 없음). 프런트엔드는 TypeScript/Vite 빌드와 정적 리소스 제공을 검증했다.
 - [ ] 검색 하이라이트, 색인 오류 원인 상세 UI, 파일별 영속 변경 감지 스냅샷 최적화.
-- [ ] 리랭커·OCR·추가 문서 형식은 기존 3~4단계에서 구현.
+- [ ] 리랭커·OCR의 전체 완료는 아래 4단계 체크리스트를 따른다(추가 형식은 3단계 완료).
 
 
 ## 2단계 구현·검증 (2026-10-24)
@@ -176,3 +176,21 @@
 - [x] 복구 코드 정규화, 오프라인 복구 확인 재입력·CR 제거, 로그인 코드 단계 취소(한/영).
 - [x] `./gradlew build -q` 종료 0, `verify-runtime.py`·`verify-admin-recovery.py` 종료 0. 상세: [TOTP 검증](verification/totp.md#교차-검토-반영-2026-10-24-기준-커밋-ad6a3b1).
 - [ ] 실제 브라우저 UI·실제 TTY 확인 재입력 검증, 키 오류 503 HTTP 통합 테스트, 원격 임베딩 테스트 간헐 실패(1회) 원인 확인.
+
+
+## 4단계 full 모듈 부분 구현 (2026-10-24, 기준 a4bb16b)
+
+**부분 완료. 단계 전체 체크는 미완료로 유지한다.** 상세 근거·제한은 [full 검증](verification/full.md)을 따른다.
+
+- [x] 독립 `full` Gradle 라이브러리·Providers/ServiceLoader 확장. 기본 lite 앱 런타임에서 full·ONNX Runtime·DJL 제외, 기존 내장 E5 공급자는 full로 이동, 원격 임베딩은 lite에 유지. `-Pfull`로 선택 포함, lite 의존성 유입 검사.
+- [x] full 설정 기본 off·관리자 세션/CSRF 전용 API(`/api/full`), 원격 키 AES-GCM v2 + AAD `reranker`·비공개·0600·공유 암호화 키 재생성 차단.
+- [x] 원격 일반 rerank HTTP API, 검색 결과 상위 N만 재정렬·근거 보존·전체 시간/응답 상한·오류/혼잡 시 원래 순서, REST/MCP 요청별 opt-in과 범위 밖 내용 미전송 통합 테스트.
+- [x] Tesseract CLI 공급자와 이미지/텍스트 없는 PDF 쪽 추출 경로, kor+eng·시간/주소 공간/출력/쪽/픽셀/문자 상한, `location.type=ocr`와 원래 쪽 번호. 가짜 프로세스·생성 이미지/스캔 PDF·Lucene 근거 보존 테스트.
+- [ ] **실제 OCR 실행·정확도/속도/RSS 비교는 미완료.** Tesseract 실행 파일이 없어 종료 127, 두 언어 데이터 미준비. PaddleOCR ONNX는 공급자 계약만 유지하고 구현·고정 모델·전후처리 없음. Tesseract의 격리 용이성을 근거로 잠정 구현 선택했으며 인식 성능 우위를 입증하지 않았다.
+- [ ] 로컬 ONNX 다국어 cross-encoder·AGPL 호환 모델 선정/고정 리비전/SHA-256·데이터 폴더 다운로드·실측. 이번에는 원격 리랭커만 구현.
+- [ ] Qdrant 저장소와 REST 클라이언트, 암호화 키·컬렉션 모델/차원 메타·불일치 검색 차단/재색인·소스 범위 필터·가짜 HTTP 통합 테스트. 전부 미구현, 기본 Lucene HNSW 유지.
+- [ ] ML 전용 HTTP 서버·Bearer 필수·소스/관리 화면 차단·기존 원격 프로토콜 호환·요청 크기/동시성 상한. 전부 미구현, `nasquire.mode=ml`은 시작 거부.
+- [ ] full 설정 UI, full OCR 실행 파일/언어 데이터 배포, 별도 lite/full 이미지·산출물 명명(5단계), arm64·Docker/cgroup·외부 실제 서비스/대규모 부하 검증.
+
+- [x] 최종 `./gradlew build -q`·`./gradlew -Pfull build -q` 종료 0, core 11개·app 15개·full 4개 테스트 통과. lite 실제 실행 검증 2회·기준 비교 1회 종료 0, 각 서버 종료/포트 정리. 기본 JAR에서 full/ONNX/DJL 제외 확인.
+- [ ] **lite RSS 기존 수준 동등성은 미완료.** 기준 커밋 재측정 282.8 MiB, 현재 309.9/309.8 MiB(약 +27 MiB, +9.6%). 증가 원인 미확정. JVM RSS는 512 MiB 아래지만 full 미포함만으로 메모리 무영향을 주장하지 않는다. 회귀 분석·실제 cgroup 검증 필요.

@@ -7,7 +7,7 @@ allprojects {
     version = '0.1.0'
     repositories { mavenCentral() }
 }
-configure([project(':core'), project(':app')]) {
+configure([project(':core'), project(':app'), project(':full')]) {
     apply plugin: 'java'
     java { toolchain { languageVersion = JavaLanguageVersion.of(25) } }
     tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }

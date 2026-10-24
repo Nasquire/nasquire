@@ -13,7 +13,8 @@ import org.springframework.context.annotation.*;
 @Configuration
 public class AppConfiguration {
     @Bean
-    Path dataFolder(@Value("${nasquire.data:./data}") String folder) throws IOException {
+    Path dataFolder(@Value("${nasquire.data:./data}") String folder, @Value("${nasquire.mode:search}") String mode) throws IOException {
+        if (!"search".equals(mode)) throw new IllegalArgumentException("지원하지 않는 모드: ML 전용 모드는 아직 구현되지 않았습니다");
         var path = Path.of(folder).toAbsolutePath().normalize();
         Files.createDirectories(path);
         return path.toRealPath();
@@ -35,14 +36,14 @@ public class AppConfiguration {
     @Bean(destroyMethod = "close")
     SearchIndex searchIndex(Path dataFolder) throws IOException { return new SearchIndex(dataFolder.resolve("index")); }
     @Bean(destroyMethod = "close")
-    IndexingService indexingService(SearchIndex index, Storage storage, EmbeddingSettings embeddings,
+    IndexingService indexingService(SearchIndex index, Storage storage, EmbeddingSettings embeddings, FullSettings full,
             @Value("${nasquire.max-file-bytes:33554432}") long maxBytes,
             @Value("${nasquire.max-text-characters:2000000}") int maxCharacters,
             @Value("${nasquire.stable-millis:2000}") long stableMillis,
             @Value("${nasquire.scan-millis:10000}") long scanMillis) {
         if (maxBytes <= 0 || maxCharacters < 1200 || maxCharacters > 4000000 || stableMillis < 0 || scanMillis < 100)
             throw new IllegalArgumentException("색인 설정값 범위 오류");
-        var service = new IndexingService(index, maxBytes, maxCharacters, stableMillis, List.of(new PdfTextExtractor(), new PlainTextExtractor(), new OfficeTextExtractor()));
+        var service = new IndexingService(index, maxBytes, maxCharacters, stableMillis, List.of(full.extractor(), new PdfTextExtractor(), new PlainTextExtractor(), new OfficeTextExtractor()));
         service.start(storage::sources, scanMillis);
         return service;
     }

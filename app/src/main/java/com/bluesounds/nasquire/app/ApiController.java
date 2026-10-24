@@ -22,9 +22,17 @@ public class ApiController {
     private final IndexingService indexing;
     private final DocumentService documents;
     private final Path dataFolder;
-    public ApiController(Storage storage, IndexingService indexing, DocumentService documents, Path dataFolder, EmbeddingSettings embeddings) {
+    public ApiController(Storage storage, IndexingService indexing, DocumentService documents, Path dataFolder, EmbeddingSettings embeddings, FullSettings full) {
+        this.full = full;
         this.embeddings = embeddings;
         this.storage = storage; this.indexing = indexing; this.documents = documents; this.dataFolder = dataFolder;
+    }
+    private final FullSettings full;
+    @GetMapping("/full") Map<String, Object> full() { return full.view(); }
+    @PutMapping("/full") void full(@RequestBody Map<String, String> input) throws Exception {
+        full.save(input);
+        for (var source : storage.sources()) indexing.reindex(source.id());
+        storage.audit("admin", "full-save", 200);
     }
     @GetMapping("/embeddings") Map<String, Object> embeddings() { return embeddings.view(); }
     @PutMapping("/embeddings") void embeddings(@RequestBody Map<String, String> input) throws Exception { embeddings.save(input); storage.audit("admin", "embedding-save", 200); }
@@ -80,8 +88,8 @@ public class ApiController {
     @DeleteMapping("/tokens/{id}") void revoke(@PathVariable String id) { storage.revoke(id); storage.audit("admin", "token-revoke " + id, 200); }
     @GetMapping("/audit") List<Map<String, Object>> audit() { return storage.audit(); }
     @GetMapping("/search") List<SearchIndex.Hit> search(@RequestParam String query, @RequestParam(required = false) String source,
-            @RequestParam(defaultValue = "20") int limit, @RequestParam(required = false) String mode, HttpServletRequest req) throws IOException {
-        return documents.search((Storage.Identity)req.getAttribute("nasquire.token"), query, source, limit, mode);
+            @RequestParam(defaultValue = "20") int limit, @RequestParam(required = false) String mode, @RequestParam(defaultValue = "false") boolean rerank, HttpServletRequest req) throws IOException {
+        return documents.search((Storage.Identity)req.getAttribute("nasquire.token"), query, source, limit, mode, rerank);
     }
     @GetMapping("/document") Map<String, Object> document(@RequestParam String path,
             @RequestParam(name = "page_from", required = false) Integer from, @RequestParam(name = "page_to", required = false) Integer to,

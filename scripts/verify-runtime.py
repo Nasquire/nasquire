@@ -34,7 +34,7 @@ with tempfile.TemporaryDirectory(prefix='runtime-', dir=artifacts) as folder, (a
     runtime_env['MALLOC_ARENA_MAX'] = '2'
     runtime_env['TOKENIZERS_PARALLELISM'] = 'false'
     runtime_env['DJL_CACHE_DIR'] = str(artifacts / 'djl-cache')
-    server = subprocess.Popen(['./gradlew', ':app:bootRun', '--no-daemon', '-q', '--args=' + ' '.join([
+    server = subprocess.Popen(['./gradlew', *(['-Pfull'] if os.environ.get('VERIFY_EMBEDDING') == 'builtin' else []), ':app:bootRun', '--no-daemon', '-q', '--args=' + ' '.join([
         f'--server.port={port}', f'--nasquire.data={folder}/data', '--nasquire.scan-millis=500', '--nasquire.stable-millis=200'])],
         cwd=root, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=runtime_env)
     try:

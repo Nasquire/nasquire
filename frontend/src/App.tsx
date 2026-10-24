@@ -110,7 +110,7 @@ export default function App() {
         const form = globalThis.document.getElementById('embedding-form') as HTMLFormElement; await api('/embeddings', 'PUT', Object.fromEntries(data)); const keyInput = form.elements.namedItem('apiKey') as HTMLInputElement | null; if (keyInput) keyInput.value = ''; setConnection(''); await refresh()
       })}>
         <label>{t('Provider', '공급자')}<select name="provider" defaultValue={String(embedding.provider)} onChange={e => { setProvider(e.target.value); setConnection('') }}>
-          <option value="off">{t('Off', '없음')}</option><option value="builtin">{t('Built-in ONNX', '내장 ONNX')}</option><option value="remote">{t('Remote (OpenAI compatible)', '원격 (OpenAI 호환)')}</option>
+          <option value="off">{t('Off', '없음')}</option><option value="builtin" disabled={!embedding.builtinAvailable}>{t('Built-in ONNX (full)', '내장 ONNX (full)')}</option><option value="remote">{t('Remote (OpenAI compatible)', '원격 (OpenAI 호환)')}</option>
         </select></label>
         {((provider || embedding.provider) === 'remote') && <>
           <label>{t('Base URL', '기본 주소')}<input name="baseUrl" type="url" required defaultValue={String(embedding.baseUrl)} onChange={e => setBaseUrl(e.target.value)} /></label>
