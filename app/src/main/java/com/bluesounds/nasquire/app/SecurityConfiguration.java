@@ -29,23 +29,60 @@ public class SecurityConfiguration {
     }
     @Bean UserDetailsService users(Storage store) { return store::user; }
     @Bean BCryptPasswordEncoder passwordEncoder() { return new BCryptPasswordEncoder(12); }
-    @Bean SecurityFilterChain security(HttpSecurity http, Storage storage, @Value("${nasquire.mcp-allowed-origins:}") String allowedOrigins) throws Exception {
+    @Bean SecurityFilterChain security(HttpSecurity http, Storage storage, LoginAttempts attempts, ClientAddresses addresses, @Value("${nasquire.upload-max-bytes:33554432}") long maximum, @Value("${nasquire.mcp-allowed-origins:}") String allowedOrigins) throws Exception {
         http.authorizeHttpRequests(a -> a
                 .requestMatchers("/", "/index.html", "/assets/**", "/icon.svg", "/LICENSE.txt", "/react-LICENSE.txt", "/LICENSE-EXCEPTIONS.md", "/api/auth", "/api/setup", "/api/login", "/download", "/error").permitAll()
                 .requestMatchers("/mcp").authenticated()
                 .requestMatchers("/api/search", "/api/document", "/api/download").authenticated()
                 .anyRequest().hasRole("ADMIN"))
             .csrf(c -> c.ignoringRequestMatchers(r -> r.getAttribute("nasquire.token") != null)
-                    .csrfTokenRepository(new HttpSessionCsrfTokenRepository()))
+                    .csrfTokenRepository(new HttpSessionCsrfTokenRepository())
+                    .csrfTokenRequestHandler(new CsrfTokenRequestHandler() {
+                        private final XorCsrfTokenRequestAttributeHandler delegate = new XorCsrfTokenRequestAttributeHandler();
+                        @Override public void handle(HttpServletRequest req, HttpServletResponse res, java.util.function.Supplier<CsrfToken> token) { delegate.handle(req, res, token); }
+                        @Override public String resolveCsrfTokenValue(HttpServletRequest req, CsrfToken token) {
+                            return req.getHeader(token.getHeaderName()) == null ? null : delegate.resolveCsrfTokenValue(req, token);
+                        }
+                    }))
+            .addFilterBefore(new MultipartGuard(maximum), CsrfFilter.class)
+            .addFilterBefore(new LoginGuard(attempts, addresses, storage), org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class)
             .addFilterBefore(new BearerFilter(storage, Arrays.stream(allowedOrigins.split(",")).map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toSet())), CsrfFilter.class)
             .formLogin(f -> f.loginProcessingUrl("/api/login")
-                    .successHandler((req, res, auth) -> { storage.audit("admin", "login", 200); res.setStatus(200); })
-                    .failureHandler((req, res, ex) -> { storage.audit("anonymous", "login", 401); res.sendError(401); }))
+                    .successHandler((req, res, auth) -> { attempts.succeeded(addresses.address(req), auth.getName()); storage.audit("admin", "login", 200); res.setStatus(200); })
+                    .failureHandler((req, res, ex) -> { attempts.failed(addresses.address(req), req.getParameter("username"), System.currentTimeMillis()); storage.audit("anonymous", "login", 401); res.setStatus(401); }))
             .logout(l -> l.logoutUrl("/api/logout").logoutSuccessHandler((req, res, auth) -> res.setStatus(204)))
-            .exceptionHandling(e -> e.authenticationEntryPoint((req, res, ex) -> res.sendError(401))
-                    .accessDeniedHandler((req, res, ex) -> res.sendError(403)))
+            .exceptionHandling(e -> e.authenticationEntryPoint((req, res, ex) -> res.setStatus(401))
+                    .accessDeniedHandler((req, res, ex) -> res.setStatus(403)))
             .requestCache(c -> c.disable());
         return http.build();
+    }
+
+    static class MultipartGuard extends OncePerRequestFilter {
+        private final long maximum;
+        MultipartGuard(long maximum) { this.maximum = maximum + 1048576; }
+        protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain) throws IOException, ServletException {
+            String type = req.getContentType();
+            if (type != null && type.toLowerCase(java.util.Locale.ROOT).startsWith("multipart/")) {
+                if (!req.getServletPath().startsWith("/api/uploads/")) { res.setStatus(403); return; }
+                var auth = SecurityContextHolder.getContext().getAuthentication();
+                if (auth == null || auth.getAuthorities().stream().noneMatch(a -> a.getAuthority().equals("ROLE_ADMIN"))) { res.setStatus(401); return; }
+                if (req.getContentLengthLong() > maximum) { res.setStatus(413); return; }
+            }
+            chain.doFilter(req, res);
+        }
+    }
+    static class LoginGuard extends OncePerRequestFilter {
+        private final LoginAttempts attempts;
+        private final ClientAddresses addresses;
+        private final Storage storage;
+        LoginGuard(LoginAttempts attempts, ClientAddresses addresses, Storage storage) { this.attempts = attempts; this.addresses = addresses; this.storage = storage; }
+        protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain) throws IOException, ServletException {
+            if (req.getServletPath().equals("/api/login") && req.getMethod().equals("POST")
+                    && !attempts.allowed(addresses.address(req), req.getParameter("username"), System.currentTimeMillis())) {
+                storage.audit("anonymous", "login-rate-limit", 429); res.setHeader("Retry-After", "900"); res.setStatus(429); return;
+            }
+            chain.doFilter(req, res);
+        }
     }
 
     static class BearerFilter extends OncePerRequestFilter {
@@ -56,12 +93,12 @@ public class SecurityConfiguration {
             String header = req.getHeader("Authorization");
             boolean mcp = req.getServletPath().equals("/mcp");
             if (mcp && req.getHeader("Origin") != null && !allowedOrigins.contains(req.getHeader("Origin"))) {
-                res.sendError(403); return;
+                res.setStatus(403); return;
             }
             if (header == null && !mcp) { chain.doFilter(req, res); return; }
-            if (header == null || !header.startsWith("Bearer ") || header.length() > 256) { res.sendError(401); return; }
+            if (header == null || !header.startsWith("Bearer ") || header.length() > 256) { res.setStatus(401); return; }
             var identity = storage.authenticate(hash(header.substring(7)));
-            if (identity == null) { storage.audit("invalid-token", req.getMethod() + " " + req.getServletPath(), 401); res.sendError(401); return; }
+            if (identity == null) { storage.audit("invalid-token", req.getMethod() + " " + req.getServletPath(), 401); res.setStatus(401); return; }
             req.setAttribute("nasquire.token", identity);
             var context = SecurityContextHolder.createEmptyContext();
             context.setAuthentication(new UsernamePasswordAuthenticationToken(identity, null, List.of()));
@@ -69,7 +106,7 @@ public class SecurityConfiguration {
             SecurityContextHolder.setContext(context);
             try {
                 if (!mcp && !(req.getMethod().equals("GET") && List.of("/api/search", "/api/document", "/api/download").contains(req.getServletPath()))) {
-                    res.sendError(403); return;
+                    res.setStatus(403); return;
                 }
                 chain.doFilter(req, res);
             } finally {

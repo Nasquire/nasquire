@@ -48,8 +48,9 @@ java --enable-native-access=ALL-UNNAMED -Xmx256m -XX:+UseSerialGC -jar app/build
 | `nasquire.max-file-bytes` | `33554432` | File-size ceiling (32 MiB) |
 | `nasquire.max-text-characters` | `2000000` | Extracted-character ceiling, 1200–4000000; Office/HWP indexes the prefix at this limit |
 | `nasquire.mcp-allowed-origins` | empty | Comma-separated exact allowed browser Origins for MCP; no Origin header is required for native clients |
-| `nasquire.public-url` | empty | Public base URL, e.g. `https://nas.example.com`; otherwise use the current request base |
-| `nasquire.download-ttl-seconds` | `300` | Signed download lifetime, 1–86400 seconds |
+| `nasquire.public-url` | empty | Public base URL, e.g. `https://nas.example.com`; otherwise return a relative path (MCP responses recommend configuring this value) |
+| `nasquire.download-ttl-seconds` | `300` | Opaque download ticket lifetime, 1–3600 seconds |
+| `nasquire.trusted-proxies` | empty | Comma-separated exact proxy IP addresses permitted to supply X-Forwarded-For; no DNS names or CIDR |
 | `nasquire.upload-max-bytes` | `33554432` | Upload ceiling, 1 byte–1 GiB; multipart stored on disk, request ceiling includes 1 MiB overhead |
 | `nasquire.trash-retention-days` | `30` | Trash retention, 1–365 days; hourly cleanup, first run after one minute |
 | `nasquire.share-requests-per-minute` | `60` | Public requests per remote IP, 1–10000; at most 4096 IP windows |
@@ -85,7 +86,7 @@ Authenticate reading requests with `Authorization: Bearer <token>` or an adminis
 
 Administrator mutations, including setup, login, and logout, require the CSRF header from `/api/auth` and the same session cookie. Login rotates the session and CSRF token; fetch `/api/auth` again afterward. Document requests accept `page_from`/`page_to` **or** `offset`/`length` (zero-based character offset, at most 100000 characters). Responses include `truncated` and `totalCharacters`. The path format is `<source-id>:<relative-name>`; arbitrary filesystem reads are never exposed. Source removal makes its results inaccessible immediately, then the worker removes its index entries.
 
-Download links expire after five minutes by default and are invalidated by server restart. Token revocation prevents new issuance; an already issued link remains usable until expiry. Source existence, include/exclude rules, real paths, and directory handles are rechecked at receipt. Downloads reject all symbolic links, including internal ones, and fail closed where secure directory streams are unavailable. Originals are opened read-only. Responses use attachment disposition with an RFC 5987 UTF-8 filename and disable caching. Links resolve the current original, not a pinned content version. Set `nasquire.public-url` behind a reverse proxy. Do not log signed query strings in proxy access logs; application audit records omit tickets and signatures. External shares and upload sources are configured separately below.
+Download links expire after five minutes by default and are invalidated by server restart. Token revocation, expiration, and source scope reductions invalidate already issued links at receipt. Ticket IDs are random; paths and token IDs stay in bounded server memory (10,000 active tickets maximum). Source existence, include/exclude rules, real paths, and directory handles are rechecked at receipt. Downloads reject all symbolic links, including internal ones, and fail closed where secure directory streams are unavailable. Originals are opened read-only. Responses use attachment disposition with an RFC 5987 UTF-8 filename and disable caching. Download tickets resolve the current original, not a pinned content version. External shares also bind the shared root to its filesystem file key. Set `nasquire.public-url` behind a reverse proxy. Do not log download query strings in proxy access logs; application audit records omit tickets and signatures. External shares and upload sources are configured separately below.
 
 ## 업로드 소스·외부 공유
 
@@ -97,7 +98,7 @@ Download links expire after five minutes by default and are invalidated by serve
 
 공유는 일반 소스와 업로드 소스에서 파일 하나 또는 폴더 하나를 선택합니다. 경로는 소스 기준 상대경로이며 빈 경로는 소스 루트입니다. 만료 기본값은 7일(최대 365일), 비밀번호는 선택(8자 이상·UTF-8 72바이트 이하), 다운로드 상한은 선택(1–1000000)입니다. 256비트 무작위 `/s/{token}` 주소는 생성할 때 한 번만 표시하며 DB에는 SHA-256만 저장합니다. 비밀번호는 BCrypt 비용 12로 저장합니다. 비밀번호 링크는 브라우저의 HTTP Basic 인증 창을 사용합니다(사용자명은 비워 두고 비밀번호만 입력). HTTPS로 제공하세요.
 
-공개 경로는 관리 세션 쿠키를 사용하거나 생성하지 않습니다. 폴더 하위 목록·탐색·다운로드만 제공하며 검색·MCP·소스 경로·상위 폴더는 제공하지 않습니다. 매 요청에 소스·제외 규칙·실경로·NOFOLLOW 검사를 적용하고 삭제·제외·철회·만료·횟수 소진 대상은 404입니다. 다운로드 횟수는 응답 전송 시작 시 소비하므로 중단된 전송도 포함합니다. 비밀번호 실패는 1/2/4/8초 지연 후 5회째 15분 제한하며 링크 전체에 적용됩니다. IP 제한은 앱이 직접 관찰한 주소 기준이므로 프록시 뒤에서는 여러 방문자가 한도를 공유할 수 있습니다. 기본 CSP·nosniff·no-referrer·no-store·DENY 헤더를 적용합니다.
+공개 경로는 관리 세션 쿠키를 사용하거나 생성하지 않습니다. 폴더 하위 목록·탐색·다운로드만 제공하며 검색·MCP·소스 경로·상위 폴더는 제공하지 않습니다. 매 요청에 소스·제외 규칙·실경로·NOFOLLOW 검사를 적용하고 삭제·제외·철회·만료·횟수 소진 대상은 404입니다. 다운로드 횟수는 응답 전송 시작 시 소비하므로 중단된 전송도 포함합니다. 비밀번호 실패는 1/2/4/8초 지연 후 5회째 15분 제한하며 공유+IP 단위로 적용됩니다. IP 제한은 기본 연결 주소 기준이며 `nasquire.trusted-proxies`로 지정한 프록시만 전달 헤더를 사용할 수 있습니다. 4096개 항목을 넘으면 LRU를 제거합니다. 기본 CSP·nosniff·no-referrer·no-store·DENY 헤더를 적용합니다.
 
 | Method | Endpoint | 용도 |
 | --- | --- | --- |
@@ -110,7 +111,7 @@ Download links expire after five minutes by default and are invalidated by serve
 | DELETE | `/api/shares/{id}` | 즉시 철회 |
 | GET | `/s/{token}?path=...&download=true` | 익명 공유 방문·다운로드, 선택 HTTP Basic 비밀번호 |
 
-모든 관리 변경은 관리자 세션+CSRF가 필요하고 API 토큰·MCP에는 쓰기를 제공하지 않습니다. 감사 로그에는 공유 토큰·비밀번호를 넣지 않습니다. 프록시 접근 로그에서도 `/s/` 토큰 경로·Authorization·서명 쿼리를 제외하세요. 업로드 소스를 등록 해제하면 해당 소스의 휴지통 관리도 중단됩니다. 앱 중단 시 남은 임시 파일과 파일 이동/DB 사이 중단 복구에는 운영자 확인이 필요합니다. [업로드·공유 검증과 남은 한계](docs/verification/upload-share.md)를 참고하세요.
+모든 관리 변경은 관리자 세션+CSRF가 필요하고 API 토큰·MCP에는 쓰기를 제공하지 않습니다. 감사 로그에는 공유 토큰·비밀번호를 넣지 않습니다. 프록시 접근 로그에서도 `/s/` 토큰 경로·Authorization·서명 쿼리를 제외하세요. 업로드 소스를 등록 해제하면 휴지통 메타데이터를 제거하고 공유를 철회하지만 숨김 휴지통 파일은 남기므로 먼저 복원/정리하세요. 24시간 지난 임시 파일은 재시작 시 정리하며 파일 이동/DB 사이 중단 복구에는 운영자 확인이 필요합니다. [업로드·공유 검증과 남은 한계](docs/verification/upload-share.md)를 참고하세요.
 
 ## MCP connection
 
@@ -155,7 +156,7 @@ VERIFY_PORT=8101 python3 scripts/verify-runtime.py
 
 The runtime check generates 48 original sample documents (including all eight new formats), starts `:app:bootRun`, exercises setup → indexing → Korean/English search → tokens → all three MCP tools → anonymous signed-download curl, also streams a 16 MiB upload, checks uploaded-file search, trash/restore and anonymous external shares, records JVM RSS, and stops the server. Set `VERIFY_EMBEDDING=builtin` to fetch pinned SHA-256-verified model files into ignored build artifacts and test local hybrid search, or `VERIFY_EMBEDDING=remote` to exercise a fake HTTP provider. Do not run builds concurrently with bootRun verification because they share class output directories. It writes ignored artifacts under `build/verification`. [Stage 3 results and limits](docs/verification/formats-download.md); [MVP results](docs/verification/mvp.md).
 
-Use HTTPS and restrict initial setup/administrator access to trusted users. Secure session cookies should be enabled behind HTTPS. This MVP has one administrator, no password recovery UI, TOTP, login rate limiting, or OAuth. A sampled RSS measurement on small documents is not a guarantee for large PDFs or concurrent workloads; test your own corpus under a real container limit. The source mount must be read-only to enforce isolation against filesystem races.
+Use HTTPS and restrict initial setup/administrator access to trusted users. Secure session cookies should be enabled behind HTTPS. This MVP has one administrator, no password recovery UI, TOTP, or OAuth. A sampled RSS measurement on small documents is not a guarantee for large PDFs or concurrent workloads; test your own corpus under a real container limit. The source mount must be read-only to enforce isolation against filesystem races.
 
 ## License
 

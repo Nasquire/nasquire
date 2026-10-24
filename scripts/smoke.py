@@ -144,6 +144,7 @@ with tempfile.TemporaryDirectory(prefix='nasquire-smoke-') as folder:
     link = curl('/api/download?' + urllib.parse.urlencode({'path': hits[0]['path']}), token=token, csrf_enabled=False)
     assert 0 < link['expiresAt'] - time.time() * 1000 <= 300000
     def fetch_download(url, expected):
+        url = urllib.parse.urljoin(args.url, url)
         # 서명 주소는 curl 인자·실패 메시지·아티팩트에 기록하지 않는다.
         result = subprocess.run(['curl', '--config', '-'], input='url = ' + json.dumps(url) + '\nsilent\nshow-error\nmax-time = 30\nwrite-out = "\\n%{http_code}"', text=True, capture_output=True, check=True)
         body, status = result.stdout.rsplit('\n', 1)
@@ -155,7 +156,7 @@ with tempfile.TemporaryDirectory(prefix='nasquire-smoke-') as folder:
     assert not downloaded['result'].get('isError')
     mcp_link = json.loads(downloaded['result']['content'][0]['text'])
     # 바이너리도 원본 바이트와 동일한지 curl로 확인한다.
-    result = subprocess.run(['curl', '--config', '-'], input=('url = ' + json.dumps(mcp_link['url']) + '\nsilent\nshow-error\nmax-time = 30').encode(), capture_output=True, check=True)
+    result = subprocess.run(['curl', '--config', '-'], input=('url = ' + json.dumps(urllib.parse.urljoin(args.url, mcp_link['url'])) + '\nsilent\nshow-error\nmax-time = 30').encode(), capture_output=True, check=True)
     assert result.stdout == (args.samples / 'sample.docx').read_bytes()
     print('PASS REST/MCP download_file: anonymous curl original bytes, expiry metadata, forged signature rejected')
 

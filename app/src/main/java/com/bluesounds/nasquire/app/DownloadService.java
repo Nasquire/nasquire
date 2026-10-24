@@ -4,18 +4,15 @@ import com.bluesounds.nasquire.core.Source;
 import java.io.*;
 import java.net.URI;
 import java.nio.channels.*;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.security.*;
 import java.time.*;
 import java.util.*;
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 
-/** 서명 키는 프로세스 수명에 한정한다. 재시작하면 기존 다운로드 주소도 폐기된다. */
+/** 불투명 티켓은 프로세스 메모리에만 보관한다. 재시작하면 기존 주소도 폐기된다. */
 @Service
 public class DownloadService {
     private final Storage storage;
@@ -23,7 +20,8 @@ public class DownloadService {
     private final String publicUrl;
     private final long ttl;
     private final Clock clock;
-    private final byte[] key = new byte[32];
+    record Ticket(String path, String tokenId, long expires) { }
+    private final Map<String, Ticket> tickets = new LinkedHashMap<>();
     private static final Base64.Encoder ENCODER = Base64.getUrlEncoder().withoutPadding();
     @org.springframework.beans.factory.annotation.Autowired
     public DownloadService(Storage storage, DocumentService documents,
@@ -32,11 +30,10 @@ public class DownloadService {
         this(storage, documents, publicUrl, ttl, Clock.systemUTC());
     }
     DownloadService(Storage storage, DocumentService documents, String publicUrl, long ttl, Clock clock) {
-        if (ttl < 1 || ttl > 86400) throw new IllegalArgumentException("다운로드 유효시간 1~86400초");
+        if (ttl < 1 || ttl > 3600) throw new IllegalArgumentException("다운로드 유효시간 1~3600초");
         this.storage = storage; this.documents = documents; this.ttl = ttl; this.clock = clock;
         this.publicUrl = publicUrl.replaceAll("/+$", "");
         if (!this.publicUrl.isBlank()) validateBase(this.publicUrl);
-        new SecureRandom().nextBytes(key);
     }
     private static void validateBase(String base) {
         URI uri = URI.create(base);
@@ -52,29 +49,29 @@ public class DownloadService {
             try (var ignored = open(path)) { }
             long expires = clock.instant().plusSeconds(ttl).getEpochSecond();
             byte[] nonce = new byte[16]; new SecureRandom().nextBytes(nonce);
-            String payload = expires + "\n" + ENCODER.encodeToString(nonce) + "\n" + path;
-            String encoded = ENCODER.encodeToString(payload.getBytes(StandardCharsets.UTF_8));
-            String ticket = encoded + "." + ENCODER.encodeToString(sign(encoded));
-            String base = publicUrl.isBlank() ? requestBase : publicUrl; validateBase(base);
+            String ticket = ENCODER.encodeToString(nonce);
+            synchronized (tickets) {
+                tickets.entrySet().removeIf(e -> e.getValue().expires <= clock.instant().getEpochSecond());
+                if (tickets.size() >= 10000) throw new IllegalStateException("다운로드 주소 한도");
+                tickets.put(ticket, new Ticket(path, identity == null ? null : identity.tokenId(), expires));
+            }
             storage.audit(actor, "download-issue", 200);
-            return Map.of("url", base.replaceAll("/+$", "") + "/download?ticket=" + ticket, "expiresAt", expires * 1000);
+            return Map.of("url", publicUrl + "/download?ticket=" + ticket, "expiresAt", expires * 1000,
+                    "notice", publicUrl.isBlank() ? "상대 주소입니다. MCP 클라이언트는 nasquire.public-url 설정을 권장합니다." : "");
         } catch (IOException | RuntimeException e) { storage.audit(actor, "download-issue", 403); throw e; }
-    }
-    private byte[] sign(String value) {
-        try {
-            var mac = Mac.getInstance("HmacSHA256"); mac.init(new SecretKeySpec(key, "HmacSHA256"));
-            return mac.doFinal(value.getBytes(StandardCharsets.US_ASCII));
-        } catch (GeneralSecurityException e) { throw new IllegalStateException(e); }
     }
     String verify(String ticket) {
         try {
-            if (ticket == null || ticket.length() > 24000) throw new IllegalArgumentException();
-            String[] parts = ticket.split("\\.", -1);
-            if (parts.length != 2 || !MessageDigest.isEqual(sign(parts[0]), Base64.getUrlDecoder().decode(parts[1]))) throw new IllegalArgumentException();
-            String[] payload = new String(Base64.getUrlDecoder().decode(parts[0]), StandardCharsets.UTF_8).split("\n", 3);
-            long expires = Long.parseLong(payload[0]), now = clock.instant().getEpochSecond();
-            if (payload.length != 3 || expires <= now || expires > now + ttl) throw new IllegalArgumentException();
-            sourceId(payload[2]); return payload[2];
+            if (ticket == null || !ticket.matches("[A-Za-z0-9_-]{22}")) throw new IllegalArgumentException();
+            Ticket value;
+            synchronized (tickets) { value = tickets.get(ticket); }
+            if (value == null || value.expires <= clock.instant().getEpochSecond()) throw new IllegalArgumentException();
+            if (value.tokenId != null) {
+                var identity = storage.identity(value.tokenId);
+                if (identity == null) throw new IllegalArgumentException();
+                documents.scope(identity, sourceId(value.path));
+            }
+            return value.path;
         } catch (RuntimeException e) { throw new AccessDeniedException("다운로드 주소 만료 또는 서명 오류"); }
     }
     static String sourceId(String path) {
@@ -92,16 +89,7 @@ public class DownloadService {
         Path root = source.root().toRealPath(), file = root.resolve(relative);
         if (!root.equals(source.root().toAbsolutePath().normalize()) || !file.toRealPath().startsWith(root)
                 || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) throw new AccessDeniedException("소스 범위 밖");
-        // 루트부터 각 디렉터리를 고정하고 NOFOLLOW로 연다. 검사/열기 사이 링크 교체도 차단한다.
-        var opened = new ArrayList<DirectoryStream<Path>>();
-        try {
-            DirectoryStream<Path> stream = Files.newDirectoryStream(file.getRoot()); opened.add(stream);
-            if (!(stream instanceof SecureDirectoryStream<Path>)) throw new IOException("안전한 디렉터리 열기 미지원");
-            var current = (SecureDirectoryStream<Path>) stream;
-            for (int i = 0; i < file.getNameCount() - 1; i++) {
-                current = current.newDirectoryStream(file.getName(i), LinkOption.NOFOLLOW_LINKS); opened.add(current);
-            }
-            return current.newByteChannel(file.getFileName(), Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS));
-        } finally { for (int i = opened.size() - 1; i >= 0; i--) opened.get(i).close(); }
+        // O_NONBLOCK으로 FIFO 교체에도 멈추지 않고 열린 fd의 fstat으로 유형을 확인한다.
+        return SecureDirectories.readRegular(file);
     }
 }

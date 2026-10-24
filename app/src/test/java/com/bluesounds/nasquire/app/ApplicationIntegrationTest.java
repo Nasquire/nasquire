@@ -90,6 +90,7 @@ class ApplicationIntegrationTest {
         assertTrue(denied.at("/result/isError").asBoolean()); assertFalse(denied.toString().contains("confidential"));
         assertTrue(mcp(token, "get_document", Map.of("path", id + ":notes.md", "length", 100001)).at("/result/isError").asBoolean());
         verifyDownloads(token, id, otherId, source, other);
+        verifySecurityReview(token, id, source);
         verifyUploadsShares(token, id, source, other);
         verifyRemoteEmbedding(token, id);
         storage.addToken("expired", "expired", SecurityConfiguration.hash("expired-test-value"), System.currentTimeMillis() - 1, List.of(id));
@@ -105,7 +106,10 @@ class ApplicationIntegrationTest {
         String path = id + ":notes.md";
         String query = "/api/download?path=" + URLEncoder.encode(path, java.nio.charset.StandardCharsets.UTF_8);
         var issued = json(call(query, "GET", null, token, false), 200);
-        String url = issued.get("url").asText();
+        String relativeUrl = issued.get("url").asText();
+        assertTrue(relativeUrl.startsWith("/download?ticket="));
+        assertTrue(issued.get("notice").asText().contains("nasquire.public-url"));
+        String url = "http://127.0.0.1:" + port + relativeUrl;
         var anonymous = HttpClient.newHttpClient();
         var downloaded = anonymous.send(HttpRequest.newBuilder(URI.create(url)).GET().build(), HttpResponse.BodyHandlers.ofString());
         assertEquals(200, downloaded.statusCode()); assertEquals(Files.readString(source.resolve("notes.md")), downloaded.body());
@@ -126,7 +130,7 @@ class ApplicationIntegrationTest {
         } finally { Files.delete(source.resolve("notes.md")); Files.move(source.resolve("saved.md"), source.resolve("notes.md")); }
         Path unicode = source.resolve("한글 \"이름.md"); Files.writeString(unicode, "원본");
         var name = json(call("/api/download?path=" + URLEncoder.encode(id + ":" + unicode.getFileName(), java.nio.charset.StandardCharsets.UTF_8), "GET", null, token, false), 200);
-        var named = anonymous.send(HttpRequest.newBuilder(URI.create(name.get("url").asText())).GET().build(), HttpResponse.BodyHandlers.ofString());
+        var named = anonymous.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + name.get("url").asText())).GET().build(), HttpResponse.BodyHandlers.ofString());
         assertEquals(200, named.statusCode()); assertTrue(named.headers().firstValue("Content-Disposition").orElseThrow().contains("%22"));
         Files.delete(unicode);
         var time = new java.util.concurrent.atomic.AtomicLong(1800000000);
@@ -136,7 +140,7 @@ class ApplicationIntegrationTest {
             public java.time.Instant instant() { return java.time.Instant.ofEpochSecond(time.get()); }
         };
         var service = new DownloadService(storage, documents, "https://nas.example.com/base", 300, clock);
-        var identity = new Storage.Identity("test-client", List.of(id));
+        var identity = storage.authenticate(SecurityConfiguration.hash(token));
         String link = service.issue(identity, path, "http://ignored.example.com").get("url").toString();
         assertTrue(link.startsWith("https://nas.example.com/base/download?ticket="));
         String ticket = link.substring(link.indexOf("ticket=") + 7);
@@ -148,6 +152,140 @@ class ApplicationIntegrationTest {
         String audit = call("/api/audit", "GET", null, null, true).body();
         assertTrue(audit.contains("download-receive")); assertFalse(audit.contains(ticket)); assertFalse(audit.contains(token));
         assertFalse(audit.contains("ticket="));
+    }
+    void verifySecurityReview(String token, String sourceId, Path original) throws Exception {
+        var anonymous = HttpClient.newHttpClient();
+        String boundary = "SecurityBoundary";
+        String body = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"test.md\"\r\n\r\n" + "x".repeat(10000) + "\r\n--" + boundary + "--\r\n";
+        for (String path : List.of("/api/uploads/missing?path=test.md", "/api/login", "/api/setup", "/mcp", "/s/example")) {
+            var req = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path))
+                    .header("Content-Type", "multipart/form-data; boundary=" + boundary).POST(HttpRequest.BodyPublishers.ofString(body)).build();
+            int status = anonymous.send(req, HttpResponse.BodyHandlers.ofString()).statusCode();
+            assertTrue(status == 401 || status == 403);
+            try (var files = Files.list(TEMP.resolve("data/multipart"))) { assertEquals(0, files.count()); }
+        }
+        var noCsrf = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/uploads/missing?path=test.md"))
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary).POST(HttpRequest.BodyPublishers.ofString(body)).build();
+        assertEquals(403, client.send(noCsrf, HttpResponse.BodyHandlers.ofString()).statusCode());
+        try (var files = Files.list(TEMP.resolve("data/multipart"))) { assertEquals(0, files.count()); }
+        var tooLarge = HttpRequest.newBuilder(noCsrf.uri()).header("X-CSRF-TOKEN", csrf)
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary).POST(HttpRequest.BodyPublishers.ofString("x".repeat(1100000))).build();
+        assertEquals(413, client.send(tooLarge, HttpResponse.BodyHandlers.ofString()).statusCode());
+        String id = UUID.randomUUID().toString(), secret = "review-token";
+        storage.addToken(id, "review", SecurityConfiguration.hash(secret), System.currentTimeMillis() + 60000, List.of(sourceId));
+        var identity = storage.authenticate(SecurityConfiguration.hash(secret));
+        String path = sourceId + ":notes.md";
+        String url = downloads.issue(identity, path, "https://attacker.example.com").get("url").toString();
+        assertTrue(url.startsWith("/download?ticket="));
+        String ticket = url.substring(url.indexOf('=') + 1);
+        assertFalse(ticket.contains(sourceId)); assertFalse(ticket.contains("notes"));
+        assertEquals(path, downloads.verify(ticket));
+        db.update("UPDATE tokens SET sources=? WHERE id=?", "unavailable-source", id);
+        assertThrows(org.springframework.security.access.AccessDeniedException.class, () -> downloads.verify(ticket));
+        db.update("UPDATE tokens SET sources=? WHERE id=?", sourceId, id);
+        assertEquals(path, downloads.verify(ticket));
+        db.update("UPDATE tokens SET expires_at=0 WHERE id=?", id);
+        assertThrows(org.springframework.security.access.AccessDeniedException.class, () -> downloads.verify(ticket));
+        db.update("UPDATE tokens SET expires_at=? WHERE id=?", System.currentTimeMillis() + 60000, id);
+        storage.revoke(id);
+        assertThrows(org.springframework.security.access.AccessDeniedException.class, () -> downloads.verify(ticket));
+        assertThrows(IllegalArgumentException.class, () -> new DownloadService(storage, documents, "", 3601, java.time.Clock.systemUTC()));
+        var restarted = new DownloadService(storage, documents, "", 300, java.time.Clock.systemUTC());
+        assertThrows(org.springframework.security.access.AccessDeniedException.class, () -> restarted.verify(ticket));
+
+        Path root = Files.createDirectory(TEMP.resolve("security-upload"));
+        String uploadId = UUID.randomUUID().toString();
+        storage.save(new com.bluesounds.nasquire.core.Source(uploadId, "Security", root, null, null, "upload"));
+        uploads.folder(uploadId, "folder");
+        uploads.upload(uploadId, "folder/file.md", new java.io.ByteArrayInputStream("one".getBytes()), false);
+        var service = new ShareService(db, storage, downloads);
+        String password = "review-password";
+        var protectedShare = service.create(uploadId, "folder", null, password, null);
+        String shareToken = protectedShare.get("url").toString().substring(3);
+        assertThrows(ShareService.PasswordRequired.class, () -> service.authorize(shareToken, "missing", null, "one"));
+        assertThrows(ShareService.PasswordRequired.class, () -> service.authorize(shareToken, "file.md", null, "one"));
+        assertThrows(ShareService.PasswordRequired.class, () -> service.authorize(shareToken, "", "bad", "one"));
+        assertThrows(ShareService.Delayed.class, () -> service.authorize(shareToken, "", password, "one"));
+        assertNotNull(service.authorize(shareToken, "", password, "two"));
+        // 한 공유의 느린 비밀번호 검증이 다른 공유의 열람을 직렬화하지 않는다.
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var encoder = new org.springframework.security.crypto.password.PasswordEncoder() {
+            private final org.springframework.security.crypto.password.PasswordEncoder delegate = new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder(12);
+            @Override public String encode(CharSequence raw) { return delegate.encode(raw); }
+            @Override public boolean matches(CharSequence raw, String encoded) {
+                entered.countDown();
+                try { if (!release.await(5, java.util.concurrent.TimeUnit.SECONDS)) throw new IllegalStateException("검증 대기 초과"); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException(e); }
+                return delegate.matches(raw, encoded);
+            }
+        };
+        var concurrent = new ShareService(db, storage, downloads, java.time.Clock.systemUTC(), encoder);
+        var publicLink = service.create(uploadId, "folder/file.md", null, null, null);
+        try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            var slow = executor.submit(() -> concurrent.authorize(shareToken, "", password, "three"));
+            try {
+                assertTrue(entered.await(2, java.util.concurrent.TimeUnit.SECONDS));
+                var fast = executor.submit(() -> concurrent.authorize(publicLink.get("url").toString().substring(3), "", null));
+                assertNotNull(fast.get(2, java.util.concurrent.TimeUnit.SECONDS));
+            } finally { release.countDown(); }
+            assertNotNull(slow.get(3, java.util.concurrent.TimeUnit.SECONDS));
+        }
+        var old = service.create(uploadId, "folder/file.md", null, null, null);
+        String oldToken = old.get("url").toString().substring(3);
+        Files.move(root.resolve("folder/file.md"), root.resolve("saved.md"));
+        Files.writeString(root.resolve("folder/file.md"), "replacement");
+        assertThrows(ShareService.Missing.class, () -> service.authorize(oldToken, "", null));
+        for (String action : List.of("overwrite", "move", "trash")) {
+            var link = service.create(uploadId, "folder/file.md", null, null, null);
+            if (action.equals("overwrite")) uploads.upload(uploadId, "folder/file.md", new java.io.ByteArrayInputStream("two".getBytes()), true);
+            if (action.equals("move")) uploads.move(uploadId, "folder", "moved", false);
+            if (action.equals("trash")) uploads.trash(uploadId, "folder");
+            assertThrows(ShareService.Missing.class, () -> service.authorize(link.get("url").toString().substring(3), "", null));
+            if (action.equals("move")) uploads.move(uploadId, "moved", "folder", false);
+        }
+        String deep = String.join("/", Collections.nCopies(65, "a"));
+        assertThrows(IllegalArgumentException.class, () -> uploads.folder(uploadId, deep));
+        Path stale = Files.writeString(root.resolve(".nasquire-old.part"), "stale");
+        Path fresh = Files.writeString(root.resolve(".nasquire-new.part"), "fresh");
+        Path multipart = Files.writeString(TEMP.resolve("data/multipart/old.tmp"), "stale");
+        for (Path entry : List.of(stale, multipart)) Files.setLastModifiedTime(entry, java.nio.file.attribute.FileTime.fromMillis(0));
+        Path untouched = Files.writeString(original.resolve(".nasquire-old.part"), "read-only");
+        Files.setLastModifiedTime(untouched, java.nio.file.attribute.FileTime.fromMillis(0));
+        uploads.cleanupStaging();
+        assertFalse(Files.exists(stale)); assertFalse(Files.exists(multipart)); assertTrue(Files.exists(fresh)); assertTrue(Files.exists(untouched));
+        Files.delete(untouched);
+        db.update("INSERT INTO trash(id,source_id,original,deleted_at) VALUES (?,?,?,?)", "missing", uploadId, "missing", 0);
+        // 실패 행을 표시하고 다음 실행에서 건너뛰어 다른 만료 항목을 처리한다.
+        uploads.cleanup();
+        assertTrue(db.queryForObject("SELECT cleanup_error FROM trash WHERE id='missing'", Boolean.class));
+        assertTrue(db.queryForObject("SELECT cleanup_after FROM trash WHERE id='missing'", Long.class) > System.currentTimeMillis());
+        uploads.upload(uploadId, "expired.md", new java.io.ByteArrayInputStream(new byte[1]), false);
+        String expiredItem = uploads.trash(uploadId, "expired.md");
+        db.update("UPDATE trash SET deleted_at=1 WHERE id=?", expiredItem);
+        // 100개 실패 행이 한 배치를 채워도 다음 실행에서 정상 항목이 정리된다.
+        for (int i = 0; i < 100; i++) db.update("INSERT INTO trash(id,source_id,original,deleted_at) VALUES (?,?,?,?)", "bad-" + i, uploadId, "missing", 0);
+        uploads.cleanup(); uploads.cleanup();
+        assertEquals(0, db.queryForObject("SELECT COUNT(*) FROM trash WHERE id=?", Integer.class, expiredItem));
+        storage.deleteSource(uploadId);
+        assertEquals(0, db.queryForObject("SELECT COUNT(*) FROM trash WHERE source_id=?", Integer.class, uploadId));
+        Path fifo = root.resolve("fifo.md");
+        var process = new ProcessBuilder("mkfifo", fifo.toString()).start(); assertEquals(0, process.waitFor());
+        assertTimeoutPreemptively(java.time.Duration.ofSeconds(2), () -> assertThrows(java.io.IOException.class, () -> SecureDirectories.readRegular(fifo)));
+        try (var channel = SecureDirectories.readRegular(root.resolve("saved.md"))) { assertTrue(channel.isOpen()); }
+        // 실제 로그인 필터 실패 지연과 성공 초기화. 계정/IP 모두 키로 사용한다.
+        var login = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/login"))
+                .header("X-CSRF-TOKEN", csrf).header("Content-Type", "application/x-www-form-urlencoded")
+                .POST(HttpRequest.BodyPublishers.ofString("username=admin&password=wrong-password")).build();
+        assertEquals(401, client.send(login, HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(429, client.send(login, HttpResponse.BodyHandlers.ofString()).statusCode());
+        Thread.sleep(1050);
+        var correct = HttpRequest.newBuilder(login.uri()).header("X-CSRF-TOKEN", csrf).header("Content-Type", "application/x-www-form-urlencoded")
+                .POST(HttpRequest.BodyPublishers.ofString("username=admin&password=example-password-123")).build();
+        assertEquals(200, client.send(correct, HttpResponse.BodyHandlers.ofString()).statusCode());
+        csrf = json(call("/api/auth", "GET", null, null, false), 200).get("csrfToken").asText();
+        assertTrue(storage.audit().toString().contains("login-rate-limit"));
+        assertFalse(storage.audit().toString().contains(password));
     }
     void verifyUploadsShares(String token, String readOnly, Path original, Path outside) throws Exception {
         Path root = Files.createDirectory(TEMP.resolve("uploads"));
@@ -247,7 +385,7 @@ class ApplicationIntegrationTest {
         var deleted = service.create(id, "folder/renamed.md", null, null, null);
         String deletedToken = deleted.get("url").toString().substring(3);
         String removed = uploads.trash(id, "folder/renamed.md");
-        assertThrows(java.io.IOException.class, () -> service.authorize(deletedToken, "", null));
+        assertThrows(ShareService.Missing.class, () -> service.authorize(deletedToken, "", null));
         db.update("UPDATE trash SET deleted_at=0 WHERE id=?", removed); uploads.cleanup();
         assertTrue(uploads.trashList(id).isEmpty());
         var current = storage.source(id);
@@ -261,7 +399,7 @@ class ApplicationIntegrationTest {
         assertTrue(limiter.allow("test", 0)); assertTrue(limiter.allow("test", 0)); assertFalse(limiter.allow("test", 0));
         assertTrue(limiter.allow("test", 60000));
         for (int i = 0; i < 4095; i++) assertTrue(limiter.allow("ip-" + i, 60000));
-        assertFalse(limiter.allow("overflow", 60000)); limiter.expire(120000); assertTrue(limiter.allow("overflow", 120000));
+        assertTrue(limiter.allow("overflow", 60000)); limiter.expire(120000); assertTrue(limiter.allow("overflow", 120000));
         String audit = call("/api/audit", "GET", null, null, true).body();
         assertFalse(audit.contains(value)); assertFalse(audit.contains(password)); assertFalse(audit.contains(url));
         assertFalse(call("/api/shares", "GET", null, null, true).body().contains(value));

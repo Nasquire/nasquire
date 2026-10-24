@@ -13,7 +13,8 @@ public class ShareController {
     record Input(String source, String path, Long expiresAt, String password, Long maxDownloads) { }
     private final ShareService shares;
     private final Storage storage;
-    ShareController(ShareService shares, Storage storage) { this.shares = shares; this.storage = storage; }
+    private final ClientAddresses addresses;
+    ShareController(ShareService shares, Storage storage, ClientAddresses addresses) { this.shares = shares; this.storage = storage; this.addresses = addresses; }
     @GetMapping("/api/shares") Object list() { return shares.list(); }
     @PostMapping("/api/shares") Object create(@RequestBody Input input) throws IOException {
         return shares.create(input.source, input.path, input.expiresAt, input.password, input.maxDownloads);
@@ -32,7 +33,7 @@ public class ShareController {
     @GetMapping("/s/{token}") void publicShare(@PathVariable String token, @RequestParam(defaultValue = "") String path,
             @RequestParam(defaultValue = "false") boolean download, HttpServletRequest request, HttpServletResponse response) throws IOException {
         try {
-            var target = shares.authorize(token, path, password(request));
+            var target = shares.authorize(token, path, password(request), addresses.address(request));
             if (download || !target.directory()) {
                 try (var channel = shares.open(target); var input = Channels.newInputStream(channel)) {
                     response.setContentType("application/octet-stream");

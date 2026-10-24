@@ -46,7 +46,11 @@ public class Storage {
     public void save(Source s) {
         db.update("MERGE INTO sources(id,name,root,includes,excludes,kind) KEY(id) VALUES (?,?,?,?,?,?)", s.id(), s.name(), s.root().toString(), String.join("\n", s.includes()), String.join("\n", s.excludes()), s.kind());
     }
-    public void deleteSource(String id) { db.update("DELETE FROM sources WHERE id=?", id); }
+    public void deleteSource(String id) {
+        db.update("DELETE FROM trash WHERE source_id=?", id);
+        db.update("UPDATE shares SET revoked=TRUE WHERE source_id=?", id);
+        db.update("DELETE FROM sources WHERE id=?", id);
+    }
     public void addToken(String id, String name, String hash, long expires, List<String> sources) {
         db.update("INSERT INTO tokens(id,name,token_hash,expires_at,sources) VALUES (?,?,?,?,?)", id, name, hash, expires, String.join("\n", sources));
     }
@@ -58,6 +62,20 @@ public class Storage {
         var found = db.query("SELECT id,sources FROM tokens WHERE token_hash=? AND revoked=FALSE AND expires_at>?", (rs, row) ->
                 new Identity(rs.getString("id"), lines(rs.getString("sources"))), hash, Instant.now().toEpochMilli());
         return found.isEmpty() ? null : found.getFirst();
+    }
+    public Identity identity(String id) {
+        var rows = db.query("SELECT id,sources FROM tokens WHERE id=? AND revoked=FALSE AND expires_at>?",
+                (r, n) -> new Identity(r.getString("id"), lines(r.getString("sources"))), id, Instant.now().toEpochMilli());
+        return rows.isEmpty() ? null : rows.getFirst();
+    }
+    public void revokeShares(String source, Path path) {
+        for (var row : db.queryForList("SELECT id,path FROM shares WHERE source_id=? AND revoked=FALSE", source)) {
+            Path shared = Path.of(row.get("PATH").toString());
+            if (shared.equals(path) || shared.startsWith(path)) {
+                db.update("UPDATE shares SET revoked=TRUE WHERE id=?", row.get("ID"));
+                audit("admin", "share-revoke-path", 200);
+            }
+        }
     }
     public void revoke(String id) { db.update("UPDATE tokens SET revoked=TRUE WHERE id=?", id); }
     public void audit(String actor, String action, int status) {

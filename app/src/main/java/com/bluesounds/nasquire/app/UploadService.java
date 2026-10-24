@@ -31,6 +31,38 @@ public class UploadService {
         this.storage = storage; this.indexing = indexing; this.db = db; this.data = dataFolder;
         this.maxBytes = maxBytes; this.retention = days * 86400000L;
         db.execute("CREATE TABLE IF NOT EXISTS trash (id VARCHAR(36) PRIMARY KEY, source_id VARCHAR(36) NOT NULL, original VARCHAR(4096) NOT NULL, deleted_at BIGINT NOT NULL)");
+        db.execute("ALTER TABLE trash ADD COLUMN IF NOT EXISTS cleanup_after BIGINT DEFAULT 0 NOT NULL");
+        db.execute("ALTER TABLE trash ADD COLUMN IF NOT EXISTS cleanup_error BOOLEAN DEFAULT FALSE NOT NULL");
+    }
+    @jakarta.annotation.PostConstruct
+    public void cleanupStaging() throws IOException {
+        long before = System.currentTimeMillis() - 86400000L;
+        Path multipart = data.resolve("multipart");
+        if (Files.isDirectory(multipart, LinkOption.NOFOLLOW_LINKS)) {
+            try (var directory = new SafeFiles(multipart)) { cleanupParts(directory, before, true, 0); }
+        }
+        for (Source source : storage.sources()) if (source.kind().equals("upload")) {
+            try (var root = new SafeFiles(writable(source.id()).source().root())) { cleanupParts(root, before, false, 0); }
+            catch (IOException | RuntimeException e) { storage.audit("system", "staging-cleanup", 409); }
+        }
+    }
+    private void cleanupParts(SafeFiles root, long before, boolean multipart, int depth) throws IOException {
+        cleanupParts(root.directory, before, multipart, depth);
+    }
+    private void cleanupParts(SecureDirectoryStream<Path> directory, long before, boolean multipart, int depth) throws IOException {
+        if (depth > 64) return;
+        for (Path entry : directory) {
+            Path name = entry.getFileName();
+            try {
+                var attr = directory.getFileAttributeView(name, BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS).readAttributes();
+                if (attr.isDirectory() && !multipart && !name.toString().equals(".nasquire-trash")) {
+                    try (var child = directory.newDirectoryStream(name, LinkOption.NOFOLLOW_LINKS)) { cleanupParts(child, before, false, depth + 1); }
+                } else if (attr.isRegularFile() && attr.lastModifiedTime().toMillis() < before
+                        && (multipart || (name.toString().startsWith(".nasquire-") && name.toString().endsWith(".part")))) {
+                    directory.deleteFile(name); storage.audit("system", "staging-cleanup", 200);
+                }
+            } catch (IOException e) { storage.audit("system", "staging-cleanup", 409); }
+        }
     }
     private WritableSource writable(String id) {
         var source = storage.source(id);
@@ -62,6 +94,7 @@ public class UploadService {
                     }
                 }
                 target(parent, relative.getFileName(), overwrite);
+                if (overwrite) storage.revokeShares(id, relative);
                 if (overwrite) parent.directory.move(temporary, parent.directory, relative.getFileName());
                 else SecureDirectories.moveNew(SafeFiles.parent(source.source().root(), relative).resolve(temporary), source.source().root().resolve(relative));
                 staged = false;
@@ -80,6 +113,7 @@ public class UploadService {
     }
     public synchronized void folder(String id, String path) throws IOException {
         var source = writable(id); Path relative = SafeFiles.relative(path, false);
+        if (relative.getNameCount() > 64) throw new IllegalArgumentException("폴더 깊이 상한");
         SafeFiles.allowed(source.source(), relative, true); mkdir(source, relative); changed(source, "upload-folder");
     }
     public synchronized void move(String id, String path, String destination, boolean overwrite) throws IOException {
@@ -89,7 +123,14 @@ public class UploadService {
             var attr = origin.attributes(from.getFileName());
             if (attr.isSymbolicLink() || !(attr.isRegularFile() || attr.isDirectory())) throw new AccessDeniedException("링크 거부");
             SafeFiles.allowed(source.source(), from, attr.isDirectory()); SafeFiles.allowed(source.source(), to, attr.isDirectory());
+            if (attr.isDirectory()) {
+                try (var descendants = Files.walk(source.source().root().resolve(from))) {
+                    if (descendants.anyMatch(p -> to.getNameCount() + source.source().root().resolve(from).relativize(p).getNameCount() > 64))
+                        throw new IllegalArgumentException("폴더 깊이 상한");
+                }
+            }
             target(target, to.getFileName(), overwrite);
+            storage.revokeShares(id, from); storage.revokeShares(id, to);
             if (overwrite) origin.directory.move(from.getFileName(), target.directory, to.getFileName());
             else SecureDirectories.moveNew(source.source().root().resolve(from), source.source().root().resolve(to));
         }
@@ -105,13 +146,14 @@ public class UploadService {
             if (attr.isSymbolicLink() || !(attr.isRegularFile() || attr.isDirectory())) throw new AccessDeniedException("링크 거부");
             SafeFiles.allowed(source.source(), relative, attr.isDirectory());
             // 메타데이터를 먼저 보존하여 프로세스 중단 시 복원 정보가 사라지지 않게 한다.
-            db.update("INSERT INTO trash VALUES (?,?,?,?)", item, id, relative.toString(), System.currentTimeMillis());
+            db.update("INSERT INTO trash(id,source_id,original,deleted_at) VALUES (?,?,?,?)", item, id, relative.toString(), System.currentTimeMillis());
+            storage.revokeShares(id, relative);
             origin.directory.move(relative.getFileName(), target.directory, Path.of(item));
         }
         changed(source, "upload-trash"); return item;
     }
     public synchronized List<Map<String, Object>> trashList(String id) throws IOException {
-        writable(id); return db.queryForList("SELECT id, original, deleted_at FROM trash WHERE source_id=? ORDER BY deleted_at DESC", id);
+        writable(id); return db.queryForList("SELECT id, original, deleted_at, cleanup_error FROM trash WHERE source_id=? ORDER BY deleted_at DESC", id);
     }
     public synchronized void restore(String id, String item) throws IOException {
         var source = writable(id); UUID.fromString(item);
@@ -128,14 +170,17 @@ public class UploadService {
     }
     @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 3600000, initialDelay = 60000)
     public synchronized void cleanup() {
-        for (var row : db.queryForList("SELECT id,source_id FROM trash WHERE deleted_at<? LIMIT 100", System.currentTimeMillis() - retention)) {
+        for (var row : db.queryForList("SELECT id,source_id FROM trash WHERE deleted_at<? AND cleanup_after<=? ORDER BY deleted_at LIMIT 100", System.currentTimeMillis() - retention, System.currentTimeMillis())) {
             try {
                 var source = writable(row.get("SOURCE_ID").toString());
                 try (var trash = new SafeFiles(source.source().root().resolve(".nasquire-trash"))) {
                     erase(trash.directory, Path.of(row.get("ID").toString()), 0);
                 }
                 db.update("DELETE FROM trash WHERE id=?", row.get("ID")); storage.audit("system", "trash-expire", 200);
-            } catch (IOException | RuntimeException e) { storage.audit("system", "trash-expire", 409); }
+            } catch (IOException | RuntimeException e) {
+                db.update("UPDATE trash SET cleanup_error=TRUE,cleanup_after=? WHERE id=?", System.currentTimeMillis() + 3600000, row.get("ID"));
+                storage.audit("system", "trash-expire", 409);
+            }
         }
     }
     private static void erase(SecureDirectoryStream<Path> parent, Path name, int depth) throws IOException {
