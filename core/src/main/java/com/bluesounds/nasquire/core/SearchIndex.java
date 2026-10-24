@@ -12,8 +12,15 @@ import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.store.NIOFSDirectory;
 
 public final class SearchIndex implements AutoCloseable {
-    public record Chunk(int page, int offset, String text) { }
-    public record Hit(String source, String sourceName, String path, int page, int offset, String text, long mtime, float score) { }
+    public record Chunk(int page, int offset, String text, Location location) {
+        public Chunk(int page, int offset, String text) { this(page, offset, text, Location.page(page)); }
+    }
+    public record Hit(String source, String sourceName, String path, int page, int offset, String text, long mtime, float score, Location location) {
+        public Hit(String source, String sourceName, String path, int page, int offset, String text, long mtime, float score) {
+            this(source, sourceName, path, page, offset, text, mtime, score, Location.page(page));
+        }
+    }
+    private static final com.google.gson.Gson JSON = new com.google.gson.Gson();
     private final NIOFSDirectory directory;
     private final KoreanAnalyzer analyzer = new KoreanAnalyzer();
     private final IndexWriter writer;
@@ -88,6 +95,7 @@ public final class SearchIndex implements AutoCloseable {
             doc.add(new StoredField("sourceName", source.name()));
             doc.add(new StoredField("path", key));
             doc.add(new StoredField("page", c.page()));
+            doc.add(new StoredField("location", JSON.toJson(c.location())));
             doc.add(new StoredField("offset", c.offset()));
             doc.add(new StoredField("mtime", mtime));
             doc.add(new TextField("text", c.text(), Field.Store.YES));
@@ -133,7 +141,7 @@ public final class SearchIndex implements AutoCloseable {
         }
         return hits.entrySet().stream().sorted(Comparator.<Map.Entry<String, Hit>>comparingDouble(e -> scores.get(e.getKey())).reversed()
                 .thenComparing(Map.Entry::getKey)).limit(limit).map(e -> {
-                    var h = e.getValue(); return new Hit(h.source(), h.sourceName(), h.path(), h.page(), h.offset(), h.text(), h.mtime(), scores.get(e.getKey()).floatValue());
+                    var h = e.getValue(); return new Hit(h.source(), h.sourceName(), h.path(), h.page(), h.offset(), h.text(), h.mtime(), scores.get(e.getKey()).floatValue(), h.location());
                 }).toList();
     }
 
@@ -157,7 +165,7 @@ public final class SearchIndex implements AutoCloseable {
                 var doc = searcher.storedFields().document(hit.doc);
                 hits.add(new Hit(doc.get("source"), doc.get("sourceName"), doc.get("path"),
                         doc.getField("page").numericValue().intValue(), doc.getField("offset").numericValue().intValue(),
-                        doc.get("text"), doc.getField("mtime").numericValue().longValue(), hit.score));
+                        doc.get("text"), doc.getField("mtime").numericValue().longValue(), hit.score, doc.get("location") == null ? Location.page(doc.getField("page").numericValue().intValue()) : JSON.fromJson(doc.get("location"), Location.class)));
             }
             return hits;
         } finally { searchers.release(searcher); }

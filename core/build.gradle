@@ -1,5 +1,9 @@
 plugins { id 'java-library' }
 dependencies {
+    implementation 'org.apache.poi:poi-ooxml:5.5.1'
+    implementation 'org.apache.poi:poi-scratchpad:5.5.1'
+    implementation 'kr.dogfoot:hwplib:1.1.11'
+    implementation 'kr.dogfoot:hwpxlib:1.0.9'
     implementation 'com.google.code.gson:gson:2.14.0'
     implementation 'com.microsoft.onnxruntime:onnxruntime:1.31.0'
     implementation 'ai.djl.huggingface:tokenizers:0.39.0'

@@ -31,9 +31,9 @@ public class SecurityConfiguration {
     @Bean BCryptPasswordEncoder passwordEncoder() { return new BCryptPasswordEncoder(12); }
     @Bean SecurityFilterChain security(HttpSecurity http, Storage storage, @Value("${nasquire.mcp-allowed-origins:}") String allowedOrigins) throws Exception {
         http.authorizeHttpRequests(a -> a
-                .requestMatchers("/", "/index.html", "/assets/**", "/icon.svg", "/LICENSE.txt", "/react-LICENSE.txt", "/LICENSE-EXCEPTIONS.md", "/api/auth", "/api/setup", "/api/login", "/error").permitAll()
+                .requestMatchers("/", "/index.html", "/assets/**", "/icon.svg", "/LICENSE.txt", "/react-LICENSE.txt", "/LICENSE-EXCEPTIONS.md", "/api/auth", "/api/setup", "/api/login", "/download", "/error").permitAll()
                 .requestMatchers("/mcp").authenticated()
-                .requestMatchers("/api/search", "/api/document").authenticated()
+                .requestMatchers("/api/search", "/api/document", "/api/download").authenticated()
                 .anyRequest().hasRole("ADMIN"))
             .csrf(c -> c.ignoringRequestMatchers(r -> r.getAttribute("nasquire.token") != null)
                     .csrfTokenRepository(new HttpSessionCsrfTokenRepository()))
@@ -68,7 +68,7 @@ public class SecurityConfiguration {
             var previous = SecurityContextHolder.getContext();
             SecurityContextHolder.setContext(context);
             try {
-                if (!mcp && !(req.getMethod().equals("GET") && List.of("/api/search", "/api/document").contains(req.getServletPath()))) {
+                if (!mcp && !(req.getMethod().equals("GET") && List.of("/api/search", "/api/document", "/api/download").contains(req.getServletPath()))) {
                     res.sendError(403); return;
                 }
                 chain.doFilter(req, res);

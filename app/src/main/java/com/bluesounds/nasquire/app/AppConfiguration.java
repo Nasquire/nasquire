@@ -34,7 +34,7 @@ public class AppConfiguration {
             @Value("${nasquire.scan-millis:10000}") long scanMillis) {
         if (maxBytes <= 0 || maxCharacters < 1200 || maxCharacters > 4000000 || stableMillis < 0 || scanMillis < 100)
             throw new IllegalArgumentException("색인 설정값 범위 오류");
-        var service = new IndexingService(index, maxBytes, maxCharacters, stableMillis, List.of(new PdfTextExtractor(), new PlainTextExtractor()));
+        var service = new IndexingService(index, maxBytes, maxCharacters, stableMillis, List.of(new PdfTextExtractor(), new PlainTextExtractor(), new OfficeTextExtractor()));
         service.start(storage::sources, scanMillis);
         return service;
     }

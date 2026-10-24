@@ -81,7 +81,7 @@ public final class IndexingService implements AutoCloseable {
                         Path real = file.toRealPath();
                         if (!real.startsWith(root) || !Files.isRegularFile(real)) return FileVisitResult.CONTINUE;
                         var attrs = Files.readAttributes(real, BasicFileAttributes.class);
-                        if (attrs.size() > maxBytes) return FileVisitResult.CONTINUE;
+                        if (attrs.size() > maxBytes) throw new IOException("파일 크기 상한 초과");
                         String key = Source.normalized(relative);
                         if (next.containsKey(key)) throw new IOException("정규화 경로 충돌");
                         var old = previous.get(key);
@@ -91,10 +91,10 @@ public final class IndexingService implements AutoCloseable {
                         if (!stamp.indexed && now - stamp.stableSince >= stableMillis) {
                             var chunks = new ArrayList<SearchIndex.Chunk>();
                             int[] offset = {0};
-                            extractor.get().extract(real, (page, text) -> {
+                            extractor.get().extractLocated(real, (page, location, text) -> {
                                 for (int i = 0; i < text.length(); i += 1200) {
                                     String chunk = text.substring(i, Math.min(i + 1200, text.length()));
-                                    chunks.add(new SearchIndex.Chunk(page, offset[0], chunk)); offset[0] += chunk.length();
+                                    chunks.add(new SearchIndex.Chunk(page, offset[0], chunk, location)); offset[0] += chunk.length();
                                 }
                             }, maxCharacters);
                             // 추출 도중 변경된 파일은 이번 검사에서 게시하지 않는다.

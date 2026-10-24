@@ -26,6 +26,7 @@ public class SampleDocuments {
             Files.deleteIfExists(pdfPath);
             pdf(pdfPath, "Original sample " + i + ": ocean exploration and astronomy.", "Second page: knowledge search and document indexing.");
         }
-        System.out.println("Created 40 original sample documents (20 Markdown, 20 two-page PDF).");
+        OfficeSamples.generate(folder);
+        System.out.println("Created 48 original sample documents (20 Markdown, 20 PDF, 8 Office/HWP).");
     }
 }

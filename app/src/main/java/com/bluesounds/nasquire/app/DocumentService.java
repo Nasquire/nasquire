@@ -35,14 +35,18 @@ public class DocumentService {
         int start = offset == null ? 0 : offset;
         int max = length == null ? 100000 : length;
         var text = new StringBuilder();
+        var locations = new ArrayList<Map<String, Object>>();
         long total = 0;
         for (var hit : hits) {
             if (from != null && hit.page() < from || to != null && hit.page() > to) continue;
             String part = hit.text();
             int skip = Math.max(0, start - (int)total);
-            if (skip < part.length() && text.length() < max) text.append(part, skip, Math.min(part.length(), skip + max - text.length()));
+            if (skip < part.length() && text.length() < max) {
+                locations.add(Map.of("offset", hit.offset(), "length", hit.text().length(), "location", hit.location()));
+                text.append(part, skip, Math.min(part.length(), skip + max - text.length()));
+            }
             total += part.length();
         }
-        return Map.of("path", path, "text", text.toString(), "offset", start, "length", text.length(), "totalCharacters", total, "truncated", total > (long)start + text.length());
+        return Map.of("path", path, "text", text.toString(), "offset", start, "length", text.length(), "totalCharacters", total, "truncated", total > (long)start + text.length(), "locations", locations);
     }
 }
