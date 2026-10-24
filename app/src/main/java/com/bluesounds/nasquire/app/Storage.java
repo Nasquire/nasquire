@@ -19,6 +19,7 @@ public class Storage {
         this.db = db;
         db.execute("CREATE TABLE IF NOT EXISTS administrator (id INT PRIMARY KEY CHECK(id=1), username VARCHAR(100) NOT NULL, password_hash VARCHAR(100) NOT NULL)");
         db.execute("CREATE TABLE IF NOT EXISTS sources (id VARCHAR(36) PRIMARY KEY, name VARCHAR(200) NOT NULL, root VARCHAR(4096) NOT NULL, includes CLOB NOT NULL, excludes CLOB NOT NULL)");
+        db.execute("ALTER TABLE sources ADD COLUMN IF NOT EXISTS kind VARCHAR(20) DEFAULT 'directory' NOT NULL");
         db.execute("CREATE TABLE IF NOT EXISTS tokens (id VARCHAR(36) PRIMARY KEY, name VARCHAR(200) NOT NULL, token_hash VARCHAR(64) UNIQUE NOT NULL, expires_at BIGINT NOT NULL, sources CLOB NOT NULL, revoked BOOLEAN DEFAULT FALSE)");
         db.execute("CREATE TABLE IF NOT EXISTS audit (id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, occurred_at BIGINT NOT NULL, actor VARCHAR(100) NOT NULL, action VARCHAR(200) NOT NULL, status INT NOT NULL)");
     }
@@ -39,13 +40,17 @@ public class Storage {
     }
     public List<Source> sources() {
         return db.query("SELECT * FROM sources ORDER BY name", (rs, row) -> new Source(rs.getString("id"), rs.getString("name"),
-                Path.of(rs.getString("root")), lines(rs.getString("includes")), lines(rs.getString("excludes"))));
+                Path.of(rs.getString("root")), lines(rs.getString("includes")), lines(rs.getString("excludes")), rs.getString("kind")));
     }
     public Source source(String id) { return sources().stream().filter(s -> s.id().equals(id)).findFirst().orElseThrow(() -> new NoSuchElementException("소스 없음")); }
     public void save(Source s) {
-        db.update("MERGE INTO sources KEY(id) VALUES (?,?,?,?,?)", s.id(), s.name(), s.root().toString(), String.join("\n", s.includes()), String.join("\n", s.excludes()));
+        db.update("MERGE INTO sources(id,name,root,includes,excludes,kind) KEY(id) VALUES (?,?,?,?,?,?)", s.id(), s.name(), s.root().toString(), String.join("\n", s.includes()), String.join("\n", s.excludes()), s.kind());
     }
-    public void deleteSource(String id) { db.update("DELETE FROM sources WHERE id=?", id); }
+    public void deleteSource(String id) {
+        db.update("DELETE FROM trash WHERE source_id=?", id);
+        db.update("UPDATE shares SET revoked=TRUE WHERE source_id=?", id);
+        db.update("DELETE FROM sources WHERE id=?", id);
+    }
     public void addToken(String id, String name, String hash, long expires, List<String> sources) {
         db.update("INSERT INTO tokens(id,name,token_hash,expires_at,sources) VALUES (?,?,?,?,?)", id, name, hash, expires, String.join("\n", sources));
     }
@@ -57,6 +62,20 @@ public class Storage {
         var found = db.query("SELECT id,sources FROM tokens WHERE token_hash=? AND revoked=FALSE AND expires_at>?", (rs, row) ->
                 new Identity(rs.getString("id"), lines(rs.getString("sources"))), hash, Instant.now().toEpochMilli());
         return found.isEmpty() ? null : found.getFirst();
+    }
+    public Identity identity(String id) {
+        var rows = db.query("SELECT id,sources FROM tokens WHERE id=? AND revoked=FALSE AND expires_at>?",
+                (r, n) -> new Identity(r.getString("id"), lines(r.getString("sources"))), id, Instant.now().toEpochMilli());
+        return rows.isEmpty() ? null : rows.getFirst();
+    }
+    public void revokeShares(String source, Path path) {
+        for (var row : db.queryForList("SELECT id,path FROM shares WHERE source_id=? AND revoked=FALSE", source)) {
+            Path shared = Path.of(row.get("PATH").toString());
+            if (shared.equals(path) || shared.startsWith(path)) {
+                db.update("UPDATE shares SET revoked=TRUE WHERE id=?", row.get("ID"));
+                audit("admin", "share-revoke-path", 200);
+            }
+        }
     }
     public void revoke(String id) { db.update("UPDATE tokens SET revoked=TRUE WHERE id=?", id); }
     public void audit(String actor, String action, int status) {

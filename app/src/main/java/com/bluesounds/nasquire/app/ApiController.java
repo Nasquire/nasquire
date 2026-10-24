@@ -15,7 +15,7 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api")
 public class ApiController {
     record Setup(String username, String password) { }
-    record SourceInput(String name, String path, List<String> includes, List<String> excludes) { }
+    record SourceInput(String name, String path, List<String> includes, List<String> excludes, String kind) { }
     record TokenInput(String name, Long expiresAt, List<String> sources) { }
     private final EmbeddingSettings embeddings;
     private final Storage storage;
@@ -37,18 +37,28 @@ public class ApiController {
     @PostMapping("/setup") void setup(@RequestBody Setup input) { storage.setup(input.username, input.password); storage.audit("admin", "setup", 200); }
     @GetMapping("/sources") List<Map<String, Object>> sources() {
         return storage.sources().stream().map(s -> Map.<String, Object>of("id", s.id(), "name", s.name(), "path", s.root().toString(),
-                "includes", s.includes(), "excludes", s.excludes(), "status", indexing.status(s.id()))).toList();
+                "kind", s.kind(), "includes", s.includes(), "excludes", s.excludes(), "status", indexing.status(s.id()))).toList();
     }
     @PostMapping("/sources") Source create(@RequestBody SourceInput input) throws IOException { return save(UUID.randomUUID().toString(), input); }
     @PutMapping("/sources/{id}") Source update(@PathVariable String id, @RequestBody SourceInput input) throws IOException { storage.source(id); return save(id, input); }
-    private Source save(String id, SourceInput input) throws IOException {
+    private synchronized Source save(String id, SourceInput input) throws IOException {
         if (input.name == null || input.name.length() > 200 || input.path == null || input.path.length() > 4096) throw new IllegalArgumentException("소스 입력 오류");
         Path root = Path.of(input.path).toRealPath();
         if (!Files.isDirectory(root) || !Files.isReadable(root) || root.startsWith(dataFolder) || dataFolder.startsWith(root))
             throw new IllegalArgumentException("읽을 수 있는 폴더를 지정하고 데이터 폴더와 분리하세요");
         for (var globs : List.of(input.includes == null ? List.<String>of() : input.includes, input.excludes == null ? List.<String>of() : input.excludes))
             if (globs.size() > 50 || globs.stream().anyMatch(g -> g == null || g.length() > 500 || g.contains("\n") || g.contains("\r"))) throw new IllegalArgumentException("glob 입력 오류");
-        var source = new Source(id, input.name, root, input.includes, input.excludes);
+        String kind = input.kind == null ? "directory" : input.kind;
+        if (kind.equals("upload") && !Files.isWritable(root)) throw new IllegalArgumentException("쓰기 가능한 별도 폴더 필요");
+        for (Source other : storage.sources()) {
+            if (other.id().equals(id)) {
+                if (!other.kind().equals(kind) || !other.root().equals(root))
+                    throw new IllegalArgumentException("기존 소스 종류·경로 변경 대신 등록 해제 후 추가하세요");
+            } else if ((kind.equals("upload") || other.kind().equals("upload"))
+                    && (root.startsWith(other.root()) || other.root().startsWith(root)))
+                throw new IllegalArgumentException("업로드 소스 중첩 금지");
+        }
+        var source = new Source(id, input.name, root, input.includes, input.excludes, kind);
         storage.save(source); indexing.reindex(id); storage.audit("admin", "source-save " + id, 200); return source;
     }
     @DeleteMapping("/sources/{id}") void delete(@PathVariable String id) { storage.source(id); storage.deleteSource(id); storage.audit("admin", "source-delete " + id, 200); }

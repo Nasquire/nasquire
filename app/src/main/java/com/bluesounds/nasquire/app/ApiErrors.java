@@ -7,6 +7,8 @@ import org.springframework.web.bind.annotation.*;
 
 @RestControllerAdvice
 public class ApiErrors {
+    @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
+    ResponseEntity<Map<String, String>> tooLarge(Exception e) { return ResponseEntity.status(413).body(Map.of("error", "업로드 크기 상한 초과 / Upload too large")); }
     @ExceptionHandler({IllegalArgumentException.class, IOException.class})
     ResponseEntity<Map<String, String>> invalid(Exception e) { return ResponseEntity.badRequest().body(Map.of("error", "입력 또는 파일 처리 오류 / Invalid input or file processing error")); }
     @ExceptionHandler(org.springframework.security.access.AccessDeniedException.class)

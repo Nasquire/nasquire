@@ -7,7 +7,6 @@ import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 @RestController
 public class DownloadController {
@@ -15,7 +14,7 @@ public class DownloadController {
     private final Storage storage;
     public DownloadController(DownloadService downloads, Storage storage) { this.downloads = downloads; this.storage = storage; }
     static String requestBase(HttpServletRequest request) {
-        return ServletUriComponentsBuilder.fromRequestUri(request).replacePath(request.getContextPath()).replaceQuery(null).build().toUriString();
+        return "";
     }
     @GetMapping("/api/download") Object issue(@RequestParam String path, HttpServletRequest request) throws IOException {
         return downloads.issue((Storage.Identity)request.getAttribute("nasquire.token"), path, requestBase(request));

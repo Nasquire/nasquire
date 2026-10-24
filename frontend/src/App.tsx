@@ -1,15 +1,16 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { useTheme } from './theme'
+import Files from './Files'
 
 const ko = navigator.language.toLowerCase().startsWith('ko')
 const t = (en: string, kr: string) => ko ? kr : en
 type Auth = { configured: boolean; authenticated: boolean; csrfToken: string; csrfHeader: string }
-type Source = { id: string; name: string; path: string; includes: string[]; excludes: string[]; status: { state: string; indexed: number; pending: number; errors: number; message: string } }
+type Source = { kind: string; id: string; name: string; path: string; includes: string[]; excludes: string[]; status: { state: string; indexed: number; pending: number; errors: number; message: string } }
 type Token = { id: string; name: string; expiresAt: number; sources: string[]; revoked: boolean }
 type Hit = { source: string; sourceName: string; path: string; page: number; text: string; score: number }
-const pages = ['sources', 'embeddings', 'tokens', 'search', 'about'] as const
+const pages = ['sources', 'files', 'embeddings', 'tokens', 'search', 'about'] as const
 type Page = typeof pages[number]
-const titles = { embeddings: t('Embeddings', '임베딩 설정'), sources: t('Sources', '소스 관리'), tokens: t('API tokens', 'API 토큰'), search: t('Search playground', '검색 시험'), about: t('About', '정보') }
+const titles = { files: t('Files and shares', '파일·공유'), embeddings: t('Embeddings', '임베딩 설정'), sources: t('Sources', '소스 관리'), tokens: t('API tokens', 'API 토큰'), search: t('Search playground', '검색 시험'), about: t('About', '정보') }
 
 export default function App() {
   const [embedding, setEmbedding] = useState<Record<string, unknown>>()
@@ -84,12 +85,14 @@ export default function App() {
     <div className="sidebar-bottom"><select aria-label={t('Theme', '테마')} value={theme} onChange={e => setTheme(e.target.value as typeof theme)}><option value="auto">{t('System theme', '자동 테마')}</option><option value="light">{t('Light', '라이트')}</option><option value="dark">{t('Dark', '다크')}</option></select><button onClick={() => void run(async () => { await api('/logout', 'POST'); setSecret(''); setHits([]); setDocument(''); await refreshAuth() })}>{t('Sign out', '로그아웃')}</button></div>
   </aside><main className="main"><header>{titles[page]}</header><div className="content">
     {error && <p className="error" role="alert">{error}</p>}
-    {page === 'sources' && <><h1>{t('Your knowledge, connected', '내 폴더를 지식으로')}</h1><p>{t('Files stay in place. Nasquire only reads your sources.', '원본은 제자리에. Nasquire는 소스를 읽기만 합니다.')}</p>
+    {page === 'files' && <Files sources={sources} api={api} csrfHeader={auth.csrfHeader} csrfToken={auth.csrfToken} />}
+    {page === 'sources' && <><h1>{t('Your knowledge, connected', '내 폴더를 지식으로')}</h1><p>{t('Standard sources are read-only. Enable an upload source in a separate writable folder.', '일반 소스는 읽기 전용입니다. 별도 쓰기 가능 폴더를 업로드 소스로 등록할 수 있습니다.')}</p>
       <section className="card"><h2>{edit ? t('Edit source', '소스 편집') : t('Add a source', '소스 등록')}</h2><form key={edit?.id ?? 'new'} onSubmit={e => submit(e, async data => {
         const globs = (key: string) => String(data.get(key)).split('\n').map(v => v.trim()).filter(Boolean)
-        await api('/sources' + (edit ? '/' + edit.id : ''), edit ? 'PUT' : 'POST', { name: data.get('name'), path: data.get('path'), includes: globs('includes'), excludes: globs('excludes') }); setEdit(undefined); await refresh()
+        await api('/sources' + (edit ? '/' + edit.id : ''), edit ? 'PUT' : 'POST', { name: data.get('name'), path: data.get('path'), kind: data.get('kind'), includes: globs('includes'), excludes: globs('excludes') }); setEdit(undefined); await refresh()
       })}>
-        <div className="row"><label>{t('Name', '이름')}<input name="name" required maxLength={200} defaultValue={edit?.name} /></label><label>{t('Folder in container', '컨테이너 안 폴더')}<input name="path" required placeholder="/sources/documents" defaultValue={edit?.path} /></label></div>
+        <label>{t('Source kind (fixed after registration)', '소스 종류 (등록 후 변경 불가)')}<select name="kind" defaultValue={edit?.kind ?? 'directory'}><option value="directory">{t('Read-only folder', '읽기 전용 폴더')}</option><option value="upload">{t('Upload (separate writable folder)', '업로드 (별도 쓰기 가능 폴더)')}</option></select></label>
+        <div className="row"><label>{t('Name' , '이름')}<input name="name" required maxLength={200} defaultValue={edit?.name} /></label><label>{t('Folder in container', '컨테이너 안 폴더')}<input name="path" required placeholder="/sources/documents" defaultValue={edit?.path} /></label></div>
         <div className="row"><label>{t('Include globs (one per line, empty = all)', '포함 glob (줄마다 하나, 빈 값=전체)')}<textarea name="includes" defaultValue={edit?.includes.join('\n')} placeholder="**/*.pdf" /></label><label>{t('Exclude globs (one per line)', '제외 glob (줄마다 하나)')}<textarea name="excludes" defaultValue={edit?.excludes.join('\n')} placeholder="private/**" /></label></div>
         <div className="row"><button className="primary" disabled={busy}>{t('Save source', '저장')}</button>{edit && <button type="button" onClick={() => setEdit(undefined)}>{t('Cancel', '취소')}</button>}</div>
       </form></section>
