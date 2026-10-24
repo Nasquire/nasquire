@@ -73,7 +73,10 @@ class ApplicationIntegrationTest {
         assertTrue(initialize.has("result"), initialize.toString());
         var tools = json(call("/mcp", "POST", Map.of("jsonrpc", "2.0", "id", 2, "method", "tools/list"), token, false), 200);
         assertEquals(2, tools.at("/result/tools").size());
-        var searched = mcp(token, "search_documents", Map.of("query", "한국어", "limit", 10));
+        assertTrue(tools.toString().contains("hybrid"));
+        assertTrue(mcp(token, "search_documents", Map.of("query", "ocean", "mode", "vector")).at("/result/isError").asBoolean());
+        assertTrue(mcp(token, "search_documents", Map.of("query", "ocean", "mode", "invalid")).at("/result/isError").asBoolean());
+        var searched = mcp(token, "search_documents", Map.of("query", "한국어", "limit", 10, "mode", "keyword"));
         assertFalse(searched.at("/result/isError").asBoolean(), searched.toString());
         assertTrue(searched.toString().contains("notes.md"), searched.toString());
         var read = mcp(token, "get_document", Map.of("path", id + ":notes.md", "offset", 0, "length", 3));
@@ -81,6 +84,7 @@ class ApplicationIntegrationTest {
         var denied = mcp(token, "get_document", Map.of("path", otherId + ":private.txt"));
         assertTrue(denied.at("/result/isError").asBoolean()); assertFalse(denied.toString().contains("confidential"));
         assertTrue(mcp(token, "get_document", Map.of("path", id + ":notes.md", "length", 100001)).at("/result/isError").asBoolean());
+        verifyRemoteEmbedding(token, id);
         storage.addToken("expired", "expired", SecurityConfiguration.hash("expired-test-value"), System.currentTimeMillis() - 1, List.of(id));
         assertEquals(401, call("/api/search?query=ocean", "GET", null, "expired-test-value", false).statusCode());
         assertEquals(200, call("/api/tokens/" + tokenId, "DELETE", null, null, true).statusCode());
@@ -89,6 +93,49 @@ class ApplicationIntegrationTest {
         assertEquals(200, call("/api/sources/" + id, "DELETE", null, null, true).statusCode());
         assertEquals(204, call("/api/logout", "POST", null, null, true).statusCode());
         assertEquals(401, call("/api/search?query=ocean", "GET", null, null, false).statusCode());
+    }
+    void verifyRemoteEmbedding(String token, String source) throws Exception {
+        var fake = com.sun.net.httpserver.HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        fake.createContext("/v1/embeddings", exchange -> {
+            assertEquals("Bearer embedding-test-value", exchange.getRequestHeaders().getFirst("Authorization"));
+            var input = mapper.readTree(exchange.getRequestBody().readAllBytes()).get("input");
+            var data = new ArrayList<Map<String, Object>>();
+            for (int i = 0; i < input.size(); i++) data.add(Map.of("index", i, "embedding", List.of(1, 0)));
+            byte[] response = mapper.writeValueAsBytes(Map.of("data", data));
+            exchange.sendResponseHeaders(200, response.length); exchange.getResponseBody().write(response); exchange.close();
+        }); fake.start();
+        try {
+            var settings = Map.of("provider", "remote", "baseUrl", "http://127.0.0.1:" + fake.getAddress().getPort() + "/v1",
+                    "model", "fake-v1", "dimensions", "2", "apiKey", "embedding-test-value", "batchSize", "2", "timeoutSeconds", "5");
+            assertEquals(403, call("/api/embeddings", "PUT", settings, null, false).statusCode());
+            assertEquals(403, call("/api/embeddings", "GET", null, token, false).statusCode());
+            assertEquals(200, call("/api/embeddings", "PUT", settings, null, true).statusCode());
+            var view = json(call("/api/embeddings", "GET", null, null, true), 200);
+            assertFalse(view.has("apiKey")); assertTrue(view.get("hasKey").asBoolean());
+            assertTrue(view.at("/status/reindexRequired").asBoolean());
+            assertFalse(Files.readString(TEMP.resolve("data/embedding.properties")).contains("embedding-test-value"));
+            assertTrue(json(call("/api/embeddings/test", "POST", null, null, true), 200).get("ok").asBoolean());
+            assertEquals(409, call("/api/search?query=ocean&mode=hybrid", "GET", null, token, false).statusCode());
+            assertEquals(1, json(call("/api/search?query=ocean&mode=keyword", "GET", null, token, false), 200).size());
+            call("/api/embeddings/reindex", "POST", null, null, true);
+            for (int i = 0; i < 100; i++) {
+                view = json(call("/api/embeddings", "GET", null, null, true), 200);
+                if (!view.at("/status/reindexRequired").asBoolean()) break;
+                Thread.sleep(100);
+            }
+            assertFalse(view.at("/status/reindexRequired").asBoolean());
+            assertEquals(1, json(call("/api/search?query=ocean&mode=hybrid", "GET", null, token, false), 200).size());
+            assertEquals(1, json(call("/api/search?query=ocean&mode=vector", "GET", null, token, false), 200).size());
+            assertFalse(mcp(token, "search_documents", Map.of("query", "ocean", "mode", "hybrid", "source", source)).at("/result/isError").asBoolean());
+            try (var reopened = new com.bluesounds.nasquire.core.SearchIndex(TEMP.resolve("reopened-index"))) {
+                var restored = new EmbeddingSettings(reopened, TEMP.resolve("data"), new org.springframework.mock.env.MockEnvironment());
+                assertTrue((Boolean)restored.test().get("ok"));
+            }
+            assertEquals(200, call("/api/embeddings", "PUT", Map.of("model", "fake-v2"), null, true).statusCode());
+            assertTrue(json(call("/api/embeddings", "GET", null, null, true), 200).at("/status/reindexRequired").asBoolean());
+            assertEquals(200, call("/api/embeddings", "PUT", Map.of("provider", "off"), null, true).statusCode());
+            assertEquals(1, json(call("/api/search?query=ocean", "GET", null, token, false), 200).size());
+        } finally { fake.stop(0); }
     }
     JsonNode mcp(String token, String tool, Map<String, Object> arguments) throws Exception {
         return json(call("/mcp", "POST", Map.of("jsonrpc", "2.0", "id", 3, "method", "tools/call", "params", Map.of("name", tool, "arguments", arguments)), token, false), 200);

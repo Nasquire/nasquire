@@ -27,7 +27,7 @@ public class AppConfiguration {
     @Bean(destroyMethod = "close")
     SearchIndex searchIndex(Path dataFolder) throws IOException { return new SearchIndex(dataFolder.resolve("index")); }
     @Bean(destroyMethod = "close")
-    IndexingService indexingService(SearchIndex index, Storage storage,
+    IndexingService indexingService(SearchIndex index, Storage storage, EmbeddingSettings embeddings,
             @Value("${nasquire.max-file-bytes:33554432}") long maxBytes,
             @Value("${nasquire.max-text-characters:2000000}") int maxCharacters,
             @Value("${nasquire.stable-millis:2000}") long stableMillis,

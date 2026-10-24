@@ -11,7 +11,10 @@ RUN groupadd --gid "$PGID" nasquire && useradd --uid "$PUID" --gid "$PGID" --no-
 WORKDIR /data
 COPY --from=build --chown=nasquire:nasquire /workspace/app/build/libs/app-0.1.0.jar /app/nasquire.jar
 ENV NASQUIRE_DATA=/data
-ENV JAVA_TOOL_OPTIONS="-Xms64m -Xmx256m -XX:+UseSerialGC -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=48m -Xss512k -XX:MaxDirectMemorySize=32m"
+ENV DJL_CACHE_DIR=/data/models/.djl-cache
+ENV MALLOC_ARENA_MAX=2
+ENV TOKENIZERS_PARALLELISM=false
+ENV JAVA_TOOL_OPTIONS="--enable-native-access=ALL-UNNAMED -Xms64m -Xmx256m -XX:+UseSerialGC -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=48m -Xss512k -XX:MaxDirectMemorySize=32m"
 USER nasquire:nasquire
 VOLUME /data
 EXPOSE 8080

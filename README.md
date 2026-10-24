@@ -1,10 +1,10 @@
 # Nasquire
 
-**Ask your NAS.** Search existing folders on a NAS or server through a browser, REST API, or MCP client. Nasquire reads original files and keeps metadata and its keyword index in a separate data directory.
+**Ask your NAS.** Search existing folders on a NAS or server through a browser, REST API, or MCP client. Nasquire reads original files and keeps metadata and its search index in a separate data directory.
 
 Copyright (c) 2026 Bluesounds. [Source repository](https://github.com/Nasquire/nasquire).
 
-The keyword-search MVP supports PDF (page-level text), UTF-8 and detected-encoding text, and Markdown. Korean Nori analysis also handles English terms; Lucene ranks chunks with BM25. Embeddings, OCR, reranking, Office formats, and TOTP are planned.
+The search service supports PDF (page-level text), UTF-8 and detected-encoding text, and Markdown. Korean Nori analysis also handles English terms; Lucene ranks chunks with BM25. Optional local ONNX and remote embeddings add Lucene HNSW vector search and BM25/vector RRF fusion. OCR, reranking, Office formats, and TOTP are planned. See [embedding configuration](docs/embeddings.md).
 
 ## Quick start
 
@@ -28,7 +28,7 @@ SOURCE_DIR=/path/to/documents PUID=1000 PGID=1000 \
 
 Register `/sources/documents` in the UI. The example mounts sources read-only, persists `/data`, limits memory to 512 MiB, and runs a JRE-only image as a non-root user. `PUID`/`PGID` configure the build-time account and runtime UID/GID. Ensure this identity can read source files and write the data volume. Changing IDs for an existing volume requires adjusting its ownership before starting. PDF scratch files use the size-limited `/tmp` mount.
 
-Container image building and a strict 512 MiB container test have not yet been verified. See [verification](docs/verification/mvp.md).
+The 512 MiB example targets keyword/remote operation. Built-in model memory must be checked against [vector verification](docs/verification/vector.md) before enabling it. Container image building and a strict 512 MiB container test have not yet been verified. See [verification](docs/verification/mvp.md).
 
 ## Configuration
 
@@ -94,7 +94,7 @@ The official MCP Java SDK provides stateless Streamable HTTP at `/mcp`. Every re
 
 Client configuration syntax varies. The server exposes:
 
-- `search_documents(query, source?, limit?)`: chunk text, source ID/name, source-qualified path, page, offset, mtime, and score.
+- `search_documents(query, source?, limit?, mode?)`: chunk text, source ID/name, source-qualified path, page, offset, mtime, and score.
 - `get_document(path, page_from?, page_to?, offset?, length?)`: indexed text; page and character ranges are mutually exclusive.
 
 A direct tool request after initialization:
@@ -116,7 +116,7 @@ curl https://nasquire.example.com/mcp \
 VERIFY_PORT=8101 python3 scripts/verify-runtime.py
 ```
 
-The runtime check generates 40 original sample documents, starts `:app:bootRun`, exercises setup → indexing → Korean/English search → tokens → both MCP tools, records JVM RSS, and stops the server. It writes ignored artifacts under `build/verification`. [Recorded results and remaining checks](docs/verification/mvp.md).
+The runtime check generates 40 original sample documents, starts `:app:bootRun`, exercises setup → indexing → Korean/English search → tokens → both MCP tools, records JVM RSS, and stops the server. Set `VERIFY_EMBEDDING=builtin` to fetch pinned SHA-256-verified model files into ignored build artifacts and test local hybrid search, or `VERIFY_EMBEDDING=remote` to exercise a fake HTTP provider. Do not run builds concurrently with bootRun verification because they share class output directories. It writes ignored artifacts under `build/verification`. [Recorded results and remaining checks](docs/verification/mvp.md).
 
 Use HTTPS and restrict initial setup/administrator access to trusted users. Secure session cookies should be enabled behind HTTPS. This MVP has one administrator, no password recovery UI, TOTP, login rate limiting, or OAuth. A sampled RSS measurement on small documents is not a guarantee for large PDFs or concurrent workloads; test your own corpus under a real container limit. The source mount must be read-only to enforce isolation against filesystem races.
 

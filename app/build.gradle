@@ -21,5 +21,5 @@ processResources {
 }
 tasks.named('bootRun') {
     workingDir rootProject.projectDir
-    jvmArgs '-Xms64m', '-Xmx256m', '-XX:+UseSerialGC', '-XX:MaxMetaspaceSize=128m', '-XX:ReservedCodeCacheSize=48m', '-Xss512k', '-XX:MaxDirectMemorySize=32m'
+    jvmArgs '--enable-native-access=ALL-UNNAMED', '-Xms64m', '-Xmx256m', '-XX:+UseSerialGC', '-XX:MaxMetaspaceSize=128m', '-XX:ReservedCodeCacheSize=48m', '-Xss512k', '-XX:MaxDirectMemorySize=32m'
 }

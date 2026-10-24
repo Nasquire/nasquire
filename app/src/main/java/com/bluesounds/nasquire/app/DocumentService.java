@@ -20,7 +20,10 @@ public class DocumentService {
         return allowed;
     }
     public List<SearchIndex.Hit> search(Storage.Identity identity, String query, String source, int limit) throws IOException {
-        return index.search(query, scope(identity, source), limit);
+        return search(identity, query, source, limit, null);
+    }
+    public List<SearchIndex.Hit> search(Storage.Identity identity, String query, String source, int limit, String mode) throws IOException {
+        return index.search(query, scope(identity, source), limit, mode);
     }
     public Map<String, Object> document(Storage.Identity identity, String path, Integer from, Integer to, Integer offset, Integer length) throws IOException {
         if (path == null || path.length() > 4096 || !path.contains(":")) throw new IllegalArgumentException("소스 ID:상대경로가 필요합니다");

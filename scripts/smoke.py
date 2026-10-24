@@ -15,6 +15,7 @@ import urllib.parse
 parser = argparse.ArgumentParser()
 parser.add_argument('url', help='Example: http://127.0.0.1:8101')
 parser.add_argument('samples', type=pathlib.Path)
+parser.add_argument('--embedding', choices=['off', 'builtin', 'remote'], default='off')
 parser.add_argument('--pid', type=int, help='Application JVM PID for Linux RSS measurement')
 args = parser.parse_args()
 if args.pid:
@@ -106,7 +107,7 @@ with tempfile.TemporaryDirectory(prefix='nasquire-smoke-') as folder:
     pdf_hits = curl('/api/search?' + urllib.parse.urlencode({'query': 'Second', 'limit': 100}))
     assert len(pdf_hits) == 20 and all(hit['page'] == 2 for hit in pdf_hits)
     print(f'PASS Korean query: {len(hits)} chunks; English PDF query: 20 page-2 results')
-    issued = curl('/api/tokens', 'POST', {'name': 'smoke-client', 'expiresAt': int(time.time() * 1000) + 60000, 'sources': [source_id]})
+    issued = curl('/api/tokens', 'POST', {'name': 'smoke-client', 'expiresAt': int(time.time() * 1000) + 600000, 'sources': [source_id]})
     token = issued['value']
     assert len(curl(query, token=token, csrf_enabled=False)) >= 20
     curl('/api/tokens', token=token, csrf_enabled=False, expected=403)
@@ -123,7 +124,49 @@ with tempfile.TemporaryDirectory(prefix='nasquire-smoke-') as folder:
     assert not result['result'].get('isError')
     assert len(json.loads(result['result']['content'][0]['text'])['text']) == 100
     print('PASS read-only token, MCP initialize/tools/list/search_documents/get_document')
-    for _ in range(30):
+    if args.embedding != 'off':
+        mock = None
+        if args.embedding == 'builtin':
+            models = pathlib.Path('build/verification/models').resolve()
+            configuration = {'provider': 'builtin', 'modelPath': str(models / 'model-int8.onnx'),
+                             'tokenizerPath': str(models / 'tokenizer.json'), 'download': 'false'}
+        else:
+            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            class Embeddings(BaseHTTPRequestHandler):
+                def do_POST(self):
+                    body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                    response = json.dumps({'data': [{'index': i, 'embedding': [1, 0, 0]} for i, _ in enumerate(body['input'])]}).encode()
+                    self.send_response(200); self.send_header('Content-Length', str(len(response))); self.end_headers(); self.wfile.write(response)
+                def log_message(self, *unused):
+                    pass
+            mock = ThreadingHTTPServer(('127.0.0.1', 8108), Embeddings)
+            threading.Thread(target=mock.serve_forever, daemon=True).start()
+            configuration = {'provider': 'remote', 'baseUrl': 'http://127.0.0.1:8108/v1', 'model': 'verification-fake',
+                             'apiKey': 'verification-only', 'dimensions': '3', 'batchSize': '2', 'timeoutSeconds': '5'}
+        try:
+            curl('/api/embeddings', 'PUT', configuration)
+            assert curl('/api/embeddings')['status']['reindexRequired']
+            assert curl('/api/embeddings/test', 'POST')['ok']
+            curl('/api/embeddings/reindex', 'POST')
+            deadline = time.monotonic() + 240
+            while time.monotonic() < deadline:
+                state = curl('/api/embeddings')['status']
+                if not state['reindexRequired']:
+                    break
+                time.sleep(0.25)
+            assert not state['reindexRequired'], state
+            for mode in ('keyword', 'vector', 'hybrid'):
+                found = curl('/api/search?' + urllib.parse.urlencode({'query': '한국어 문서', 'mode': mode, 'limit': 5}), token=token, csrf_enabled=False)
+                assert len(found) == 5 and all(h['path'].startswith(source_id + ':') and h['page'] >= 1 for h in found)
+            found = curl('/mcp', 'POST', {'jsonrpc': '2.0', 'id': 20, 'method': 'tools/call', 'params': {'name': 'search_documents', 'arguments': {'query': '한국어', 'mode': 'hybrid', 'limit': 5}}}, token=token, csrf_enabled=False)
+            assert not found['result'].get('isError')
+            for _ in range(30):
+                assert curl(query, token=token, csrf_enabled=False)
+            print('PASS ' + args.embedding + ' provider: connection, 40-document reindex, curl keyword/vector/hybrid, MCP hybrid, path/page evidence')
+        finally:
+            if mock:
+                mock.shutdown(); mock.server_close()
+    for _ in range(30 if args.embedding == 'off' else 0):
         assert curl(query, token=token, csrf_enabled=False)
     curl('/api/tokens/' + issued['id'], 'DELETE')
     curl(query, token=token, csrf_enabled=False, expected=401)

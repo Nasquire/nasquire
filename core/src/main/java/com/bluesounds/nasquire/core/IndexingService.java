@@ -38,6 +38,8 @@ public final class IndexingService implements AutoCloseable {
     public Status status(String id) { return statuses.getOrDefault(id, new Status("waiting", 0, 0, 0, "")); }
 
     public synchronized void scan(List<Source> sources) throws IOException {
+        if (index.beginRebuild()) { snapshots.clear(); definitions.clear(); }
+        if (!index.indexingAllowed()) return;
         var active = sources.stream().map(Source::id).collect(java.util.stream.Collectors.toSet());
         for (String old : new HashSet<>(definitions.keySet())) {
             if (!active.contains(old)) { index.deleteSource(old); definitions.remove(old); snapshots.remove(old); statuses.remove(old); }
@@ -49,7 +51,10 @@ public final class IndexingService implements AutoCloseable {
             }
             completed.put(source.id(), scanSource(source));
         }
-        index.refresh();
+        synchronized (index) {
+            index.finishRebuild(completed.values().stream().allMatch(s -> s.state().equals("ready") && s.pending() == 0 && s.errors() == 0));
+            index.refresh();
+        }
         // 검색자가 새 색인을 읽을 수 있게 된 뒤 완료 상태를 공개한다.
         statuses.putAll(completed);
     }
@@ -102,6 +107,7 @@ public final class IndexingService implements AutoCloseable {
                         next.put(key, stamp);
                         if (stamp.indexed) counts[0]++; else { counts[1]++; index.delete(source.id() + ":" + key); }
                     } catch (IOException | RuntimeException e) { counts[2]++; }
+                    statuses.put(source.id(), new Status("scanning", counts[0], counts[1], counts[2], ""));
                     return FileVisitResult.CONTINUE;
                 }
             });
