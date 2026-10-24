@@ -45,7 +45,7 @@
 
 - MCP는 **공식 Java SDK 2.1.0의 Servlet stateless Streamable HTTP**를 선택했다. Spring AI 전체 모델/오케스트레이션 계층이 불필요한 두 읽기 도구라 직접 SDK가 의존성과 설정을 줄인다. 서버는 매 HTTP 요청의 인증 문맥을 도구 호출에 전달하고 항상 소스 범위를 재검사한다. 세션 ID/상주 SSE 연결 없이 POST JSON 응답을 사용한다. `/mcp`의 관리자 세션 단독 접근은 금지하며 Origin 헤더는 명시한 허용 목록만 받는다.
 - H2는 내장 파일 DB로 사용하며 MPL-2.0 옵션을 선택했다. ICU는 Unicode-3.0, 나머지 주요 런타임은 Apache-2.0/MIT이다. Jakarta Annotations의 GPL + Classpath Exception 옵션을 포함하여 `THIRD-PARTY.md`에 정리했다. Logback 대신 Apache Log4j2를 사용했다. 루트 LICENSE·LICENSE-EXCEPTIONS.md·NOTICE는 변경하지 않았다.
-- 1단계에서는 TOTP를 생략했다. 미구현 기능/배포 검증은 아래 후속 목록에 남긴다.
+- 최초 1단계에서는 TOTP를 생략했으며 후속 보안 작업에서 선택 TOTP·오프라인 관리자 복구를 구현했다. 검증은 `verification/totp.md`를 참고한다.
 - 재시작 시 소스별 색인을 재구축한다. mtime/크기를 모두 보존하는 변경은 재색인 버튼으로 반영한다. 자동 색인 상태는 파일 수이며 검색 결과 수는 조각 수다.
 
 ### 512 MiB 근사 실측
@@ -63,7 +63,8 @@
 - [ ] Docker가 없는 환경이므로 이미지 빌드·실제 512 MiB cgroup·비루트 PUID/PGID 볼륨 권한·amd64/arm64 실행 검증.
 - [ ] 실제 NAS 대용량 자료·큰 PDF/손상 PDF·다중 클라이언트 부하와 파일 캐시 포함 메모리 측정.
 - [x] 로그인 시도 제한: IP·계정별 실패 지연/일시 잠금·감사·성공 초기화.
-- [ ] TOTP, 관리자 복구 절차/UI, MCP OAuth(후속 보안 작업).
+- [x] 선택 TOTP·관리자 복구 절차·한/영 등록/해제 및 로그인 UI 구현(API 통합 검증, 실제 브라우저 검증은 아래 미완료 유지).
+- [ ] MCP OAuth(후속 보안 작업).
 - [ ] 실제 브라우저에서 모바일·라이트/다크·접근성 시각 검증(이번 환경에는 브라우저 자동화 도구 없음). 프런트엔드는 TypeScript/Vite 빌드와 정적 리소스 제공을 검증했다.
 - [ ] 검색 하이라이트, 색인 오류 원인 상세 UI, 파일별 영속 변경 감지 스냅샷 최적화.
 - [ ] 리랭커·OCR·추가 문서 형식은 기존 3~4단계에서 구현.
@@ -159,3 +160,11 @@
 - [x] 휴지통 시간순 배치·실패 표시/재시도 유예·소스 삭제 시 행 제거·폴더 깊이 제한, 시작 시 오래된 임시 파일 정리.
 - [x] 다운로드/공유 공통 O_NONBLOCK+열린 fd의 fstat 일반 파일 확인, 항목별 회귀 테스트 추가.
 - 검증 명령·결과·잔여 위험: [업로드·공유 보안 검토 반영](verification/upload-share.md#보안-검토-반영).
+
+## 1단계 후속 TOTP·관리자 복구 (2026-10-24)
+
+- [x] 선택 RFC 6238 TOTP·암호화 DB 저장·코드 확인 후 활성화·재생 차단·해제 비밀번호/코드 검증.
+- [x] 권한 없는 로그인 대기 세션·최종 세션 ID/CSRF 교체·기존 LoginAttempts/감사 연계·복구 코드 10개 해시/일회 소모.
+- [x] 네트워크로 노출하지 않는 오프라인 관리자 복구 명령·README 절차·한/영 보안/로그인 UI.
+- [x] `./gradlew build -q` 종료 0(core 11개·app 10개), 실제 JAR 복구/DB 잠금 거부 종료 0, `VERIFY_PORT=8121 python3 scripts/verify-runtime.py` 종료 0 및 서버/포트 정리. 최대 RSS 283.0 MiB. 상세: [TOTP 검증](verification/totp.md).
+- [ ] 실제 브라우저 한/영·모바일·접근성 UI 검증(환경 미준비). MCP OAuth와 기존 배포/부하 한계는 별도 미완료로 유지.

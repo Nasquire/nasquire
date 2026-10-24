@@ -246,6 +246,34 @@ with tempfile.TemporaryDirectory(prefix='nasquire-smoke-') as folder:
                 mock.shutdown(); mock.server_close()
     for _ in range(30 if args.embedding == 'off' else 0):
         assert curl(query, token=token, csrf_enabled=False)
+    # 표준 라이브러리만으로 실제 curl TOTP 흐름을 검증한다. 비밀/코드는 출력하지 않는다.
+    import base64, hashlib, hmac, struct
+    def totp_code(secret, step):
+        digest = hmac.new(base64.b32decode(secret), struct.pack('>Q', step), hashlib.sha1).digest()
+        offset = digest[-1] & 15
+        return f'{(struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7fffffff) % 1000000:06d}'
+    enrollment = curl('/api/totp/enroll', 'POST')
+    recovery = curl('/api/totp/enable', 'POST', {'code': totp_code(enrollment['secret'], int(time.time() // 30) - 1)})['recoveryCodes']
+    assert len(recovery) == 10 and curl('/api/totp')['enabled']
+    curl('/api/logout', 'POST', expected=204)
+    csrf = curl('/api/auth')['csrfToken']
+    curl('/api/login', 'POST', form={'username': 'admin', 'password': password}, expected=202)
+    auth = curl('/api/auth'); csrf = auth['csrfToken']
+    assert auth['totpRequired'] and not auth['authenticated']
+    curl('/api/sources', expected=401)
+    assert curl(query, token=token, csrf_enabled=False)
+    assert len(curl('/mcp', 'POST', {'jsonrpc': '2.0', 'id': 40, 'method': 'tools/list'}, token=token, csrf_enabled=False)['result']['tools']) == 3
+    curl('/api/login/totp', 'POST', {'code': totp_code(enrollment['secret'], int(time.time() // 30))})
+    auth = curl('/api/auth'); csrf = auth['csrfToken']; assert auth['authenticated']
+    curl('/api/logout', 'POST', expected=204)
+    csrf = curl('/api/auth')['csrfToken']
+    curl('/api/login', 'POST', form={'username': 'admin', 'password': password}, expected=202)
+    csrf = curl('/api/auth')['csrfToken']
+    curl('/api/login/totp', 'POST', {'code': recovery[0]})
+    csrf = curl('/api/auth')['csrfToken']
+    curl('/api/totp/disable', 'POST', {'password': password, 'code': totp_code(enrollment['secret'], int(time.time() // 30) + 1)})
+    assert not curl('/api/totp')['enabled']
+    print('PASS TOTP enrollment/confirmation, pending session denial, code login, recovery login, disable, Bearer/MCP unaffected')
     curl('/api/tokens/' + issued['id'], 'DELETE')
     curl(query, token=token, csrf_enabled=False, expected=401)
     assert any('mcp search_documents' in event['ACTION'] for event in curl('/api/audit'))

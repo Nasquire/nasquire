@@ -18,6 +18,9 @@ public class Storage {
     public Storage(JdbcTemplate db) {
         this.db = db;
         db.execute("CREATE TABLE IF NOT EXISTS administrator (id INT PRIMARY KEY CHECK(id=1), username VARCHAR(100) NOT NULL, password_hash VARCHAR(100) NOT NULL)");
+        db.execute("ALTER TABLE administrator ADD COLUMN IF NOT EXISTS totp_secret VARCHAR(512)");
+        db.execute("ALTER TABLE administrator ADD COLUMN IF NOT EXISTS totp_step BIGINT DEFAULT -1 NOT NULL");
+        db.execute("CREATE TABLE IF NOT EXISTS recovery_codes (code_hash VARCHAR(64) PRIMARY KEY)");
         db.execute("CREATE TABLE IF NOT EXISTS sources (id VARCHAR(36) PRIMARY KEY, name VARCHAR(200) NOT NULL, root VARCHAR(4096) NOT NULL, includes CLOB NOT NULL, excludes CLOB NOT NULL)");
         db.execute("ALTER TABLE sources ADD COLUMN IF NOT EXISTS kind VARCHAR(20) DEFAULT 'directory' NOT NULL");
         db.execute("CREATE TABLE IF NOT EXISTS tokens (id VARCHAR(36) PRIMARY KEY, name VARCHAR(200) NOT NULL, token_hash VARCHAR(64) UNIQUE NOT NULL, expires_at BIGINT NOT NULL, sources CLOB NOT NULL, revoked BOOLEAN DEFAULT FALSE)");
@@ -29,7 +32,7 @@ public class Storage {
         if (username == null || !username.matches("[A-Za-z0-9_.-]{3,100}") || password == null
                 || password.length() < 12 || password.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 72)
             throw new IllegalArgumentException("사용자명 3~100자, 비밀번호 12자 이상/UTF-8 72바이트 이하가 필요합니다");
-        db.update("INSERT INTO administrator VALUES (1,?,?)", username, passwords.encode(password));
+        db.update("INSERT INTO administrator(id,username,password_hash) VALUES (1,?,?)", username, passwords.encode(password));
     }
     public org.springframework.security.core.userdetails.UserDetails user(String username) {
         var users = db.query("SELECT * FROM administrator WHERE username=?", (rs, row) ->

@@ -5,6 +5,25 @@ import org.springframework.mock.web.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class SecurityBoundaryTest {
+    @Test void passwordAuthenticationNeverStoresAdminBeforeTotpSuccessHandler() {
+        var request = new MockHttpServletRequest(); var response = new MockHttpServletResponse();
+        request.getSession();
+        var context = org.springframework.security.core.context.SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(new org.springframework.security.authentication.UsernamePasswordAuthenticationToken("admin", null,
+                java.util.List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ADMIN"))));
+        new SecurityConfiguration.PasswordContextRepository(() -> true).saveContext(context, request, response);
+        assertNull(request.getSession().getAttribute("SPRING_SECURITY_CONTEXT"));
+        new SecurityConfiguration.PasswordContextRepository(() -> false).saveContext(context, request, response);
+        assertNotNull(request.getSession().getAttribute("SPRING_SECURITY_CONTEXT"));
+    }
+    @Test void totpPendingSessionExpiresWithoutCreatingAnotherSession() {
+        var request = new MockHttpServletRequest();
+        assertNull(TotpController.pending(request)); assertNull(request.getSession(false));
+        request.getSession().setAttribute("totp.pending", new TotpController.Pending("admin", System.currentTimeMillis()));
+        assertNotNull(TotpController.pending(request));
+        request.getSession().setAttribute("totp.pending", new TotpController.Pending("admin", System.currentTimeMillis() - 300001));
+        assertNull(TotpController.pending(request)); assertNull(request.getSession().getAttribute("totp.pending"));
+    }
     @Test void forwardedAddressesRequireTrustedConnectionAndWalkFromRight() {
         var request = new MockHttpServletRequest();
         request.setRemoteAddr("192.0.2.10");

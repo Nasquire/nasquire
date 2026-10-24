@@ -29,9 +29,9 @@ public class SecurityConfiguration {
     }
     @Bean UserDetailsService users(Storage store) { return store::user; }
     @Bean BCryptPasswordEncoder passwordEncoder() { return new BCryptPasswordEncoder(12); }
-    @Bean SecurityFilterChain security(HttpSecurity http, Storage storage, LoginAttempts attempts, ClientAddresses addresses, @Value("${nasquire.upload-max-bytes:33554432}") long maximum, @Value("${nasquire.mcp-allowed-origins:}") String allowedOrigins) throws Exception {
+    @Bean SecurityFilterChain security(HttpSecurity http, Storage storage, LoginAttempts attempts, ClientAddresses addresses, TotpService totp, @Value("${nasquire.upload-max-bytes:33554432}") long maximum, @Value("${nasquire.mcp-allowed-origins:}") String allowedOrigins) throws Exception {
         http.authorizeHttpRequests(a -> a
-                .requestMatchers("/", "/index.html", "/assets/**", "/icon.svg", "/LICENSE.txt", "/react-LICENSE.txt", "/LICENSE-EXCEPTIONS.md", "/api/auth", "/api/setup", "/api/login", "/download", "/error").permitAll()
+                .requestMatchers("/", "/index.html", "/assets/**", "/icon.svg", "/LICENSE.txt", "/react-LICENSE.txt", "/LICENSE-EXCEPTIONS.md", "/api/auth", "/api/setup", "/api/login", "/api/login/totp", "/download", "/error").permitAll()
                 .requestMatchers("/mcp").authenticated()
                 .requestMatchers("/api/search", "/api/document", "/api/download").authenticated()
                 .anyRequest().hasRole("ADMIN"))
@@ -47,8 +47,19 @@ public class SecurityConfiguration {
             .addFilterBefore(new MultipartGuard(maximum), CsrfFilter.class)
             .addFilterBefore(new LoginGuard(attempts, addresses, storage), org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class)
             .addFilterBefore(new BearerFilter(storage, Arrays.stream(allowedOrigins.split(",")).map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toSet())), CsrfFilter.class)
-            .formLogin(f -> f.loginProcessingUrl("/api/login")
-                    .successHandler((req, res, auth) -> { attempts.succeeded(addresses.address(req), auth.getName()); storage.audit("admin", "login", 200); res.setStatus(200); })
+            .formLogin(f -> f.securityContextRepository(new PasswordContextRepository(totp::enabled)).loginProcessingUrl("/api/login")
+                    .successHandler((req, res, auth) -> {
+                        if (totp.enabled()) {
+                            var context = SecurityContextHolder.createEmptyContext();
+                            SecurityContextHolder.setContext(context);
+                            new org.springframework.security.web.context.HttpSessionSecurityContextRepository().saveContext(context, req, res);
+                            req.getSession().setAttribute("totp.pending", new TotpController.Pending(auth.getName(), System.currentTimeMillis()));
+                            storage.audit("anonymous", "login-totp-required", 202); res.setStatus(202);
+                        } else {
+                            req.getSession().removeAttribute("totp.pending");
+                            attempts.succeeded(addresses.address(req), auth.getName()); storage.audit("admin", "login", 200); res.setStatus(200);
+                        }
+                    })
                     .failureHandler((req, res, ex) -> { attempts.failed(addresses.address(req), req.getParameter("username"), System.currentTimeMillis()); storage.audit("anonymous", "login", 401); res.setStatus(401); }))
             .logout(l -> l.logoutUrl("/api/logout").logoutSuccessHandler((req, res, auth) -> res.setStatus(204)))
             .exceptionHandling(e -> e.authenticationEntryPoint((req, res, ex) -> res.setStatus(401))
@@ -57,6 +68,14 @@ public class SecurityConfiguration {
         return http.build();
     }
 
+    /** 성공 핸들러보다 먼저 실행되는 기본 세션 저장에서도 ADMIN 노출을 차단한다. */
+    static class PasswordContextRepository extends org.springframework.security.web.context.HttpSessionSecurityContextRepository {
+        private final java.util.function.BooleanSupplier requiresTotp;
+        PasswordContextRepository(java.util.function.BooleanSupplier requiresTotp) { this.requiresTotp = requiresTotp; }
+        @Override public void saveContext(org.springframework.security.core.context.SecurityContext context, HttpServletRequest request, HttpServletResponse response) {
+            super.saveContext(requiresTotp.getAsBoolean() ? SecurityContextHolder.createEmptyContext() : context, request, response);
+        }
+    }
     static class MultipartGuard extends OncePerRequestFilter {
         private final long maximum;
         MultipartGuard(long maximum) { this.maximum = maximum + 1048576; }

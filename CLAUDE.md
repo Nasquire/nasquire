@@ -50,3 +50,6 @@
 - 보안 검토 반영: multipart는 업로드 경로+관리 인증+헤더 CSRF 뒤에만 파싱한다. 거부는 오류 디스패치 없이 상태 코드로 반환한다. 공개 URL 미설정 시 상대 주소만 발급한다. 관리자 로그인은 IP/계정별 실패 지연·잠금·성공 초기화를 적용한다.
 - 공유는 생성 시 fileKey를 저장하고 접근 때 대조한다(기존 식별자 없는 공유는 재생성 필요). 업로드 이동/휴지통/덮어쓰기는 대상과 하위 공유를 감사와 함께 철회한다. 폴더 깊이 최대 64, 휴지통 실패 행은 표시하고 1시간 뒤 재시도한다. 시작 시 24시간 지난 업로드 `.nasquire-*.part`와 multipart 파일만 정리한다. 일반 소스는 정리하지 않는다.
 - 프록시 전달 헤더 전략은 기본 none이다. 선택 설정과 신뢰 경계는 `docs/verification/upload-share.md`의 보안 검토 반영 절을 따른다.
+
+- 관리자 TOTP: 기본 off, `Totp` JDK HMAC-SHA1/6자리/30초/±1, 마지막 승인 단계 DB CAS·복구 코드 SHA-256 원자 소모. `TotpService`는 기존 `EmbeddingSettings`의 로컬 AES-GCM 키를 재사용한다. 등록/해제는 관리자+CSRF, 비밀번호 성공 후 TOTP 대기는 권한 없는 세션 속성(5분), 최종 승인 때 세션 ID·CSRF 교체. 등록 비밀·복구 코드는 최초 응답만 제공한다.
+- 오프라인 복구: `java -jar app/build/libs/app-0.1.0.jar --recover-admin --data=/data` (앱 종료 필요). 웹 컨텍스트 없이 표준 입력 비밀번호를 검증하고 기존 DB 비밀번호 재설정·TOTP/복구 코드 삭제·감사를 트랜잭션 처리한다. 검증 기록은 `docs/verification/totp.md`.

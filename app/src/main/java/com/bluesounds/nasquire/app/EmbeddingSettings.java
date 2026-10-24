@@ -100,13 +100,13 @@ public final class EmbeddingSettings {
         }
         byte[] value = Files.readAllBytes(path); if (value.length != 32) throw new IllegalStateException("암호화 키 오류"); return value;
     }
-    private String encrypt(String value) throws Exception {
+    synchronized String encrypt(String value) throws Exception {
         byte[] nonce = new byte[12]; new SecureRandom().nextBytes(nonce);
         var cipher = Cipher.getInstance("AES/GCM/NoPadding"); cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key(), "AES"), new GCMParameterSpec(128, nonce));
         byte[] encrypted = cipher.doFinal(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         return Base64.getEncoder().encodeToString(java.nio.ByteBuffer.allocate(12 + encrypted.length).put(nonce).put(encrypted).array());
     }
-    private String decrypt(String value) throws Exception {
+    synchronized String decrypt(String value) throws Exception {
         byte[] bytes = Base64.getDecoder().decode(value);
         var cipher = Cipher.getInstance("AES/GCM/NoPadding"); cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key(), "AES"), new GCMParameterSpec(128, Arrays.copyOf(bytes, 12)));
         return new String(cipher.doFinal(Arrays.copyOfRange(bytes, 12, bytes.length)), java.nio.charset.StandardCharsets.UTF_8);
