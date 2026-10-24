@@ -29,9 +29,10 @@ public final class IndexingService implements AutoCloseable {
     }
 
     public void start(Supplier<List<Source>> sources, long intervalMillis) {
+        // 예외가 밖으로 나가면 scheduleWithFixedDelay가 이후 실행을 영구 취소하므로 Error(메모리 부족 포함)까지 잡아 상태로 남긴다.
         worker.scheduleWithFixedDelay(() -> {
-            try { scan(sources.get()); }
-            catch (Exception e) { statuses.put("_system", new Status("error", 0, 0, 1, "검사 실패")); }
+            try { scan(sources.get()); statuses.remove("_system"); }
+            catch (Throwable e) { statuses.put("_system", new Status("error", 0, 0, 1, e instanceof OutOfMemoryError ? "검사 실패: 메모리 부족" : "검사 실패")); }
         }, 0, intervalMillis, TimeUnit.MILLISECONDS);
     }
     public void reindex(String id) { reindex.add(id); }
@@ -106,7 +107,10 @@ public final class IndexingService implements AutoCloseable {
                         }
                         next.put(key, stamp);
                         if (stamp.indexed) counts[0]++; else { counts[1]++; index.delete(source.id() + ":" + key); }
-                    } catch (IOException | RuntimeException e) { counts[2]++; }
+                    } catch (IOException | RuntimeException | OutOfMemoryError | StackOverflowError e) {
+                        // 한 파일의 추출 메모리 부족이 소스 전체 검사를 멈추지 않게 그 파일만 오류로 남긴다.
+                        counts[2]++;
+                    }
                     statuses.put(source.id(), new Status("scanning", counts[0], counts[1], counts[2], ""));
                     return FileVisitResult.CONTINUE;
                 }

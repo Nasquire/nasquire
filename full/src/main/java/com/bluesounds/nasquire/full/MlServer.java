@@ -31,7 +31,7 @@ public final class MlServer implements AutoCloseable {
     private final Providers.OcrProvider ocr;
     private final String embeddingModel, rerankerModel;
     private final int rerankSeconds;
-    // 기능별 동시 추론 1개. 짧게 기다린 뒤 503으로 거절하여 대기열이 메모리를 키우지 않게 한다.
+    // 기능별 동시 추론 1개. 기다리지 않고 503으로 거절하여 대기열이 메모리를 키우지 않게 한다.
     private final Semaphore embeddingSlot = new Semaphore(1), rerankSlot = new Semaphore(1), ocrSlot = new Semaphore(1);
 
     public MlServer(InetSocketAddress address, byte[] tokenHash, Providers.EmbeddingProvider embedding, String embeddingModel,
@@ -40,18 +40,36 @@ public final class MlServer implements AutoCloseable {
         if (embedding == null && scorer == null && ocr == null) throw new IllegalArgumentException("ML 기능 없음");
         this.tokenHash = tokenHash.clone(); this.embedding = embedding; this.embeddingModel = embeddingModel;
         this.scorer = scorer; this.rerankerModel = rerankerModel; this.rerankSeconds = rerankSeconds; this.ocr = ocr;
-        executor = Executors.newFixedThreadPool(threads, r -> { var t = new Thread(r, "nasquire-ml"); t.setDaemon(false); return t; });
+        // 대기열 없는 고정 작업자. 모두 사용 중이면 즉시 503으로 거절하여 대기 요청이 메모리를 키우지 않게 한다.
+        executor = new ThreadPoolExecutor(threads, threads, 0, TimeUnit.SECONDS, new SynchronousQueue<>(),
+                r -> { var t = new Thread(r, "nasquire-ml"); t.setDaemon(false); return t; });
         server = HttpServer.create(address, 32);
-        server.createContext("/", this::handle);
-        server.setExecutor(executor);
+        server.createContext("/", this::admit);
+        // 수신 스레드에서 인증만 검사한다(해시 1회). 인증 실패는 작업자를 쓰지 않고 바로 401로 끝낸다.
+        server.setExecutor(null);
         server.start();
+    }
+    private void admit(HttpExchange exchange) throws IOException {
+        if (!authorized(exchange.getRequestHeaders().getFirst("Authorization"))) {
+            try (exchange) {
+                exchange.getResponseHeaders().set("WWW-Authenticate", "Bearer");
+                send(exchange, 401, error("인증 필요 / Unauthorized"));
+            }
+            return;
+        }
+        try { executor.execute(() -> { try { handle(exchange); } catch (IOException ignored) { exchange.close(); } }); }
+        catch (RejectedExecutionException e) {
+            try (exchange) { exchange.getResponseHeaders().set("Retry-After", "1"); send(exchange, 503, error("처리 중 / Busy")); }
+        }
     }
     public int port() { return server.getAddress().getPort(); }
 
     public static MlServer start(MlConfig c) throws Exception {
         // 느린 요청·응답이 처리 스레드를 오래 점유하지 않게 한다(첫 HttpServer 생성 전에만 적용된다).
-        if (System.getProperty("sun.net.httpserver.maxReqTime") == null) System.setProperty("sun.net.httpserver.maxReqTime", "60");
-        if (System.getProperty("sun.net.httpserver.maxRspTime") == null) System.setProperty("sun.net.httpserver.maxRspTime", "300");
+        // 연결 수 상한도 같은 방식이다. 운영자가 JVM 옵션으로 지정한 값은 덮어쓰지 않는다.
+        for (String[] limit : new String[][] {{"sun.net.httpserver.maxReqTime", "60"}, {"sun.net.httpserver.maxRspTime", "300"},
+                {"jdk.httpserver.maxConnections", "64"}, {"sun.net.httpserver.maxIdleConnections", "16"}})
+            if (System.getProperty(limit[0]) == null) System.setProperty(limit[0], limit[1]);
         Files.createDirectories(c.data());
         Path data = c.data().toRealPath();
         Providers.EmbeddingProvider embedding = null; Scorer scorer = null; Providers.OcrProvider ocr = null;
@@ -160,8 +178,7 @@ public final class MlServer implements AutoCloseable {
         if (request.has("model") && !request.get("model").getAsString().equals(expected)) throw new IllegalArgumentException("모델 이름 불일치");
     }
     private static void acquire(Semaphore slot) {
-        try { if (!slot.tryAcquire(10, TimeUnit.SECONDS)) throw new Busy(); }
-        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new Busy(); }
+        if (!slot.tryAcquire()) throw new Busy();
     }
 
     private JsonObject embeddings(HttpExchange exchange) throws IOException {

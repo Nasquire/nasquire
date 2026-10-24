@@ -53,7 +53,7 @@
 
 `/usr/bin/prlimit`가 `/usr/bin/tesseract`를 직접 실행하며 셸을 사용하지 않는다. 언어는 `kor+eng`, `--psm 3`, `OMP_THREAD_LIMIT=1`이다. 운영자가 Tesseract와 두 언어의 traineddata를 미리 준비해야 한다. 소스 경로 대신 데이터 폴더의 `ocr-tmp` 임시 이미지 경로만 전달한다. 임시 디렉터리는 요청 종료 시 정리한다.
 
-쪽당 시간·CPU 초, 주소 공간(RLIMIT_AS), 출력 파일(RLIMIT_FSIZE 1 MiB) 상한을 둔다. 주소 공간 상한은 RSS 실측값이 아니다. 페이지당 최대 16백만 픽셀·변 길이 8192, 전달 PNG 최대 16 MiB, 최종 텍스트는 기존 추출 문자 상한을 따른다. 다중 이미지 프레임/스캔 쪽 수가 상한을 넘으면 파일 추출 오류이며 일부 쪽만 성공으로 게시하지 않는다. 시간 초과 시 살아 있는 프로세스와 자손을 종료한다. 외부 OCR 실패는 파일 색인 오류로 남는다. 원본 파일 크기·경로·안정화 검사는 기존 색인기를 사용한다.
+쪽당 시간·CPU 초, 주소 공간(RLIMIT_AS), 출력 파일(RLIMIT_FSIZE 1 MiB) 상한을 둔다. 주소 공간 상한은 RSS 실측값이 아니다. 페이지당 최대 16백만 픽셀·변 길이 8192(보안 검토 반영에서 6백만 픽셀·부분 샘플링으로 강화), 전달 PNG 최대 16 MiB, 최종 텍스트는 기존 추출 문자 상한을 따른다. 다중 이미지 프레임/스캔 쪽 수가 상한을 넘으면 파일 추출 오류이며 일부 쪽만 성공으로 게시하지 않는다. 시간 초과 시 살아 있는 프로세스와 자손을 종료한다. 외부 OCR 실패는 파일 색인 오류로 남는다. 원본 파일 크기·경로·안정화 검사는 기존 색인기를 사용한다.
 
 외부 프로세스 메모리는 JVM 밖이다. 이미지 디코딩/PDF 렌더링 자체는 full JVM에서 수행하므로 **OCR full은 lite의 512 MiB 목표를 보장하지 않는다.** 쪽당 상한이며 파일 전체 시간은 쪽 수에 비례한다. 악의적인 PDF/이미지의 디코더 CPU 시간·JVM 메모리를 별도 프로세스로 격리하는 것은 남은 작업이다. TIFF 코덱·회전·손글씨·표 구조·실제 한국어 인식 품질도 검증하지 않았다.
 
@@ -133,14 +133,14 @@ Tesseract를 **구현 기본 후보**로 택했으며 정확도/성능 우위를
 - 검색 범위: 소스 범위를 `filter.must[{key:"source", match:{any:[...]}}]`로 서버 측 적용한다. 범위가 비면 Qdrant를 호출하지 않는다. 응답 점은 앱에서 소스 범위·`key` 접두사를 다시 검사하고, 본문·경로는 Lucene `chunk` ID 조회에 같은 소스 범위 필터를 걸어서만 얻는다. 손상·악의적 서버가 필터를 무시해도 범위 밖 조각이 REST/MCP로 나가지 않는다(가짜 서버 `ignoreFilter` 회귀 테스트).
 - 재색인 정합성: 색인 커밋 메타 `vector.store`(Lucene 또는 `qdrant:<주소>/<컬렉션>`)를 모델·차원과 함께 기록한다. 저장소·주소·컬렉션·모델·차원이 바뀌면 재색인 전 vector/hybrid 검색은 409이고 keyword는 유지한다. 재색인 시작 때 컬렉션을 삭제·재생성하며 실패하면 요청을 유지하고 다음 검사에서 재시도한다. 기존 컬렉션 차원이 다르면 쓰기를 거부한다.
 - 동기화: 파일 교체 때 같은 key의 점을 지우고 새 점을 넣은 뒤 Lucene을 게시한다. 외부 저장 실패 시 그 파일은 Lucene에도 게시하지 않고 파일 오류로 남는다. 파일 삭제·소스 삭제·등록 해제는 Lucene 삭제 후 Qdrant 필터 삭제를 수행하며, Qdrant 삭제가 실패하면 검사 오류로 남고 다음 검사에서 재시도한다. 남은 점은 Lucene 조회에서 버려지므로 노출되지 않는다.
-- 한계: 실제 Qdrant 서버(버전 호환·TLS·인증·대용량 컬렉션·성능)는 이 환경에 없어 검증하지 못했다. REST 경로는 Qdrant 공식 API(`/collections/{name}`, `/index`, `/points`, `/points/delete`, `/points/query`) 기준이며 가짜 서버로만 확인했다. 검색 요청마다 Lucene 잠금 안에서 Qdrant를 호출하므로 Qdrant 지연은 검색 지연으로 이어진다.
+- 한계: 실제 Qdrant 서버(버전 호환·TLS·인증·대용량 컬렉션·성능)는 이 환경에 없어 검증하지 못했다. REST 경로는 Qdrant 공식 API(`/collections/{name}`, `/index`, `/points`, `/points/delete`, `/points/query`) 기준이며 가짜 서버로만 확인했다. 당시에는 검색 요청마다 Lucene 잠금 안에서 Qdrant를 호출했다(보안 검토 반영에서 잠금 밖으로 이동, 아래 절).
 
 ### ML 전용 모드
 
 - 실행: full 빌드에서 `--nasquire.mode=ml` 또는 `NASQUIRE_MODE=ml`. `NasquireApplication.main`이 Spring보다 먼저 분기하여 JDK HTTP 서버만 띄운다. 관리 화면·정적 파일·소스·검색·문서·다운로드·공유·업로드·MCP·H2 DB가 없다. lite 빌드에서는 `full 빌드가 필요합니다`로 시작을 거부한다. Spring 컨텍스트에서는 계속 `search`만 허용한다.
 - 인증: 모든 경로(없는 경로 포함)가 먼저 `Authorization: Bearer <토큰>`을 검사한다. 토큰의 SHA-256을 `MessageDigest.isEqual`로 비교한다(고정 길이 상수 시간). 없음·형식 오류·틀림은 401과 `WWW-Authenticate: Bearer`. 토큰은 `nasquire.ml.token`(설정 파일 `--nasquire.ml.config=` 또는 `NASQUIRE_ML_CONFIG`, 환경변수 `NASQUIRE_ML_TOKEN`)이나 `nasquire.ml.token-file`(`NASQUIRE_ML_TOKEN_FILE`)에서만 읽는다. 명령행 `--nasquire.ml.token=`은 프로세스 목록 노출을 막기 위해 거부한다. 32~512자 ASCII가 아니거나 미설정이면 시작 거부. 토큰·요청 본문은 로그에 쓰지 않으며 `verify-ml.py`가 로그에 토큰이 없는지 검사한다.
 - 기능: `nasquire.ml.embedding=builtin`(E5 int8, 고정 해시), `nasquire.ml.reranker=builtin`(아래 로컬 리랭커), `nasquire.ml.ocr=tesseract`. 모두 기본 off이며 하나도 켜지 않으면 시작 거부. 모델은 `nasquire.data/models/...` 기본 경로 또는 `*-model-path` 설정, `nasquire.ml.download=true`일 때만 데이터 폴더 안으로 받는다. 시작 때 한 번 추론하여 모델·해시 오류면 시작 거부한다.
-- API: `POST /v1/embeddings`(OpenAI 형식: `input` 문자열/배열 1~64개·각 8192자, `encoding_format=float`, `model`은 설정 이름과 같아야 함), `POST /v1/rerank`(기존 원격 리랭커 형식: `query`, `documents` 1~100개·각 4096자, `top_n` → `results[{index, relevance_score}]`), `POST /v1/ocr`(단일 프레임 이미지 본문 16 MiB·픽셀 상한 → `{"text":...}`, kor+eng), `GET /v1/models`. JSON 1 MiB 상한(413), 쿼리 문자열 거부, 기능별 동시 추론 1개·최대 10초 대기 후 503, 처리 스레드 기본 4개, JDK HTTP 서버 요청 60초·응답 300초 상한. 입력 오류 400, 추론 실패 500(원인 미포함).
+- API: `POST /v1/embeddings`(OpenAI 형식: `input` 문자열/배열 1~64개·각 8192자, `encoding_format=float`, `model`은 설정 이름과 같아야 함), `POST /v1/rerank`(기존 원격 리랭커 형식: `query`, `documents` 1~100개·각 4096자, `top_n` → `results[{index, relevance_score}]`), `POST /v1/ocr`(단일 프레임 이미지 본문 16 MiB·픽셀 상한 → `{"text":...}`, kor+eng), `GET /v1/models`. JSON 1 MiB 상한(413), 쿼리 문자열 거부, 기능별 동시 추론 1개·최대 10초 대기 후 503(보안 검토 반영에서 대기 없이 즉시 503), 처리 스레드 기본 4개, JDK HTTP 서버 요청 60초·응답 300초 상한. 입력 오류 400, 추론 실패 500(원인 미포함).
 - 일반 Nasquire와 연동: 원격 임베딩/원격 리랭커의 `baseUrl`을 ML 서버의 `/v1`로, API 키를 ML 토큰으로 지정한다. 가짜 공급자를 넣은 실제 `MlServer`에 기존 `RemoteEmbeddingProvider`·`RemoteRerankerProvider`를 연결한 테스트로 확인했다. 검색 서버에서 ML 서버 OCR을 호출하는 원격 OCR 클라이언트는 미구현이다.
 
 ### 로컬 ONNX 리랭커
@@ -216,3 +216,33 @@ PaddleOCR ONNX는 이번에도 구현하지 않고 Tesseract CLI 경로를 유�
 추가 회귀 테스트: 가짜 Qdrant의 필터 전송 내용·필터 무시 시 범위 밖 미노출(core·REST·MCP vector/hybrid), 빈 범위 무호출, 본문 미전송, 키 헤더·잘못된 키·응답 본문 비노출, 키 파일 암호화(`encryptedQdrantKey=v2:`)·API 비공개·재로딩 복호화, 저장소/컬렉션/차원 변경 차단과 재색인, 파일 교체·삭제·소스 삭제 동기화, 외부 실패 시 Lucene 미게시, ML 서버 9개 경로×10개 잘못된 인증값 401·관리/검색 경로 404·405·쿼리 거부·입력 수/길이/JSON 크기 상한·비활성 기능 404, 명령행 토큰 거부·토큰 미설정/짧음/기능 없음 시작 거부, 모델 없을 때 다운로드 없는 시작 거부, lite에서 ML 모드 거부.
 
 남은 작업: 실제 Qdrant 서버·TLS·대규모 검증, 원격 OCR 클라이언트, PaddleOCR 구현과 실제 OCR 비교, full 설정 UI(리랭커·OCR), ML 서버 이미지·arm64·cgroup, 로컬 모델 메모리 절감. 상세 아티팩트(공개 커밋 제외): `build/verification/ml/measurement-*.json`, `build/verification/ml/ml-*.log`, `build/verification/stage4/rss/{base,head}[1-5]/`, `build/verification/stage4/rss/lite-jar-compare.json`, `build/verification/stage4/final-*-build.log`, `build/verification/stage4/final-lite-runtime.txt`.
+
+## 보안 검토 반영 (기준 4de7837)
+
+검증일: 2026-10-24. 4단계 보안 교차 검토의 중간 5개·낮음 6개 항목을 반영했다. 기존 보안 동작(관리자 세션+CSRF, 소스 범위 재검사, 키 비공개·AAD, 기본 off)은 그대로다.
+
+| 항목 | 처리 | 남은 한계 |
+| --- | --- | --- |
+| M1 OCR 메모리 부족 시 색인 정지 | 주기 작업이 `Throwable`을 잡아 `_system` 상태에 기록(메모리 부족 구분)하고 다음 주기를 계속한다. 파일 추출 중 `OutOfMemoryError`·`StackOverflowError`는 그 파일만 오류로 센다. OCR 결과 픽셀 상한 16M→6M, 디코딩 래스터(가로×세로×밴드×바이트) 24 MiB, PDF 쪽 자원의 내장 이미지 원본 래스터 64 MiB·변 16384. PDF는 `ImageType.GRAY`, 큰 쪽은 픽셀 상한에 맞춰 DPI를 낮추고(최소 50 DPI 미만이면 거부), 이미지는 헤더 크기로 `ImageReadParam` 부분 샘플링 비율을 정한다. ML 서버 `/v1/ocr`도 같은 함수를 쓰며 상한 위반은 400. | 디코더 내부 작업 메모리는 코덱에 따라 래스터보다 클 수 있다. 중첩 Form XObject·인라인 이미지는 사전 검사하지 않고 시간 제한에 맡긴다. full OCR은 여전히 512 MiB를 보장하지 않는다. |
+| M2 렌더링·디코딩 시간 제한 | PDF 쪽 렌더링과 이미지 프레임 디코딩만 별도 데몬 스레드에서 쪽/프레임당 20초로 제한한다(Tesseract는 기존 쪽당 외부 프로세스 상한). 초과·메모리 부족은 그 파일 추출 실패이며 색인 작업자는 즉시 다음 파일로 간다. 렌더 작업자는 대기열 없이 최대 2개다. | 중단을 무시하는 렌더러가 끝나지 않으면 스레드가 남는다(최대 2개). 2개가 모두 남으면 그동안 OCR 파일은 "이미지 작업자 사용 불가"로 실패하고 다음 검사에서 재시도한다. 별도 프로세스 격리는 미구현. 텍스트 추출(PDFBox 파싱) 자체의 시간 제한은 기존과 같다. |
+| M3 Qdrant 호출의 공통 잠금 점유 | `SearchIndex`가 Qdrant·임베딩 호출을 잠금 밖에서 하고, 결과를 쓰기 전 잠금 안에서 벡터 구성 세대(공급자·저장소 교체, 재색인 시작 때 증가)를 확인한다. 세대가 바뀌면 검색은 409, 색인 게시는 파일 오류로 다음 검사에서 재시도한다. Lucene 삭제를 먼저 게시하고 외부 점 삭제는 잠금 밖에서 한다. 외부 결과는 기존처럼 잠금 안에서 범위 필터를 건 Lucene `chunk` 조회로만 본문을 얻는다. 교체된 공급자·저장소는 사용 중인 작업이 끝난 뒤 닫는다. keyword 검색은 잠금 없이 SearcherManager로 수행한다. `QdrantVectorStore`는 작업 전체 시간 상한(검색 = 설정 시간, 쓰기·초기화 = 4배, 본문 지연 포함)과 연속 3회 실패 시 30초 회로 차단(원격 요청 없이 즉시 실패)을 둔다. | 차단 중에는 vector/hybrid 검색과 Qdrant 쓰기가 실패한다(쓰기 실패 파일은 재시도). 실제 Qdrant 서버 지연 분포로 상한을 조정하지 않았다. |
+| M4 ML 서버 대기열 | 고정 크기 `ThreadPoolExecutor`+`SynchronousQueue`, 포화 시 `Retry-After: 1`과 503. 인증 검사는 수신 스레드에서 SHA-256 1회로 끝내고 실패는 작업자를 쓰지 않고 401. 기능별 슬롯도 대기 없이 503. 연결 수 `jdk.httpserver.maxConnections=64`, 유휴 16, 요청 60초·응답 300초 기본값(JVM 옵션으로 지정한 값 우선). | JDK HTTP 서버의 수신 스레드는 1개다. 대량 연결 공격 방어는 리버스 프록시의 연결/속도 제한이 필요하다. |
+| M5 평문 HTTP 인증정보 | 원격 임베딩 `baseUrl`·Qdrant `qdrantUrl`·원격 리랭커 `baseUrl`이 루프백(`localhost`, `127.0.0.0/8`, `[::1]`, DNS 조회 없음)이 아닌 `http://`면 저장 거부(400). `allowInsecureHttp=true`(임베딩 설정·full 설정 각각)일 때만 허용하고 응답 `insecureHttp`로 관리 화면에 경고한다. 기존 설정 파일에 비루프백 평문이 있으면 시작은 하고 임베딩·Qdrant(또는 원격 리랭커)만 끈 뒤 `disabledReason`을 표시한다(keyword 검색 유지, 키 삭제 가능). ML 서버 기본 바인드는 `127.0.0.1`. | 외부 노출은 `--server.address=0.0.0.0` 등 명시 설정과 앞단 TLS 리버스 프록시(HTTPS 종료, 연결/속도 제한, Authorization 미기록)로 구성한다. 시작 시 끈 임베딩은 재색인이 필요할 수 있다. |
+| L1 OCR 임시 파일 | OCR 공급자 생성(시작·설정 저장) 때 데이터 폴더 `ocr-tmp`의 24시간 지난 `page-*` 디렉터리를 링크를 따르지 않고 정리한다. | 진행 중 작업과 겹치지 않게 24시간 기준이다. |
+| L2 주소 변경 시 키 재사용 | 리랭커·Qdrant·원격 임베딩 주소가 바뀌고 새 키를 함께 입력하지 않으면 저장된 키를 지운다. | 경로만 바뀐 같은 호스트도 키를 지운다(안전한 쪽). |
+| L3 full 저장 재색인 | `PUT /api/full`은 `ocr`·`ocrTimeoutSeconds`·`ocrMemoryMiB`·`ocrMaxPages`가 실제로 바뀐 경우에만 전체 재색인한다. | - |
+| L4 tesseract 환경 | 자식 프로세스 환경을 비우고 `PATH=/usr/bin:/bin`, `LANG=C.UTF-8`, `OMP_THREAD_LIMIT=1`, 운영자가 지정한 `TESSDATA_PREFIX`만 전달한다. | - |
+| L5 키 삭제 | `DELETE /api/embeddings/key`, `DELETE /api/embeddings/qdrant-key`, `DELETE /api/full/key`(관리자 세션+헤더 CSRF, 감사 기록). 메모리와 설정 파일 암호문을 모두 지운다. `PUT`의 `clearKey`/`clearQdrantKey=true`도 같다. 임베딩 화면에 삭제 버튼을 추가했다. | full 설정 UI가 없어 리랭커 키 삭제는 API로만 한다. |
+| L6 (선택) | 미구현. 스캔 PDF는 텍스트 추출과 렌더링에 두 번 로드하며, OCR 한 쪽 실패는 기존처럼 파일 전체 실패(일부 쪽만 게시하지 않음)다. | 향후 쪽 단위 실패 상태 기록과 단일 로드를 검토한다. |
+
+회귀 테스트: core `ReviewFixesTest`(Throwable 뒤 다음 주기 실행, 파일 단위 메모리 부족, 느린 가짜 Qdrant 중 keyword 검색·상태 조회 500 ms 이내와 세대 변경 시 이전 결과 거부, 회로 차단 중 원격 요청 없음·작업 전체 상한, 루프백 판정), app `ReviewSettingsTest`(비루프백 http 거부·명시 허용 경고·기존 설정 시작 시 비활성, 주소 변경 시 키 폐기, 키 삭제·재로딩, OCR 필드 변경 시에만 재색인), app 통합 테스트(키 삭제 API의 세션·CSRF·토큰 거부, Qdrant 평문 주소 400), full `ReviewFixesFullTest`(렌더 시간 초과 시 호출자 해제·다음 작업 처리, 부분 샘플링·상한 거부·ML 상한, DPI 축소, ML 서버 포화 503·포화 중 401 즉시 응답).
+
+| 명령 | 종료 코드 | 결과 |
+| --- | ---: | --- |
+| `./gradlew -Pfull build -q` | 0 | core 19·app 20·full 13 테스트, 실패·생략 0 |
+| `./gradlew build -q` (최종, 마지막 구성 lite) | 0 | 같은 52개 테스트, `verifyLiteClasspath` 통과 |
+| `VERIFY_PORT=8101 python3 scripts/verify-runtime.py` | 0 | lite 48문서·업로드/공유·REST/MCP, 시작 최대 174,088 KiB, 작업 최대 316,288 KiB(308.9 MiB), 서버·포트 정리 |
+| `VERIFY_PORT=8102 python3 scripts/verify-ml.py` | 0 | 리랭커 ML 서버(127.0.0.1 바인드), 401·404·한/영 순위·반복 200, 최대 623.3 MiB |
+| `git diff --check` | 0 | 공백 오류 없음 |
+
+못 한 검증: 실제 Tesseract(실행 파일 없음)·실제 Qdrant 서버·TLS 리버스 프록시 앞 ML 서버·악성 PDF/이미지 코퍼스 퍼징·cgroup 메모리 제한. 상세 아티팩트(공개 커밋 제외): `build/verification/stage4-review/`(`full-build.log`, `lite-build.log`, `lite-build-final.log`, `lite-runtime.txt`, `ml-runtime.txt`, `exit.txt`).

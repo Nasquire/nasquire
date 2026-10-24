@@ -69,7 +69,7 @@ public record MlConfig(String address, int port, Path data, byte[] tokenHash, St
         if (embedding.equals("off") && reranker.equals("off") && ocr.equals("off"))
             throw new IllegalArgumentException("ML 모드에서 임베딩·리랭커·OCR 중 하나 이상을 켜야 합니다");
         Path models = data.resolve("models");
-        return new MlConfig(get(v, "server.address", "0.0.0.0"), number(get(v, "server.port", "8080"), 0, 65535), data,
+        return new MlConfig(get(v, "server.address", "127.0.0.1"), number(get(v, "server.port", "8080"), 0, 65535), data,
                 MlServer.sha256(token), embedding, get(v, PREFIX + "embedding-model", "multilingual-e5-small"),
                 reranker, get(v, PREFIX + "reranker-model", OnnxRerankerProvider.NAME), ocr,
                 number(get(v, PREFIX + "ocr-timeout-seconds", "15"), 1, 60), number(get(v, PREFIX + "ocr-memory-mib", "512"), 128, 2048),

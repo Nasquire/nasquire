@@ -15,8 +15,12 @@ public final class FullSettings implements AutoCloseable {
     private Properties settings = defaults();
     private Providers.RerankerProvider reranker;
     private TextExtractor ocr;
+    /** 시작 시 비루프백 평문 리랭커 주소로 원격 리랭커를 끈 이유. */
+    private String disabledReason;
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(FullSettings.class);
+    private static final Set<String> OCR_FIELDS = Set.of("ocr", "ocrTimeoutSeconds", "ocrMemoryMiB", "ocrMaxPages");
     private static final Set<String> FIELDS = Set.of("reranker", "baseUrl", "model", "apiKey", "topN", "timeoutSeconds", "ocr", "ocrTimeoutSeconds", "ocrMemoryMiB", "ocrMaxPages",
-            "localModelPath", "localTokenizerPath", "localDownload");
+            "localModelPath", "localTokenizerPath", "localDownload", "allowInsecureHttp", "clearKey");
     public FullSettings(Path dataFolder, EmbeddingSettings secrets) throws Exception {
         folder = dataFolder; file = folder.resolve("full.properties"); this.secrets = secrets;
         if (Files.exists(file)) {
@@ -24,7 +28,15 @@ public final class FullSettings implements AutoCloseable {
             String encrypted = (String)settings.remove("encryptedKey");
             if (encrypted != null) settings.setProperty("apiKey", secrets.decrypt("reranker", encrypted));
         }
-        apply(settings);
+        // 업그레이드 호환: 비루프백 평문 주소는 시작을 막지 않고 원격 리랭커만 끈 뒤 상태로 알린다.
+        try { checkTransport(settings); }
+        catch (IllegalArgumentException e) { disabledReason = e.getMessage(); LOG.warn("원격 리랭커를 비활성화했습니다: {}", e.getMessage()); }
+        reranker = disabledReason == null ? createReranker(settings) : null; ocr = createOcr(settings);
+    }
+    private static void checkTransport(Properties p) {
+        String allow = p.getProperty("allowInsecureHttp", "false");
+        if (!Set.of("true", "false").contains(allow)) throw new IllegalArgumentException("allowInsecureHttp 설정 오류");
+        if ("remote".equals(p.getProperty("reranker"))) RemoteUrl.require(p.getProperty("baseUrl"), allow.equals("true"));
     }
     private static Properties defaults() {
         var p = new Properties(); p.setProperty("reranker", "off"); p.setProperty("baseUrl", "https://api.example.com/v1");
@@ -32,23 +44,38 @@ public final class FullSettings implements AutoCloseable {
         p.setProperty("ocr", "off"); p.setProperty("ocrTimeoutSeconds", "15"); p.setProperty("ocrMemoryMiB", "512"); p.setProperty("ocrMaxPages", "20");
         // 빈 경로는 데이터 폴더의 models/<모델 이름>/ 기본 위치를 뜻한다.
         p.setProperty("localModelPath", ""); p.setProperty("localTokenizerPath", ""); p.setProperty("localDownload", "false");
+        p.setProperty("allowInsecureHttp", "false");
         return p;
     }
     public synchronized Map<String, Object> view() {
         var result = new LinkedHashMap<String, Object>();
         for (String k : settings.stringPropertyNames()) if (!k.equals("apiKey")) result.put(k, settings.getProperty(k));
         result.put("hasKey", !settings.getProperty("apiKey", "").isEmpty());
+        result.put("disabledReason", disabledReason == null ? "" : disabledReason);
+        result.put("insecureHttp", "remote".equals(settings.getProperty("reranker")) && RemoteUrl.insecure(settings.getProperty("baseUrl")));
         result.put("available", ServiceLoader.load(Providers.FullProvider.class).findFirst().isPresent());
         return result;
     }
-    public synchronized void save(Map<String, String> input) throws Exception {
+    /** 저장 뒤 OCR 관련 필드가 바뀌어 전체 재색인이 필요하면 true. */
+    public synchronized boolean save(Map<String, String> input) throws Exception {
         var next = new Properties(); next.putAll(settings);
         for (var e : input.entrySet()) {
             if (!FIELDS.contains(e.getKey()) || e.getValue() == null || e.getValue().length() > 4096) throw new IllegalArgumentException("full 설정 오류");
             if (!e.getKey().equals("apiKey") || !e.getValue().isEmpty()) next.setProperty(e.getKey(), e.getValue());
         }
+        // 주소가 바뀌면 새 키를 함께 입력하지 않는 한 기존 키를 새 주소로 보내지 않는다. clearKey=true는 명시적 삭제.
+        if (!Objects.equals(next.getProperty("baseUrl"), settings.getProperty("baseUrl")) && input.getOrDefault("apiKey", "").isEmpty()
+                || "true".equals(input.get("clearKey"))) next.remove("apiKey");
+        next.remove("clearKey");
+        boolean ocrChanged = OCR_FIELDS.stream().anyMatch(k -> !Objects.equals(settings.getProperty(k), next.getProperty(k)));
+        String blocked = null;
+        try { checkTransport(next); }
+        catch (IllegalArgumentException e) {
+            if (disabledReason == null || !input.keySet().equals(Set.of("clearKey"))) throw e;
+            blocked = e.getMessage();
+        }
         // 파일 게시 전 공급자를 만들고 검증한다. 네트워크나 프로세스를 실행하지 않는다.
-        var newReranker = createReranker(next);
+        var newReranker = blocked == null ? createReranker(next) : null;
         TextExtractor newOcr;
         try {
             newOcr = createOcr(next);
@@ -61,9 +88,11 @@ public final class FullSettings implements AutoCloseable {
                 Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
             } finally { Files.deleteIfExists(temporary); }
         } catch (Exception e) { if (newReranker != null) newReranker.close(); throw e; }
-        if (reranker != null) reranker.close(); reranker = newReranker; ocr = newOcr; settings = next;
+        if (reranker != null) reranker.close(); reranker = newReranker; ocr = newOcr; settings = next; disabledReason = blocked;
+        return ocrChanged;
     }
-    private void apply(Properties p) { reranker = createReranker(p); ocr = createOcr(p); }
+    /** 저장된 리랭커 키를 메모리·암호문 모두에서 지운다. */
+    public void clearKey() throws Exception { save(Map.of("clearKey", "true")); }
     private static int number(Properties p, String name, int min, int max) {
         int n = Integer.parseInt(p.getProperty(name));
         if (n < min || n > max) throw new IllegalArgumentException("full 제한 오류"); return n;

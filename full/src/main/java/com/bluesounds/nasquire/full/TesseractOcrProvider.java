@@ -16,6 +16,21 @@ public final class TesseractOcrProvider implements Providers.OcrProvider {
     TesseractOcrProvider(Path data, int seconds, int memoryMiB, String executable) {
         if (seconds < 1 || seconds > 60 || memoryMiB < 128 || memoryMiB > 2048) throw new IllegalArgumentException("OCR 제한 오류");
         this.temporary = data.resolve("ocr-tmp"); this.seconds = seconds; this.memoryMiB = memoryMiB; this.executable = executable;
+        cleanOldPages();
+    }
+    /** 이전 실행이 강제 종료되어 남은 24시간 지난 page-* 임시 폴더를 정리한다. 진행 중 작업과 겹치지 않게 오래된 것만 지운다. */
+    private void cleanOldPages() {
+        if (!Files.isDirectory(temporary, LinkOption.NOFOLLOW_LINKS)) return;
+        long cutoff = System.currentTimeMillis() - TimeUnit.HOURS.toMillis(24);
+        try (var pages = Files.newDirectoryStream(temporary, "page-*")) {
+            for (Path page : pages) {
+                if (!Files.isDirectory(page, LinkOption.NOFOLLOW_LINKS) || Files.getLastModifiedTime(page, LinkOption.NOFOLLOW_LINKS).toMillis() >= cutoff) continue;
+                try (var files = Files.newDirectoryStream(page)) {
+                    for (Path f : files) if (!Files.isDirectory(f, LinkOption.NOFOLLOW_LINKS)) Files.deleteIfExists(f);
+                }
+                try { Files.deleteIfExists(page); } catch (DirectoryNotEmptyException ignored) { }
+            }
+        } catch (IOException ignored) { }
     }
     public synchronized String recognize(byte[] image, String language) {
         if (!"kor+eng".equals(language) || image.length == 0 || image.length > 16 * 1024 * 1024) throw new IllegalArgumentException("OCR 입력 오류");
@@ -27,7 +42,11 @@ public final class TesseractOcrProvider implements Providers.OcrProvider {
             Files.write(input, image);
             var command = new ProcessBuilder("/usr/bin/prlimit", "--as=" + (memoryMiB * 1024L * 1024L), "--cpu=" + seconds,
                     "--fsize=1048576", "--", executable, input.toString(), output.toString(), "-l", language, "--psm", "3");
-            command.environment().put("OMP_THREAD_LIMIT", "1");
+            // 부모 환경(비밀값 포함 가능)을 넘기지 않는다. 학습 데이터 위치는 운영자가 지정한 경우만 전달한다.
+            var environment = command.environment(); String tessdata = environment.get("TESSDATA_PREFIX");
+            environment.clear();
+            environment.put("PATH", "/usr/bin:/bin"); environment.put("LANG", "C.UTF-8"); environment.put("OMP_THREAD_LIMIT", "1");
+            if (tessdata != null && !tessdata.isBlank()) environment.put("TESSDATA_PREFIX", tessdata);
             command.redirectOutput(ProcessBuilder.Redirect.DISCARD); command.redirectError(ProcessBuilder.Redirect.DISCARD);
             process = command.start();
             if (!process.waitFor(seconds, TimeUnit.SECONDS)) throw new IOException("OCR 시간 상한 초과");

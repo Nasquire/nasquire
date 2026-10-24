@@ -30,10 +30,12 @@ public class ApiController {
     private final FullSettings full;
     @GetMapping("/full") Map<String, Object> full() { return full.view(); }
     @PutMapping("/full") void full(@RequestBody Map<String, String> input) throws Exception {
-        full.save(input);
-        for (var source : storage.sources()) indexing.reindex(source.id());
+        if (full.save(input)) for (var source : storage.sources()) indexing.reindex(source.id());
         storage.audit("admin", "full-save", 200);
     }
+    @DeleteMapping("/full/key") void clearFullKey() throws Exception { full.clearKey(); storage.audit("admin", "full-key-delete", 200); }
+    @DeleteMapping("/embeddings/key") void clearEmbeddingKey() throws Exception { embeddings.clearKey(false); storage.audit("admin", "embedding-key-delete", 200); }
+    @DeleteMapping("/embeddings/qdrant-key") void clearQdrantKey() throws Exception { embeddings.clearKey(true); storage.audit("admin", "qdrant-key-delete", 200); }
     @GetMapping("/embeddings") Map<String, Object> embeddings() { return embeddings.view(); }
     @PutMapping("/embeddings") void embeddings(@RequestBody Map<String, String> input) throws Exception { embeddings.save(input); storage.audit("admin", "embedding-save", 200); }
     @PostMapping("/embeddings/test") Map<String, Object> testEmbedding() { return embeddings.test(); }

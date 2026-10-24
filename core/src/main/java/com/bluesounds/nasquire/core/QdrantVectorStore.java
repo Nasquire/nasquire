@@ -14,6 +14,15 @@ import java.util.*;
  */
 public final class QdrantVectorStore implements VectorStore {
     static final int MAX_RESPONSE = 4 * 1024 * 1024, BATCH = 64;
+    /** 연속 실패 수가 이 값에 이르면 OPEN 동안 모든 호출을 원격 요청 없이 즉시 실패시킨다. keyword 검색·설정은 영향이 없다. */
+    static final int FAILURES = 3;
+    static long openMillis = 30_000;
+    /** 검색은 설정 시간, 여러 요청으로 이뤄진 쓰기·초기화는 설정 시간의 4배를 작업 전체 상한으로 한다. */
+    private static final int WRITE_BUDGET = 4;
+    private final java.util.concurrent.atomic.AtomicInteger failures = new java.util.concurrent.atomic.AtomicInteger();
+    private volatile long openUntil;
+    private volatile boolean open;
+    private interface Operation<T> { T run(long deadline) throws IOException; }
     private final HttpClient client;
     private final String base, collection, key;
     private final Duration timeout;
@@ -29,26 +38,39 @@ public final class QdrantVectorStore implements VectorStore {
     }
     public String id() { return "qdrant:" + base + "/" + collection; }
 
-    public synchronized void reset(int dimensions) throws IOException {
-        call("DELETE", "", null, true);
-        ensured = 0; create(dimensions);
+    private <T> T guarded(int budget, Operation<T> operation) throws IOException {
+        if (open && System.nanoTime() - openUntil < 0) throw new IOException("Qdrant 일시 차단 (연속 실패)");
+        try {
+            T result = operation.run(System.nanoTime() + timeout.toNanos() * budget);
+            failures.set(0); open = false;
+            return result;
+        } catch (IOException e) {
+            if (failures.incrementAndGet() >= FAILURES) { openUntil = System.nanoTime() + openMillis * 1_000_000; open = true; failures.set(0); }
+            throw e;
+        }
     }
-    private void create(int dimensions) throws IOException {
+    public synchronized void reset(int dimensions) throws IOException {
+        guarded(WRITE_BUDGET, deadline -> {
+            call("DELETE", "", null, true, deadline);
+            ensured = 0; create(dimensions, deadline); return null;
+        });
+    }
+    private void create(int dimensions, long deadline) throws IOException {
         if (dimensions < 1 || dimensions > 4096) throw new IllegalArgumentException("차원 오류");
         var vectors = new JsonObject(); vectors.addProperty("size", dimensions); vectors.addProperty("distance", "Cosine");
         var body = new JsonObject(); body.add("vectors", vectors);
-        call("PUT", "", body, false);
+        call("PUT", "", body, false, deadline);
         // 범위 필터와 삭제 필터가 쓰는 payload 필드를 색인한다.
         for (String field : List.of("source", "key")) {
             var index = new JsonObject(); index.addProperty("field_name", field); index.addProperty("field_schema", "keyword");
-            call("PUT", "/index?wait=true", index, false);
+            call("PUT", "/index?wait=true", index, false, deadline);
         }
         ensured = dimensions;
     }
-    private void ensure(int dimensions) throws IOException {
+    private void ensure(int dimensions, long deadline) throws IOException {
         if (ensured == dimensions) return;
-        var info = call("GET", "", null, true);
-        if (info == null) { create(dimensions); return; }
+        var info = call("GET", "", null, true, deadline);
+        if (info == null) { create(dimensions, deadline); return; }
         int size;
         try { size = info.getAsJsonObject().getAsJsonObject("result").getAsJsonObject("config").getAsJsonObject("params").getAsJsonObject("vectors").get("size").getAsInt(); }
         catch (RuntimeException e) { throw new IOException("Qdrant 컬렉션 정보 오류"); }
@@ -56,26 +78,29 @@ public final class QdrantVectorStore implements VectorStore {
         ensured = dimensions;
     }
     public synchronized void replace(String key, List<Point> points, int dimensions) throws IOException {
-        ensure(dimensions);
-        delete("key", key);
+        for (var p : points) if (!p.key().equals(key) || !key.startsWith(p.source() + ":") || p.vector().length != dimensions) throw new IllegalArgumentException("점 오류");
+        guarded(WRITE_BUDGET, deadline -> { upsert(key, points, dimensions, deadline); return null; });
+    }
+    private void upsert(String key, List<Point> points, int dimensions, long deadline) throws IOException {
+        ensure(dimensions, deadline);
+        delete("key", key, deadline);
         for (int i = 0; i < points.size(); i += BATCH) {
             var array = new JsonArray();
             for (var p : points.subList(i, Math.min(i + BATCH, points.size()))) {
-                if (!p.key().equals(key) || !key.startsWith(p.source() + ":") || p.vector().length != dimensions) throw new IllegalArgumentException("점 오류");
                 var point = new JsonObject(); point.addProperty("id", pointId(p.key(), p.offset()));
                 var vector = new JsonArray(); for (float v : p.vector()) vector.add(v); point.add("vector", vector);
                 var payload = new JsonObject(); payload.addProperty("source", p.source()); payload.addProperty("key", p.key()); payload.addProperty("offset", p.offset());
                 point.add("payload", payload); array.add(point);
             }
             var body = new JsonObject(); body.add("points", array);
-            call("PUT", "/points?wait=true", body, false);
+            call("PUT", "/points?wait=true", body, false, deadline);
         }
     }
-    public synchronized void deleteKey(String key) throws IOException { delete("key", key); }
-    public synchronized void deleteSource(String source) throws IOException { delete("source", source); }
-    private void delete(String field, String value) throws IOException {
+    public synchronized void deleteKey(String key) throws IOException { guarded(WRITE_BUDGET, deadline -> { delete("key", key, deadline); return null; }); }
+    public synchronized void deleteSource(String source) throws IOException { guarded(WRITE_BUDGET, deadline -> { delete("source", source, deadline); return null; }); }
+    private void delete(String field, String value, long deadline) throws IOException {
         var body = new JsonObject(); body.add("filter", must(field, match("value", new JsonPrimitive(value))));
-        call("POST", "/points/delete?wait=true", body, true);
+        call("POST", "/points/delete?wait=true", body, true, deadline);
     }
     public List<Match> search(float[] vector, Set<String> sources, int limit) throws IOException {
         if (sources.isEmpty()) return List.of();
@@ -86,7 +111,7 @@ public final class QdrantVectorStore implements VectorStore {
         body.add("filter", must("source", match("any", any)));
         var fields = new JsonArray(); fields.add("source"); fields.add("key"); fields.add("offset");
         body.add("with_payload", fields); body.addProperty("with_vector", false);
-        var response = call("POST", "/points/query", body, false);
+        var response = guarded(1, deadline -> call("POST", "/points/query", body, false, deadline));
         var matches = new ArrayList<Match>();
         try {
             for (var element : response.getAsJsonObject().getAsJsonObject("result").getAsJsonArray("points")) {
@@ -110,19 +135,27 @@ public final class QdrantVectorStore implements VectorStore {
         var list = new JsonArray(); list.add(condition);
         var filter = new JsonObject(); filter.add("must", list); return filter;
     }
-    private JsonElement call(String method, String path, JsonObject body, boolean allowMissing) throws IOException {
-        var request = HttpRequest.newBuilder(URI.create(base + "/collections/" + collection + path)).timeout(timeout)
+    private JsonElement call(String method, String path, JsonObject body, boolean allowMissing, long deadline) throws IOException {
+        long remaining = deadline - System.nanoTime();
+        if (remaining <= 0) throw new IOException("Qdrant 작업 시간 상한 초과");
+        var request = HttpRequest.newBuilder(URI.create(base + "/collections/" + collection + path)).timeout(Duration.ofNanos(remaining))
                 .method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body.toString()));
         if (body != null) request.header("Content-Type", "application/json");
         if (!key.isEmpty()) request.header("api-key", key);
+        java.util.concurrent.CompletableFuture<HttpResponse<byte[]>> pending = null;
         try {
-            var response = client.send(request.build(), ignored -> Bounded.body(MAX_RESPONSE));
+            // 본문을 끝없이 지연하는 서버에도 작업 전체 상한을 적용한다.
+            pending = client.sendAsync(request.build(), ignored -> Bounded.body(MAX_RESPONSE));
+            var response = pending.get(remaining, java.util.concurrent.TimeUnit.NANOSECONDS);
             if (allowMissing && response.statusCode() == 404) return null;
             if (response.statusCode() != 200) throw new IOException("Qdrant HTTP 실패 (" + response.statusCode() + ")");
             return JsonParser.parseString(new String(response.body(), StandardCharsets.UTF_8));
         } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException("Qdrant 요청 중단"); }
+        catch (java.util.concurrent.TimeoutException e) { throw new IOException("Qdrant 작업 시간 상한 초과"); }
+        catch (java.util.concurrent.ExecutionException e) { throw new IOException("Qdrant 연결 실패"); }
         catch (IOException e) { throw e.getMessage() != null && e.getMessage().startsWith("Qdrant") ? e : new IOException("Qdrant 연결 실패"); }
         catch (RuntimeException e) { throw new IOException("Qdrant 응답 형식 오류"); }
+        finally { if (pending != null && !pending.isDone()) pending.cancel(true); }
     }
     public void close() { client.close(); }
 

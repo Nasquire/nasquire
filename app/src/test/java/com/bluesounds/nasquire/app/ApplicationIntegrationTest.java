@@ -112,6 +112,10 @@ class ApplicationIntegrationTest {
         assertEquals(403, call("/api/full", "GET", null, token, false).statusCode());
         var anonymous = HttpClient.newHttpClient();
         assertEquals(401, anonymous.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/full")).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+        // 키 삭제도 관리자 세션+헤더 CSRF가 필요하다.
+        assertEquals(403, call("/api/full/key", "DELETE", null, null, false).statusCode());
+        assertEquals(403, call("/api/full/key", "DELETE", null, token, false).statusCode());
+        assertEquals(200, call("/api/full/key", "DELETE", null, null, true).statusCode());
         if (!defaults.get("available").asBoolean()) {
             assertEquals(409, call("/api/full", "PUT", Map.of("reranker", "remote"), null, true).statusCode());
             assertEquals(409, call("/api/full", "PUT", Map.of("ocr", "tesseract"), null, true).statusCode());
@@ -605,6 +609,15 @@ class ApplicationIntegrationTest {
             qdrant.fail = false;
             assertEquals(200, call("/api/embeddings", "PUT", Map.of("provider", "off", "vectorStore", "lucene"), null, true).statusCode());
             assertEquals(1, json(call("/api/search?query=ocean", "GET", null, token, false), 200).size());
+            // 저장된 Qdrant 키 명시적 삭제: 관리자 세션+CSRF만, 메모리·암호문 모두 제거.
+            assertTrue(json(call("/api/embeddings", "GET", null, null, true), 200).get("hasQdrantKey").asBoolean());
+            assertEquals(403, call("/api/embeddings/qdrant-key", "DELETE", null, null, false).statusCode());
+            assertEquals(403, call("/api/embeddings/qdrant-key", "DELETE", null, token, false).statusCode());
+            assertEquals(200, call("/api/embeddings/qdrant-key", "DELETE", null, null, true).statusCode());
+            assertFalse(json(call("/api/embeddings", "GET", null, null, true), 200).get("hasQdrantKey").asBoolean());
+            assertFalse(Files.readString(TEMP.resolve("data/embedding.properties")).contains("encryptedQdrantKey"));
+            // 비루프백 평문 주소는 명시 허용 없이 저장할 수 없다.
+            assertEquals(400, call("/api/embeddings", "PUT", Map.of("vectorStore", "qdrant", "qdrantUrl", "http://example.com:6333"), null, true).statusCode());
         } finally { fake.stop(0); }
     }
     JsonNode mcp(String token, String tool, Map<String, Object> arguments) throws Exception {

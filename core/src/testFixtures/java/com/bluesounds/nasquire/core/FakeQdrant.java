@@ -20,11 +20,15 @@ public final class FakeQdrant implements AutoCloseable {
     /** 서버 측 필터를 무시하는 손상/악의적 서버를 흉내 낸다. */
     public volatile boolean ignoreFilter;
     public volatile boolean fail;
+    /** 느린 서버를 흉내 낸다. 요청마다 이만큼 기다린 뒤 처리한다. */
+    public volatile long delayMillis;
+    private final ExecutorService executor = Executors.newCachedThreadPool(r -> { var t = new Thread(r, "fake-qdrant"); t.setDaemon(true); return t; });
 
     public FakeQdrant(String apiKey) throws IOException {
         this.apiKey = apiKey;
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/collections/", this::handle);
+        server.setExecutor(executor);
         server.start();
     }
     public String url() { return "http://127.0.0.1:" + server.getAddress().getPort(); }
@@ -41,6 +45,7 @@ public final class FakeQdrant implements AutoCloseable {
             String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             String path = exchange.getRequestURI().getPath(), method = exchange.getRequestMethod();
             requests.add(new Request(method, path, exchange.getRequestHeaders().getFirst("api-key"), body));
+            if (delayMillis > 0) { try { Thread.sleep(delayMillis); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; } }
             if (fail) { reply(exchange, 500, "{\"status\":{\"error\":\"secret-qdrant-body\"}}"); return; }
             if (apiKey != null && !apiKey.equals(exchange.getRequestHeaders().getFirst("api-key"))) { reply(exchange, 401, "{}"); return; }
             var parts = path.substring("/collections/".length()).split("/", 2);
@@ -123,5 +128,5 @@ public final class FakeQdrant implements AutoCloseable {
         exchange.getResponseHeaders().set("Content-Type", "application/json");
         exchange.sendResponseHeaders(status, bytes.length); exchange.getResponseBody().write(bytes);
     }
-    public void close() { server.stop(0); }
+    public void close() { server.stop(0); executor.shutdownNow(); }
 }

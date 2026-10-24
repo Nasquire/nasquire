@@ -28,9 +28,11 @@ public final class EmbeddingSettings {
     static final class KeyUnavailable extends IllegalStateException { KeyUnavailable(String message) { super(message); } }
     private java.util.function.BooleanSupplier storedSecrets = () -> false;
     private boolean keyError;
+    /** 시작 시 비루프백 평문 주소 등으로 벡터 기능을 끈 이유. 저장에 성공하면 지운다. */
+    private String disabledReason;
     private static final Set<String> FIELDS = Set.of("provider", "baseUrl", "model", "apiKey", "dimensions", "batchSize", "timeoutSeconds",
             "modelPath", "tokenizerPath", "download", "modelUrl", "tokenizerUrl", "modelSha256", "tokenizerSha256",
-            "vectorStore", "qdrantUrl", "qdrantCollection", "qdrantApiKey", "qdrantTimeoutSeconds");
+            "vectorStore", "qdrantUrl", "qdrantCollection", "qdrantApiKey", "qdrantTimeoutSeconds", "allowInsecureHttp", "clearKey", "clearQdrantKey");
     public EmbeddingSettings(SearchIndex index, Path dataFolder, Environment environment) throws Exception {
         this.index = index; folder = dataFolder; file = folder.resolve("embedding.properties");
         settings.setProperty("provider", "off"); settings.setProperty("baseUrl", "https://api.example.com/v1");
@@ -45,6 +47,7 @@ public final class EmbeddingSettings {
         settings.setProperty("tokenizerSha256", "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39");
         settings.setProperty("vectorStore", "lucene"); settings.setProperty("qdrantUrl", "http://127.0.0.1:6333");
         settings.setProperty("qdrantCollection", "nasquire"); settings.setProperty("qdrantTimeoutSeconds", "10");
+        settings.setProperty("allowInsecureHttp", "false");
         for (String field : FIELDS) {
             String value = environment.getProperty("nasquire.embedding." + field);
             if (value != null) settings.setProperty(field, value);
@@ -63,8 +66,22 @@ public final class EmbeddingSettings {
                 catch (KeyUnavailable e) { keyError = true; LOG.error("Qdrant 키를 복호화할 수 없습니다: {}", e.getMessage()); }
             }
         }
-        var provider = create(settings);
-        index.configureVectors(provider, store(settings));
+        // 업그레이드 호환: 비루프백 평문 주소가 남아 있으면 시작은 하되 벡터 기능만 끄고 상태로 알린다.
+        try { checkTransport(settings); }
+        catch (IllegalArgumentException e) { disabledReason = e.getMessage(); LOG.warn("임베딩·Qdrant 기능을 비활성화했습니다: {}", e.getMessage()); }
+        if (disabledReason == null) index.configureVectors(create(settings), store(settings));
+        else index.configureVectors(null, null);
+    }
+    /** 인증정보를 보내는 원격 주소는 루프백이 아니면 HTTPS만 허용한다. 평문은 allowInsecureHttp=true일 때만. */
+    private static void checkTransport(Properties p) {
+        String allow = p.getProperty("allowInsecureHttp", "false");
+        if (!Set.of("true", "false").contains(allow)) throw new IllegalArgumentException("allowInsecureHttp 설정 오류");
+        if ("remote".equals(p.getProperty("provider"))) RemoteUrl.require(p.getProperty("baseUrl"), allow.equals("true"));
+        if ("qdrant".equals(p.getProperty("vectorStore"))) RemoteUrl.require(p.getProperty("qdrantUrl"), allow.equals("true"));
+    }
+    private static boolean insecureInUse(Properties p) {
+        return "remote".equals(p.getProperty("provider")) && RemoteUrl.insecure(p.getProperty("baseUrl"))
+                || "qdrant".equals(p.getProperty("vectorStore")) && RemoteUrl.insecure(p.getProperty("qdrantUrl"));
     }
     private static VectorStore store(Properties p) {
         return switch (p.getProperty("vectorStore")) {
@@ -91,6 +108,7 @@ public final class EmbeddingSettings {
             for (String field : settings.stringPropertyNames()) if (!SECRETS.contains(field)) result.put(field, settings.getProperty(field));
             result.put("builtinAvailable", ServiceLoader.load(Providers.FullProvider.class).findFirst().isPresent());
             result.put("hasKey", !settings.getProperty("apiKey", "").isEmpty()); result.put("hasQdrantKey", !settings.getProperty("qdrantApiKey", "").isEmpty()); result.put("keyError", keyError); result.put("status", index.embeddingStatus());
+            result.put("disabledReason", disabledReason == null ? "" : disabledReason); result.put("insecureHttp", insecureInUse(settings));
             return result;
         }
     }
@@ -102,10 +120,23 @@ public final class EmbeddingSettings {
                 // 빈 키는 기존 키 유지. clearKey 대신 off로 공급자를 끄거나 새 키를 입력한다.
                 if (!SECRETS.contains(e.getKey()) || !e.getValue().isEmpty()) next.setProperty(e.getKey(), e.getValue());
             }
-            var provider = create(next);
+            // 주소가 바뀌면 새 키를 함께 입력하지 않는 한 저장된 키를 새 주소로 보내지 않는다. clear*=true는 명시적 삭제.
+            for (String[] pair : new String[][] {{"baseUrl", "apiKey", "clearKey"}, {"qdrantUrl", "qdrantApiKey", "clearQdrantKey"}}) {
+                if (!Objects.equals(next.getProperty(pair[0]), settings.getProperty(pair[0])) && input.getOrDefault(pair[1], "").isEmpty()
+                        || "true".equals(input.get(pair[2]))) next.remove(pair[1]);
+                next.remove(pair[2]);
+            }
+            String blocked = null;
+            try { checkTransport(next); }
+            catch (IllegalArgumentException e) {
+                // 시작 때 꺼진 상태에서도 키 삭제는 허용한다. 기능은 계속 꺼 둔다.
+                if (disabledReason == null || !input.keySet().stream().allMatch(k -> k.startsWith("clear"))) throw e;
+                blocked = e.getMessage();
+            }
+            var provider = blocked == null ? create(next) : null;
             VectorStore store = null;
             try {
-                store = store(next);
+                if (blocked == null) store = store(next);
                 var stored = new Properties(); stored.putAll(next); SECRETS.forEach(stored::remove);
                 if (!next.getProperty("apiKey", "").isEmpty()) stored.setProperty("encryptedKey", encrypt(EMBEDDING, next.getProperty("apiKey")));
                 if (!next.getProperty("qdrantApiKey", "").isEmpty()) stored.setProperty("encryptedQdrantKey", encrypt(QDRANT, next.getProperty("qdrantApiKey")));
@@ -115,13 +146,14 @@ public final class EmbeddingSettings {
                     try (var out = Files.newOutputStream(temporary)) { stored.store(out, "Nasquire embedding settings"); }
                     Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
                 } finally { Files.deleteIfExists(temporary); }
-                index.configureVectors(provider, store); settings.clear(); settings.putAll(next); keyError = false;
+                index.configureVectors(provider, store); settings.clear(); settings.putAll(next); keyError = false; disabledReason = blocked;
             } catch (Exception e) { if (provider != null) provider.close(); if (store != null) store.close(); throw e; }
         }
     }
-    public Map<String, Object> test() {
-        synchronized (index) { return Map.of("ok", true, "dimensions", index.testEmbedding().length); }
-    }
+    /** 원격 호출이므로 색인 잠금을 잡지 않는다. 공급자 참조만 잠금 안에서 얻는다. */
+    public Map<String, Object> test() { return Map.of("ok", true, "dimensions", index.testEmbedding().length); }
+    /** 저장된 원격 임베딩 키(apiKey) 또는 Qdrant 키를 메모리·암호문 모두에서 지운다. */
+    public void clearKey(boolean qdrant) throws Exception { save(Map.of(qdrant ? "clearQdrantKey" : "clearKey", "true")); }
     public void reindex() { index.requestRebuild(); }
     private static void privateFile(Path path) throws Exception {
         if (Files.getFileStore(path).supportsFileAttributeView("posix")) Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rw-------"));
