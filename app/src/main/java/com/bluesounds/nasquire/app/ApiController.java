@@ -17,13 +17,19 @@ public class ApiController {
     record Setup(String username, String password) { }
     record SourceInput(String name, String path, List<String> includes, List<String> excludes) { }
     record TokenInput(String name, Long expiresAt, List<String> sources) { }
+    private final EmbeddingSettings embeddings;
     private final Storage storage;
     private final IndexingService indexing;
     private final DocumentService documents;
     private final Path dataFolder;
-    public ApiController(Storage storage, IndexingService indexing, DocumentService documents, Path dataFolder) {
+    public ApiController(Storage storage, IndexingService indexing, DocumentService documents, Path dataFolder, EmbeddingSettings embeddings) {
+        this.embeddings = embeddings;
         this.storage = storage; this.indexing = indexing; this.documents = documents; this.dataFolder = dataFolder;
     }
+    @GetMapping("/embeddings") Map<String, Object> embeddings() { return embeddings.view(); }
+    @PutMapping("/embeddings") void embeddings(@RequestBody Map<String, String> input) throws Exception { embeddings.save(input); storage.audit("admin", "embedding-save", 200); }
+    @PostMapping("/embeddings/test") Map<String, Object> testEmbedding() { return embeddings.test(); }
+    @PostMapping("/embeddings/reindex") void reindexEmbeddings() { embeddings.reindex(); }
     @GetMapping("/auth") Map<String, Object> auth(CsrfToken csrf, Authentication authentication) {
         return Map.of("configured", storage.configured(), "authenticated", authentication != null && authentication.getAuthorities().stream().anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN")),
                 "csrfToken", csrf.getToken(), "csrfHeader", csrf.getHeaderName());
@@ -64,8 +70,8 @@ public class ApiController {
     @DeleteMapping("/tokens/{id}") void revoke(@PathVariable String id) { storage.revoke(id); storage.audit("admin", "token-revoke " + id, 200); }
     @GetMapping("/audit") List<Map<String, Object>> audit() { return storage.audit(); }
     @GetMapping("/search") List<SearchIndex.Hit> search(@RequestParam String query, @RequestParam(required = false) String source,
-            @RequestParam(defaultValue = "20") int limit, HttpServletRequest req) throws IOException {
-        return documents.search((Storage.Identity)req.getAttribute("nasquire.token"), query, source, limit);
+            @RequestParam(defaultValue = "20") int limit, @RequestParam(required = false) String mode, HttpServletRequest req) throws IOException {
+        return documents.search((Storage.Identity)req.getAttribute("nasquire.token"), query, source, limit, mode);
     }
     @GetMapping("/document") Map<String, Object> document(@RequestParam String path,
             @RequestParam(name = "page_from", required = false) Integer from, @RequestParam(name = "page_to", required = false) Integer to,

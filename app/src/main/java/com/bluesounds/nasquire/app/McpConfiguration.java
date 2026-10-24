@@ -14,7 +14,7 @@ public class McpConfiguration {
     @Bean
     HttpServletStatelessServerTransport mcpTransport() {
         return HttpServletStatelessServerTransport.builder().messageEndpoint("/mcp").maxRequestSize(65536)
-                .contextExtractor(req -> McpTransportContext.create(Map.of("identity", req.getAttribute("nasquire.token"))))
+                .contextExtractor(req -> McpTransportContext.create(Map.of("identity", req.getAttribute("nasquire.token"), "baseUrl", DownloadController.requestBase(req))))
                 .build();
     }
     @Bean
@@ -23,9 +23,9 @@ public class McpConfiguration {
         registration.setAsyncSupported(true); return registration;
     }
     @Bean(destroyMethod = "close")
-    McpStatelessSyncServer mcpServer(HttpServletStatelessServerTransport transport, DocumentService documents, Storage storage) {
+    McpStatelessSyncServer mcpServer(HttpServletStatelessServerTransport transport, DocumentService documents, Storage storage, DownloadService downloads) {
         var searchProperties = Map.<String, Object>of("query", Map.of("type", "string", "minLength", 1, "maxLength", 1000),
-                "source", Map.of("type", "string", "description", "Optional source ID"), "limit", Map.of("type", "integer", "minimum", 1, "maximum", 100));
+                "source", Map.of("type", "string", "description", "Optional source ID"), "mode", Map.of("type", "string", "enum", List.of("keyword", "vector", "hybrid")), "limit", Map.of("type", "integer", "minimum", 1, "maximum", 100));
         var documentProperties = new LinkedHashMap<String, Object>();
         documentProperties.put("path", Map.of("type", "string", "description", "Source-qualified path returned by search_documents"));
         for (String n : List.of("page_from", "page_to", "offset", "length")) documentProperties.put(n, Map.of("type", "integer", "minimum", n.equals("offset") ? 0 : 1));
@@ -34,6 +34,18 @@ public class McpConfiguration {
                     invoke(context, request, documents, storage, true))
                 .toolCall(tool("get_document", "Read indexed text by page range or character offset/length (max 100000)", documentProperties, List.of("path")), (context, request) ->
                     invoke(context, request, documents, storage, false))
+                .toolCall(tool("download_file", "Issue a short-lived signed original file download URL", Map.of("path", documentProperties.get("path")), List.of("path")), (context, request) -> {
+                    var identity = (Storage.Identity)context.get("identity");
+                    try {
+                        if (identity == null) throw new IllegalArgumentException("토큰 인증 필요");
+                        var result = downloads.issue(identity, (String)request.arguments().get("path"), (String)context.get("baseUrl"));
+                        storage.audit(identity.tokenId(), "mcp download_file", 200);
+                        return McpSchema.CallToolResult.builder().content(List.of(McpSchema.TextContent.builder(McpJsonDefaults.getMapper().writeValueAsString(result)).build())).isError(false).build();
+                    } catch (Exception e) {
+                        storage.audit(identity == null ? "anonymous" : identity.tokenId(), "mcp download_file", 403);
+                        return McpSchema.CallToolResult.builder().content(List.of(McpSchema.TextContent.builder("파일을 받을 수 없습니다 / Cannot download file").build())).isError(true).build();
+                    }
+                })
                 .build();
     }
     private McpSchema.Tool tool(String name, String description, Map<String, Object> properties, List<String> required) {
@@ -47,7 +59,7 @@ public class McpConfiguration {
         try {
             if (identity == null) throw new IllegalArgumentException("토큰 인증 필요");
             Map<String, Object> args = request.arguments();
-            Object result = search ? documents.search(identity, (String)args.get("query"), (String)args.get("source"), number(args, "limit") == null ? 20 : number(args, "limit"))
+            Object result = search ? documents.search(identity, (String)args.get("query"), (String)args.get("source"), number(args, "limit") == null ? 20 : number(args, "limit"), (String)args.get("mode"))
                     : documents.document(identity, (String)args.get("path"), number(args, "page_from"), number(args, "page_to"), number(args, "offset"), number(args, "length"));
             return McpSchema.CallToolResult.builder().content(List.of(McpSchema.TextContent.builder(McpJsonDefaults.getMapper().writeValueAsString(result)).build())).isError(false).build();
         } catch (Exception e) {

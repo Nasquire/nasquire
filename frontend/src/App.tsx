@@ -7,11 +7,15 @@ type Auth = { configured: boolean; authenticated: boolean; csrfToken: string; cs
 type Source = { id: string; name: string; path: string; includes: string[]; excludes: string[]; status: { state: string; indexed: number; pending: number; errors: number; message: string } }
 type Token = { id: string; name: string; expiresAt: number; sources: string[]; revoked: boolean }
 type Hit = { source: string; sourceName: string; path: string; page: number; text: string; score: number }
-const pages = ['sources', 'tokens', 'search', 'about'] as const
+const pages = ['sources', 'embeddings', 'tokens', 'search', 'about'] as const
 type Page = typeof pages[number]
-const titles = { sources: t('Sources', '소스 관리'), tokens: t('API tokens', 'API 토큰'), search: t('Search playground', '검색 시험'), about: t('About', '정보') }
+const titles = { embeddings: t('Embeddings', '임베딩 설정'), sources: t('Sources', '소스 관리'), tokens: t('API tokens', 'API 토큰'), search: t('Search playground', '검색 시험'), about: t('About', '정보') }
 
 export default function App() {
+  const [embedding, setEmbedding] = useState<Record<string, unknown>>()
+  const [provider, setProvider] = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
+  const [connection, setConnection] = useState('')
   const [auth, setAuth] = useState<Auth>()
   const [error, setError] = useState('')
   const [page, setPage] = useState<Page>('sources')
@@ -39,8 +43,8 @@ export default function App() {
   }
   async function refreshAuth() { const res = await fetch('/api/auth'); if (!res.ok) throw new Error(`HTTP ${res.status}`); const state = await res.json() as Auth; setAuth(state); return state }
   async function refresh() {
-    const [s, tok, log] = await Promise.all([api<Source[]>('/sources'), api<Token[]>('/tokens'), api<Record<string, unknown>[]>('/audit')])
-    setSources(s); setTokens(tok); setAudits(log)
+    const [s, tok, log, emb] = await Promise.all([api<Source[]>('/sources'), api<Token[]>('/tokens'), api<Record<string, unknown>[]>('/audit'), api<Record<string, unknown>>('/embeddings')])
+    setSources(s); setTokens(tok); setAudits(log); setEmbedding(emb)
   }
   async function run(action: () => Promise<unknown>) { setError(''); setBusy(true); try { await action() } catch (e) { setError(String(e)) } finally { setBusy(false) } }
   useEffect(() => { void refreshAuth().catch(e => setError(String(e))) }, [])
@@ -92,6 +96,35 @@ export default function App() {
       {sources.length === 0 && <p className="notice">{t('Add a folder to start indexing PDF, text and Markdown files.', '폴더를 등록하면 PDF·텍스트·마크다운 색인을 시작합니다.')}</p>}
       {sources.map(s => <section className="card" key={s.id}><div className="row"><h2>{s.name}</h2><span className="pill">{({ ready: t('Ready', '준비'), waiting: t('Waiting', '대기'), scanning: t('Indexing', '색인 중'), error: t('Error', '오류') } as Record<string, string>)[s.status.state] ?? s.status.state}</span></div><code>{s.path}</code><p>{t('Indexed / Pending / Errors', '색인 / 안정화 대기 / 오류')}: {s.status.indexed} / {s.status.pending} / {s.status.errors}</p>{s.status.errors > 0 && <p className="error">{t('Some files could not be processed. Check folder permissions and extraction limits.', '일부 파일을 처리하지 못했습니다. 폴더 권한과 추출 상한을 확인하세요.')}</p>}<div className="row"><button onClick={() => setEdit(s)}>{t('Edit', '편집')}</button><button disabled={busy} onClick={() => void run(async () => { await api(`/sources/${s.id}/reindex`, 'POST'); await refresh() })}>{t('Reindex', '재색인')}</button><button disabled={busy} onClick={() => void run(async () => { await api(`/sources/${s.id}`, 'DELETE'); await refresh() })}>{t('Remove source', '등록 해제')}</button></div></section>)}
     </>}
+    {page === 'embeddings' && embedding && <><h1>{t('Embedding provider', '임베딩 공급자')}</h1>
+      <p>{t('Off uses keyword search. Save settings, test the connection, then rebuild all sources after changing the model or dimensions.', '없음은 키워드 검색을 사용합니다. 설정 저장·연결 시험 후 모델이나 차원을 바꾸면 전체 재색인하세요.')}</p>
+      <form id="embedding-form" className="card" key={String(embedding.provider)} onSubmit={e => submit(e, async data => {
+        const form = globalThis.document.getElementById('embedding-form') as HTMLFormElement; await api('/embeddings', 'PUT', Object.fromEntries(data)); const keyInput = form.elements.namedItem('apiKey') as HTMLInputElement | null; if (keyInput) keyInput.value = ''; setConnection(''); await refresh()
+      })}>
+        <label>{t('Provider', '공급자')}<select name="provider" defaultValue={String(embedding.provider)} onChange={e => { setProvider(e.target.value); setConnection('') }}>
+          <option value="off">{t('Off', '없음')}</option><option value="builtin">{t('Built-in ONNX', '내장 ONNX')}</option><option value="remote">{t('Remote (OpenAI compatible)', '원격 (OpenAI 호환)')}</option>
+        </select></label>
+        {((provider || embedding.provider) === 'remote') && <>
+          <label>{t('Base URL', '기본 주소')}<input name="baseUrl" type="url" required defaultValue={String(embedding.baseUrl)} onChange={e => setBaseUrl(e.target.value)} /></label>
+          <p className="notice" role="alert">{t('Document content is sent to the configured server. External cloud: document content is transmitted externally.', '문서 내용이 설정한 서버로 전송됩니다. 외부 클라우드 주소 사용 시 문서 내용이 외부로 전송됨.')}{baseUrl.startsWith('http:') && t(' HTTP sends data without encryption.', ' HTTP는 암호화하지 않습니다.')}</p>
+          <label>{t('Model', '모델')}<input name="model" required defaultValue={String(embedding.model)} /></label>
+          <label>{t('API key (blank keeps saved key)', 'API 키 (빈 값은 기존 키 유지)')}<input name="apiKey" type="password" autoComplete="new-password" placeholder={embedding.hasKey ? t('Saved; hidden', '저장됨·비공개') : ''} /></label>
+          <div className="row">{(['dimensions', 'batchSize', 'timeoutSeconds'] as const).map((f, i) => <label key={f}>{[t('Dimensions', '차원'), t('Batch size (1–16)', '배치 크기 (1–16)'), t('Timeout seconds', '타임아웃 (초)')][i]}<input name={f} type="number" required min="1" max={[1024, 16, 300][i]} defaultValue={String(embedding[f])} /></label>)}</div>
+        </>}
+        {((provider || embedding.provider) === 'builtin') && <>
+          <p className="notice">{t('Measured built-in RSS: about 856 MiB. Do not enable it with a 512 MiB limit.', '내장 모델 실측 RSS는 약 856 MiB입니다. 512 MiB 제한에서 켜지 마세요.')}</p>
+          <p>{t('Int8 multilingual E5, 384 dimensions, one chunk per inference. Model files are separate from the image. Downloads must target the data directory.', 'int8 다국어 E5, 384차원, 한 조각씩 추론. 모델 파일은 이미지와 별도로 관리합니다. 다운로드 대상은 데이터 폴더 안이어야 합니다.')}</p>
+          {(['modelPath', 'tokenizerPath', 'modelSha256', 'tokenizerSha256', 'modelUrl', 'tokenizerUrl'] as const).map((f, i) => <label key={f}>{[t('Model path', '모델 경로'), t('Tokenizer path', '토크나이저 경로'), t('Model SHA-256', '모델 SHA-256'), t('Tokenizer SHA-256', '토크나이저 SHA-256'), t('Model HTTPS URL', '모델 HTTPS 주소'), t('Tokenizer HTTPS URL', '토크나이저 HTTPS 주소')][i]}<input name={f} required defaultValue={String(embedding[f])} /></label>)}
+          <label>{t('Download missing files on first use (verifies SHA-256)', '첫 사용 시 없는 파일 다운로드 (SHA-256 확인)')}<select name="download" defaultValue={String(embedding.download)}><option value="false">{t('Disabled', '끔')}</option><option value="true">{t('Enabled', '켬')}</option></select></label>
+        </>}
+        <button className="primary" disabled={busy}>{t('Save settings', '설정 저장')}</button>
+      </form>
+      <section className="card"><p role="status">{Boolean((embedding.status as Record<string, unknown>)?.reindexRequired) ? t('Reindex required', '재색인 필요') : t('Index model is current', '색인 모델 일치')} · {Boolean((embedding.status as Record<string, unknown>)?.rebuilding) ? t('Rebuilding', '재색인 중') : ''}</p>
+        <p style={{ overflowWrap: 'anywhere' }}>{t('Model / dimensions', '모델 / 차원')}: {String((embedding.status as Record<string, unknown>)?.modelId)} / {String((embedding.status as Record<string, unknown>)?.dimensions)}</p>
+        <div className="row"><button disabled={busy || embedding.provider === 'off'} onClick={() => void run(async () => { const result = await api<{ dimensions: number }>('/embeddings/test', 'POST'); setConnection(t('Connected: ', '연결 성공: ') + result.dimensions) })}>{t('Test saved connection', '저장된 연결 시험')}</button>
+        <button disabled={busy} onClick={() => void run(async () => { await api('/embeddings/reindex', 'POST'); await refresh() })}>{t('Reindex all sources', '전체 소스 재색인')}</button></div><p role="status">{connection}</p>
+        {sources.map(s => <p key={s.id}>{s.name}: {s.status.state === 'scanning' ? t('Indexing', '색인 중') : s.status.state} · {s.status.indexed} / {s.status.pending} / {s.status.errors}</p>)}
+      </section></>}
     {page === 'tokens' && <><h1>{t('Read-only access', '읽기 전용 접근')}</h1><p>{t('Issue a separate token for each client. Values appear once.', '클라이언트마다 토큰을 발급하세요. 값은 한 번만 표시합니다.')}</p>
       <form className="card" onSubmit={e => submit(e, async data => {
         const issued = await api<{ value: string }>('/tokens', 'POST', { name: data.get('name'), expiresAt: new Date(String(data.get('expiry'))).getTime(), sources: data.getAll('sources') }); setSecret(issued.value); await refresh()
@@ -105,12 +138,12 @@ export default function App() {
       {tokens.map(tok => <section className="card" key={tok.id}><h2>{tok.name} {tok.revoked && <span className="pill">{t('Revoked', '폐기됨')}</span>}</h2><p>{new Date(tok.expiresAt).toLocaleString()} · {tok.sources.length ? tok.sources.map(id => sources.find(s => s.id === id)?.name ?? id).join(', ') : t('All sources', '전체 소스')}</p><button disabled={tok.revoked || busy} onClick={() => void run(async () => { await api('/tokens/' + tok.id, 'DELETE'); await refresh() })}>{t('Revoke', '폐기')}</button></section>)}
       <section className="card"><h2>{t('Recent audit events', '최근 사용 기록')}</h2>{audits.map((a, i) => <p key={i}><small>{new Date(Number(a.OCCURRED_AT)).toLocaleString()} · {String(a.ACTOR)} · {String(a.ACTION)} · {String(a.STATUS)}</small></p>)}</section>
     </>}
-    {page === 'search' && <><h1>{t('Ask your NAS', '내 NAS에 물어보세요')}</h1><p>{t('Keyword search with Korean and English analysis.', '한국어·영문 분석 기반 키워드 검색')}</p><form className="card" onSubmit={e => submit(e, async data => { setDocument(''); setHits(await api<Hit[]>('/search?' + new URLSearchParams({ query: String(data.get('query')), source: String(data.get('source')) }))); setSearched(true) })}>
-      <label>{t('Query', '검색어')}<input name="query" required maxLength={1000} /></label><label>{t('Source', '소스')}<select name="source"><option value="">{t('All sources', '전체 소스')}</option>{sources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label><button className="primary" disabled={busy}>{t('Search', '검색')}</button></form>
+    {page === 'search' && <><h1>{t('Ask your NAS', '내 NAS에 물어보세요')}</h1><p>{t('Keyword, vector and hybrid search with source evidence.', '소스 근거를 유지하는 키워드·벡터·혼합 검색')}</p><form className="card" onSubmit={e => submit(e, async data => { setDocument(''); setHits(await api<Hit[]>('/search?' + new URLSearchParams({ query: String(data.get('query')), source: String(data.get('source')), mode: String(data.get('mode')) }))); setSearched(true) })}>
+      <label>{t('Mode', '검색 방식')}<select name="mode" defaultValue=""><option value="">{t('Automatic', '자동')}</option><option value="keyword">{t('Keyword', '키워드')}</option><option value="vector">{t('Vector', '벡터')}</option><option value="hybrid">{t('Hybrid', '혼합')}</option></select></label><label>{t('Query', '검색어')}<input name="query" required maxLength={1000} /></label><label>{t('Source', '소스')}<select name="source"><option value="">{t('All sources', '전체 소스')}</option>{sources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label><button className="primary" disabled={busy}>{t('Search', '검색')}</button></form>
       {searched && <p>{hits.length} {t('results', '개 결과')}</p>}
       {hits.map((hit, i) => <section className="card" key={i}><small>{hit.sourceName} · {t('Page', '쪽')} {hit.page} · {hit.score.toFixed(3)}</small><p><code>{hit.path}</code></p><p className="result-text">{hit.text}</p><button onClick={() => void run(async () => { const d = await api<{ text: string }>('/document?' + new URLSearchParams({ path: hit.path, page_from: String(hit.page), page_to: String(hit.page) })); setDocument(d.text) })}>{t('Read page', '쪽 읽기')}</button></section>)}
       {document && <section className="card"><h2>{t('Document text', '문서 텍스트')}</h2><pre>{document}</pre></section>}
     </>}
-    {page === 'about' && <section className="card"><img className="logo" src="/icon.svg" alt="" /><h1>Nasquire</h1><p>Ask your NAS.</p><p>Copyright (c) 2026 Bluesounds</p><p><a href="https://github.com/Nasquire/nasquire">GitHub · Nasquire/nasquire</a></p><p><a href="/LICENSE.txt">GNU AGPL v3.0</a> · <a href="/LICENSE-EXCEPTIONS.md">{t('Additional terms', '추가 허가와 조건')}</a></p><p>{t('Keyword search MVP · PDF, text, Markdown · MCP over Streamable HTTP at /mcp', '키워드 검색 MVP · PDF·텍스트·마크다운 · /mcp Streamable HTTP')}</p></section>}
+    {page === 'about' && <section className="card"><img className="logo" src="/icon.svg" alt="" /><h1>Nasquire</h1><p>Ask your NAS.</p><p>Copyright (c) 2026 Bluesounds</p><p><a href="https://github.com/Nasquire/nasquire">GitHub · Nasquire/nasquire</a></p><p><a href="/LICENSE.txt">GNU AGPL v3.0</a> · <a href="/LICENSE-EXCEPTIONS.md">{t('Additional terms', '추가 허가와 조건')}</a></p><p>{t('Hybrid search · PDF, text, Markdown · MCP over Streamable HTTP at /mcp', '혼합 검색 · PDF·텍스트·마크다운 · /mcp Streamable HTTP')}</p></section>}
   </div></main></div>
 }

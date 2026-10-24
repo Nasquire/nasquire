@@ -38,6 +38,8 @@ public final class IndexingService implements AutoCloseable {
     public Status status(String id) { return statuses.getOrDefault(id, new Status("waiting", 0, 0, 0, "")); }
 
     public synchronized void scan(List<Source> sources) throws IOException {
+        if (index.beginRebuild()) { snapshots.clear(); definitions.clear(); }
+        if (!index.indexingAllowed()) return;
         var active = sources.stream().map(Source::id).collect(java.util.stream.Collectors.toSet());
         for (String old : new HashSet<>(definitions.keySet())) {
             if (!active.contains(old)) { index.deleteSource(old); definitions.remove(old); snapshots.remove(old); statuses.remove(old); }
@@ -49,7 +51,10 @@ public final class IndexingService implements AutoCloseable {
             }
             completed.put(source.id(), scanSource(source));
         }
-        index.refresh();
+        synchronized (index) {
+            index.finishRebuild(completed.values().stream().allMatch(s -> s.state().equals("ready") && s.pending() == 0 && s.errors() == 0));
+            index.refresh();
+        }
         // 검색자가 새 색인을 읽을 수 있게 된 뒤 완료 상태를 공개한다.
         statuses.putAll(completed);
     }
@@ -76,7 +81,7 @@ public final class IndexingService implements AutoCloseable {
                         Path real = file.toRealPath();
                         if (!real.startsWith(root) || !Files.isRegularFile(real)) return FileVisitResult.CONTINUE;
                         var attrs = Files.readAttributes(real, BasicFileAttributes.class);
-                        if (attrs.size() > maxBytes) return FileVisitResult.CONTINUE;
+                        if (attrs.size() > maxBytes) throw new IOException("파일 크기 상한 초과");
                         String key = Source.normalized(relative);
                         if (next.containsKey(key)) throw new IOException("정규화 경로 충돌");
                         var old = previous.get(key);
@@ -86,10 +91,10 @@ public final class IndexingService implements AutoCloseable {
                         if (!stamp.indexed && now - stamp.stableSince >= stableMillis) {
                             var chunks = new ArrayList<SearchIndex.Chunk>();
                             int[] offset = {0};
-                            extractor.get().extract(real, (page, text) -> {
+                            extractor.get().extractLocated(real, (page, location, text) -> {
                                 for (int i = 0; i < text.length(); i += 1200) {
                                     String chunk = text.substring(i, Math.min(i + 1200, text.length()));
-                                    chunks.add(new SearchIndex.Chunk(page, offset[0], chunk)); offset[0] += chunk.length();
+                                    chunks.add(new SearchIndex.Chunk(page, offset[0], chunk, location)); offset[0] += chunk.length();
                                 }
                             }, maxCharacters);
                             // 추출 도중 변경된 파일은 이번 검사에서 게시하지 않는다.
@@ -102,6 +107,7 @@ public final class IndexingService implements AutoCloseable {
                         next.put(key, stamp);
                         if (stamp.indexed) counts[0]++; else { counts[1]++; index.delete(source.id() + ":" + key); }
                     } catch (IOException | RuntimeException e) { counts[2]++; }
+                    statuses.put(source.id(), new Status("scanning", counts[0], counts[1], counts[2], ""));
                     return FileVisitResult.CONTINUE;
                 }
             });
