@@ -81,14 +81,16 @@ public class ShareService {
         synchronized (this) {
             if (retryAt(share.id, ip) > now) throw new Delayed();
             if (!matches) {
-                var rows = db.queryForList("SELECT failures FROM share_failures WHERE share_id=? AND ip=?", share.id, ip);
-                int previous = rows.isEmpty() ? 0 : ((Number) rows.getFirst().get("FAILURES")).intValue();
-                int failures = previous >= 5 ? 1 : previous + 1;
-                long wait = failures >= 5 ? 900000 : 1000L << (failures - 1);
+                // 동시 요청은 위 재확인으로 결과를 버린다. 횟수를 되돌리지 않고 허용 시각을 줄이지 않는다.
                 db.update("DELETE FROM share_failures WHERE retry_at<?", now - 900000);
+                var rows = db.queryForList("SELECT failures,retry_at FROM share_failures WHERE share_id=? AND ip=?", share.id, ip);
+                int previous = rows.isEmpty() ? 0 : ((Number) rows.getFirst().get("FAILURES")).intValue();
+                long previousRetry = rows.isEmpty() ? 0 : ((Number) rows.getFirst().get("RETRY_AT")).longValue();
+                int failures = Math.min(previous + 1, 1000);
+                long wait = failures >= 5 ? 900000 : 1000L << (failures - 1);
                 if (rows.isEmpty() && db.queryForObject("SELECT COUNT(*) FROM share_failures", Integer.class) >= 4096)
                     db.update("DELETE FROM share_failures WHERE (share_id,ip) IN (SELECT share_id,ip FROM share_failures ORDER BY retry_at LIMIT 1)");
-                db.update("MERGE INTO share_failures KEY(share_id,ip) VALUES (?,?,?,?)", share.id, ip, failures, now + wait);
+                db.update("MERGE INTO share_failures KEY(share_id,ip) VALUES (?,?,?,?)", share.id, ip, failures, Math.max(previousRetry, now + wait));
                 storage.audit("share-visitor", "share-password", 401); throw new PasswordRequired();
             }
             db.update("DELETE FROM share_failures WHERE share_id=? AND ip=?", share.id, ip);

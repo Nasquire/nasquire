@@ -19,9 +19,9 @@ class SecurityBoundaryTest {
     @Test void totpPendingSessionExpiresWithoutCreatingAnotherSession() {
         var request = new MockHttpServletRequest();
         assertNull(TotpController.pending(request)); assertNull(request.getSession(false));
-        request.getSession().setAttribute("totp.pending", new TotpController.Pending("admin", System.currentTimeMillis()));
+        request.getSession().setAttribute("totp.pending", new TotpController.Pending("admin", System.currentTimeMillis(), new java.util.concurrent.atomic.AtomicInteger()));
         assertNotNull(TotpController.pending(request));
-        request.getSession().setAttribute("totp.pending", new TotpController.Pending("admin", System.currentTimeMillis() - 300001));
+        request.getSession().setAttribute("totp.pending", new TotpController.Pending("admin", System.currentTimeMillis() - 300001, new java.util.concurrent.atomic.AtomicInteger()));
         assertNull(TotpController.pending(request)); assertNull(request.getSession().getAttribute("totp.pending"));
     }
     @Test void forwardedAddressesRequireTrustedConnectionAndWalkFromRight() {
@@ -37,19 +37,18 @@ class SecurityBoundaryTest {
     @Test void loginDelayLocksBothAccountAndIpAndResetsOnSuccess() {
         var attempts = new LoginAttempts(); long now = 0;
         for (int i = 0; i < 5; i++) {
-            assertTrue(attempts.allowed("ip-one", "admin", now));
-            attempts.failed("ip-one", "admin", now);
-            assertFalse(attempts.allowed("ip-two", "admin", now));
-            assertFalse(attempts.allowed("ip-one", "another", now));
+            var ticket = attempts.acquire("", "ip-one", "admin", now); assertNotNull(ticket);
+            attempts.failed(ticket, now);
+            assertNull(attempts.acquire("", "ip-two", "admin", now));
+            assertNull(attempts.acquire("", "ip-one", "another", now));
             now += i == 4 ? 900000 : 1000L << i;
-            assertFalse(attempts.allowed("ip-one", "admin", now - 1));
+            assertNull(attempts.acquire("", "ip-one", "admin", now - 1));
         }
-        assertTrue(attempts.allowed("ip-one", "admin", now));
-        attempts.failed("ip-one", "admin", now);
-        attempts.succeeded("ip-one", "admin");
-        assertTrue(attempts.allowed("ip-one", "admin", now));
-        for (int i = 0; i < 10000; i++) attempts.failed("ip-" + i, "account-" + i, now);
-        assertTrue(attempts.allowed("new-ip", "new-account", now));
+        var ticket = attempts.acquire("", "ip-one", "admin", now); assertNotNull(ticket);
+        attempts.succeeded(ticket);
+        try (var next = attempts.acquire("", "ip-one", "admin", now)) { assertNotNull(next); }
+        for (int i = 0; i < 10000; i++) attempts.failed(attempts.acquire("", "ip-" + i, "account-" + i, now), now);
+        assertNotNull(attempts.acquire("", "new-ip", "new-account", now));
     }
     @Test void multipartIsRejectedWithoutReadingAnyParameterOrPart() throws Exception {
         var request = new MockHttpServletRequest() {

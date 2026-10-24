@@ -44,6 +44,33 @@ HTTP 통합 테스트는 CSRF 없는 등록/코드 승인 거부, 잘못된 코�
 - TOTP는 서버·기기 시각 동기화가 필요하다. 단일 관리자·단일 프로세스 H2 구조이며 로그인 제한의 분산 공격/상태 축출 한계는 기존과 같다.
 - 데이터 폴더와 암호화 키의 접근 권한이 복구 권한이다. 오프라인 명령은 서버 종료를 운영자가 수행한 뒤 사용한다. 기존 API 토큰은 자동 폐기하지 않는다.
 
+## 교차 검토 반영 (2026-10-24, 기준 커밋 `ad6a3b1`)
+
+| # | 지적 | 조치 | 테스트 |
+| --- | --- | --- | --- |
+| 1 | 로그인 시도 제한 확인→검증→기록이 원자적이지 않음, 잠금 후 실패가 횟수를 1로 되돌려 15분 잠금을 1초로 덮어씀 | `LoginAttempts.acquire`가 허용 확인과 진행 중 시도 예약을 한 잠금 안에서 처리(`count + inFlight < 5`, 잠금 뒤에는 키별 1개). `failed`는 횟수를 되돌리지 않고 `retryAt = max(기존, 새 값)`. 비밀번호 로그인(`LoginGuard`→성공/실패 핸들러가 같은 표 사용)과 TOTP 로그인·등록·해제 모두 적용. 공유 비밀번호 잠금도 횟수 리셋을 없애고 허용 시각을 줄이지 않게 수정(동시 요청은 기존 잠금 안 재확인으로 결과 폐기). 대기 세션별 실패 5회에서 `totp.pending` 삭제 | `TotpTest.concurrentFailuresStayWithinLimitAndLockIsNotShortened`(32스레드 동시 실패 → 허용 ≤5, 진행 중 예약, 잠금 뒤 재잠금 15분), `TotpIntegrationTest`(16스레드 동시 틀린 코드 → 실제 검증 감사 1~5회, 세션별 5회 실패 후 대기 삭제), `SecurityBoundaryTest` 갱신, `ApplicationIntegrationTest` 공유 잠금 만료 후 재실패 15분 |
+| 2 | 등록에 비밀번호 재확인 없음 | `/api/totp/enroll`에 현재 비밀번호 필요(해제와 같은 수준). 보안 화면 등록 버튼을 비밀번호 폼으로 변경 | 본문 없음·틀린 비밀번호 401, 올바른 비밀번호 200 |
+| 3 | 등록·해제 실패가 로그인 키를 잠금 | 등록·확인·해제는 `totp-manage:` 접두어 키로 별도 제한 | 해제 실패로 관리 키 15분 잠금(429) 상태에서도 비밀번호 로그인 202 |
+| 4 | 키 누락/변경 시 조용히 새 키 생성, 복호화 실패 500, AAD 없음 | 키 파일이 없고 DB TOTP 비밀 또는 임베딩 암호문이 있으면 새 키를 만들지 않고 `KeyUnavailable`(복원 또는 `--recover-admin` 안내). 시작 시 TOTP/임베딩 복호화 실패를 ERROR 로그로 알리고 서버는 계속(복구 코드 로그인 가능). 사용 시 503 통제 오류. 암호문은 `v2:` 형식 + 용도별 AAD(`totp`,`embedding`), 접두어 없는 기존 형식은 AAD 없이 읽고 TOTP는 다음 승인 단계 저장 때, 임베딩은 다음 설정 저장 때 새 형식으로 저장 | `TotpTest.purposeBoundCiphertextLegacyFormatAndMissingKey`(용도 교차 거부, 기존 형식 읽기, 키 변경·누락 오류, 키 미생성), 통합 테스트에서 DB 비밀 `v2:` 확인 |
+| 5 | 복구 코드 입력 정규화 | trim·소문자화·공백/하이픈 제거 후 40자리 16진수만 복구 코드로 처리 | `recoveryCodeNormalization`, 통합/스모크에서 대문자·하이픈·공백 포함 복구 코드 로그인 |
+| 6 | 오프라인 복구 입력 | 터미널 콘솔은 확인 재입력·불일치 실패. 파이프 입력 줄 끝 CR 제거 | `pipedRecoveryPasswordStripsCarriageReturn`, 실행 JAR 복구 스크립트 |
+| 7 | 코드 단계 취소 없음 | `DELETE /api/login/totp`로 대기 세션 정리(실패 기록 유지·감사), 로그인 화면 한/영 취소 버튼 | 취소 후 `totpRequired=false`, 코드 제출 401, 재로그인 202. 스모크에서도 확인 |
+
+판단한 것: 키 오류 시 서버 시작을 막지 않았다(검색·MCP 토큰은 계속 동작, 관리자는 복구 코드 또는 오프라인 복구로 해결). 잠금(5회) 이후에는 키별 한 번에 한 시도만 허용하고 실패 시 다시 15분 잠근다. 실패 기록은 마지막 허용 시각 15분 뒤 진행 중 시도가 없을 때 정리된다(기존 정리 정책 유지).
+
+| 명령 | 종료 코드 | 결과 |
+| --- | --- | --- |
+| `./gradlew :app:test -q` (최초) | 1 | 14개 중 1개 실패: 등록 비밀번호 401 직후 1초 지연으로 429 — 의도한 동작이라 테스트에 초기화 추가 |
+| `./gradlew :app:test -q` | 0 | app 14개 통과 |
+| `./gradlew build -q` (1회차) | 1 | `ApplicationIntegrationTest.verifyRemoteEmbedding` 키워드 검색 결과 0건(색인 타이밍). 변경 코드와 무관하며 직전 app 테스트와 재실행에서 통과. 근거 `build/verification/totp-review-build-run1-failed.log` |
+| `./gradlew build -q` (최종) | 0 | core·app 테스트, TypeScript·Vite·패키징 통과 |
+| `VERIFY_PORT=8121 python3 scripts/verify-runtime.py` | 0 | 비밀번호 확인 등록·대기 거부/취소·코드/정규화 복구 로그인·해제 포함 전체 스모크. 최대 RSS 289436 KiB(282.7 MiB), 서버 종료·포트 반환 확인 |
+| `python3 scripts/verify-admin-recovery.py` | 0 | 실행 JAR 복구(파이프 입력) |
+
+미수행: 실제 브라우저에서 등록 비밀번호 폼·취소 버튼 시각/동작 검증(환경 없음), 터미널 콘솔 확인 재입력의 실제 TTY 검증(자동 테스트는 파이프 입력만), 키 오류 503 경로의 HTTP 통합 테스트(단위 테스트로 예외만 검증). 원격 임베딩 색인 타이밍 테스트의 간헐 실패 가능성은 별도 확인 필요.
+
+아티팩트: `build/verification/totp-review-apptest.log`, `totp-review-build.log`, `totp-review-build-run1-failed.log`, `totp-review-runtime.log`, `totp-review-recovery.txt`.
+
 ## 변경 파일
 
 - 서버: `SecurityConfiguration.java`, `ApiController.java`, `Storage.java`, `EmbeddingSettings.java`, `NasquireApplication.java`, 신규 `Totp.java`, `TotpService.java`, `TotpController.java`, `AdminRecovery.java` (모두 `app/src/main/java/com/bluesounds/nasquire/app/`).

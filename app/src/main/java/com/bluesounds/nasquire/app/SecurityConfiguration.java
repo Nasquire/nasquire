@@ -53,14 +53,18 @@ public class SecurityConfiguration {
                             var context = SecurityContextHolder.createEmptyContext();
                             SecurityContextHolder.setContext(context);
                             new org.springframework.security.web.context.HttpSessionSecurityContextRepository().saveContext(context, req, res);
-                            req.getSession().setAttribute("totp.pending", new TotpController.Pending(auth.getName(), System.currentTimeMillis()));
+                            req.getSession().setAttribute("totp.pending", new TotpController.Pending(auth.getName(), System.currentTimeMillis(), new java.util.concurrent.atomic.AtomicInteger()));
                             storage.audit("anonymous", "login-totp-required", 202); res.setStatus(202);
                         } else {
                             req.getSession().removeAttribute("totp.pending");
-                            attempts.succeeded(addresses.address(req), auth.getName()); storage.audit("admin", "login", 200); res.setStatus(200);
+                            var ticket = LoginGuard.ticket(req); if (ticket != null) attempts.succeeded(ticket);
+                            storage.audit("admin", "login", 200); res.setStatus(200);
                         }
                     })
-                    .failureHandler((req, res, ex) -> { attempts.failed(addresses.address(req), req.getParameter("username"), System.currentTimeMillis()); storage.audit("anonymous", "login", 401); res.setStatus(401); }))
+                    .failureHandler((req, res, ex) -> {
+                        var ticket = LoginGuard.ticket(req); if (ticket != null) attempts.failed(ticket, System.currentTimeMillis());
+                        storage.audit("anonymous", "login", 401); res.setStatus(401);
+                    }))
             .logout(l -> l.logoutUrl("/api/logout").logoutSuccessHandler((req, res, auth) -> res.setStatus(204)))
             .exceptionHandling(e -> e.authenticationEntryPoint((req, res, ex) -> res.setStatus(401))
                     .accessDeniedHandler((req, res, ex) -> res.setStatus(403)))
@@ -96,12 +100,15 @@ public class SecurityConfiguration {
         private final Storage storage;
         LoginGuard(LoginAttempts attempts, ClientAddresses addresses, Storage storage) { this.attempts = attempts; this.addresses = addresses; this.storage = storage; }
         protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain) throws IOException, ServletException {
-            if (req.getServletPath().equals("/api/login") && req.getMethod().equals("POST")
-                    && !attempts.allowed(addresses.address(req), req.getParameter("username"), System.currentTimeMillis())) {
-                storage.audit("anonymous", "login-rate-limit", 429); res.setHeader("Retry-After", "900"); res.setStatus(429); return;
-            }
-            chain.doFilter(req, res);
+            if (!req.getServletPath().equals("/api/login") || !req.getMethod().equals("POST")) { chain.doFilter(req, res); return; }
+            // 확인과 진행 중 시도 예약을 원자적으로 처리하고, 성공/실패 핸들러가 같은 표로 기록한다.
+            var ticket = attempts.acquire("", addresses.address(req), req.getParameter("username"), System.currentTimeMillis());
+            if (ticket == null) { storage.audit("anonymous", "login-rate-limit", 429); res.setHeader("Retry-After", "900"); res.setStatus(429); return; }
+            req.setAttribute(TICKET, ticket);
+            try (ticket) { chain.doFilter(req, res); }
         }
+        static final String TICKET = "nasquire.loginTicket";
+        static LoginAttempts.Ticket ticket(HttpServletRequest req) { return (LoginAttempts.Ticket)req.getAttribute(TICKET); }
     }
 
     static class BearerFilter extends OncePerRequestFilter {

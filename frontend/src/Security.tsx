@@ -20,7 +20,9 @@ export default function Security({ api }: { api: <T>(path: string, method?: stri
     <p>{enabled ? t('Enabled', '켜짐') : t('Disabled', '꺼짐')}</p>
     <p>{t('Use an authenticator app. Each code can be used once. Keep recovery codes somewhere safe outside this browser.', '인증 앱을 사용하세요. 각 코드는 한 번만 사용할 수 있습니다. 복구 코드는 브라우저 밖의 안전한 곳에 보관하세요.')}</p>
     {error && <p className="error" role="alert">{error}</p>}
-    {!enabled && !enrollment && <button disabled={busy} onClick={() => void run(async () => { setEnrollment(await api('/totp/enroll', 'POST')); setCodes([]) })}>{t('Set up authenticator', '인증 앱 등록')}</button>}
+    {!enabled && !enrollment && <form onSubmit={e => submit(e, async data => { setEnrollment(await api('/totp/enroll', 'POST', Object.fromEntries(data))); setCodes([]) })}>
+      <label>{t('Current password', '현재 비밀번호')}<input name="password" type="password" required autoComplete="current-password" /></label>
+      <button disabled={busy}>{t('Set up authenticator', '인증 앱 등록')}</button></form>}
     {enrollment && <><p>{t('Enter this secret in your authenticator, then confirm one code within 10 minutes.', '인증 앱에 비밀을 입력하고 10분 안에 코드 한 번을 확인하세요.')}</p>
       <p style={{ overflowWrap: 'anywhere' }}><code>{enrollment.secret}</code></p><p style={{ overflowWrap: 'anywhere' }}><code>{enrollment.uri}</code></p>
       <form onSubmit={e => submit(e, async data => { const result = await api<{ recoveryCodes: string[] }>('/totp/enable', 'POST', Object.fromEntries(data)); setCodes(result.recoveryCodes); setEnrollment(undefined); setEnabled(true) })}>

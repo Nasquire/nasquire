@@ -52,4 +52,5 @@
 - 프록시 전달 헤더 전략은 기본 none이다. 선택 설정과 신뢰 경계는 `docs/verification/upload-share.md`의 보안 검토 반영 절을 따른다.
 
 - 관리자 TOTP: 기본 off, `Totp` JDK HMAC-SHA1/6자리/30초/±1, 마지막 승인 단계 DB CAS·복구 코드 SHA-256 원자 소모. `TotpService`는 기존 `EmbeddingSettings`의 로컬 AES-GCM 키를 재사용한다. 등록/해제는 관리자+CSRF, 비밀번호 성공 후 TOTP 대기는 권한 없는 세션 속성(5분), 최종 승인 때 세션 ID·CSRF 교체. 등록 비밀·복구 코드는 최초 응답만 제공한다.
+- 시도 제한은 `LoginAttempts.acquire` 표로 확인·진행 중 예약을 원자 처리하고 실패 횟수 리셋·허용 시각 단축을 금지한다. 등록/해제는 `totp-manage:` 키로 분리, 등록도 비밀번호 재확인. 암호문은 `v2:`+용도별 AAD(`totp`/`embedding`), 키가 없거나 바뀌었는데 암호문이 있으면 새 키를 만들지 않고 `KeyUnavailable`(503·복구 안내).
 - 오프라인 복구: `java -jar app/build/libs/app-0.1.0.jar --recover-admin --data=/data` (앱 종료 필요). 웹 컨텍스트 없이 표준 입력 비밀번호를 검증하고 기존 DB 비밀번호 재설정·TOTP/복구 코드 삭제·감사를 트랜잭션 처리한다. 검증 기록은 `docs/verification/totp.md`.

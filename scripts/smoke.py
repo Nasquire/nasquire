@@ -252,7 +252,9 @@ with tempfile.TemporaryDirectory(prefix='nasquire-smoke-') as folder:
         digest = hmac.new(base64.b32decode(secret), struct.pack('>Q', step), hashlib.sha1).digest()
         offset = digest[-1] & 15
         return f'{(struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7fffffff) % 1000000:06d}'
-    enrollment = curl('/api/totp/enroll', 'POST')
+    curl('/api/totp/enroll', 'POST', {'password': 'wrong-password-value'}, expected=401)
+    time.sleep(1.1)
+    enrollment = curl('/api/totp/enroll', 'POST', {'password': password})
     recovery = curl('/api/totp/enable', 'POST', {'code': totp_code(enrollment['secret'], int(time.time() // 30) - 1)})['recoveryCodes']
     assert len(recovery) == 10 and curl('/api/totp')['enabled']
     curl('/api/logout', 'POST', expected=204)
@@ -261,6 +263,10 @@ with tempfile.TemporaryDirectory(prefix='nasquire-smoke-') as folder:
     auth = curl('/api/auth'); csrf = auth['csrfToken']
     assert auth['totpRequired'] and not auth['authenticated']
     curl('/api/sources', expected=401)
+    curl('/api/login/totp', 'DELETE', expected=204)
+    auth = curl('/api/auth'); csrf = auth['csrfToken']; assert not auth['totpRequired']
+    curl('/api/login', 'POST', form={'username': 'admin', 'password': password}, expected=202)
+    csrf = curl('/api/auth')['csrfToken']
     assert curl(query, token=token, csrf_enabled=False)
     assert len(curl('/mcp', 'POST', {'jsonrpc': '2.0', 'id': 40, 'method': 'tools/list'}, token=token, csrf_enabled=False)['result']['tools']) == 3
     curl('/api/login/totp', 'POST', {'code': totp_code(enrollment['secret'], int(time.time() // 30))})
@@ -269,11 +275,12 @@ with tempfile.TemporaryDirectory(prefix='nasquire-smoke-') as folder:
     csrf = curl('/api/auth')['csrfToken']
     curl('/api/login', 'POST', form={'username': 'admin', 'password': password}, expected=202)
     csrf = curl('/api/auth')['csrfToken']
-    curl('/api/login/totp', 'POST', {'code': recovery[0]})
+    code = recovery[0].upper()
+    curl('/api/login/totp', 'POST', {'code': f' {code[:20]}-{code[20:]} '})
     csrf = curl('/api/auth')['csrfToken']
     curl('/api/totp/disable', 'POST', {'password': password, 'code': totp_code(enrollment['secret'], int(time.time() // 30) + 1)})
     assert not curl('/api/totp')['enabled']
-    print('PASS TOTP enrollment/confirmation, pending session denial, code login, recovery login, disable, Bearer/MCP unaffected')
+    print('PASS TOTP password-confirmed enrollment, pending session denial/cancel, code login, normalized recovery login, disable, Bearer/MCP unaffected')
     curl('/api/tokens/' + issued['id'], 'DELETE')
     curl(query, token=token, csrf_enabled=False, expected=401)
     assert any('mcp search_documents' in event['ACTION'] for event in curl('/api/audit'))

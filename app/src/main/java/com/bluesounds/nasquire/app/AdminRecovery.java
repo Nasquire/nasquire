@@ -16,15 +16,16 @@ final class AdminRecovery {
         Path data = Path.of(args[1].substring(7)).toRealPath();
         if (!Files.isRegularFile(data.resolve("metadata.mv.db"))) throw new IllegalArgumentException("기존 데이터 폴더가 필요합니다");
         char[] password;
-        if (System.console() != null) password = System.console().readPassword("새 관리자 비밀번호: ");
-        else {
-            // 파이프 입력은 한 줄, 최대 72 UTF-8 바이트. 인자/환경/로그로 비밀번호를 전달하지 않는다.
-            ByteArrayOutputStream line = new ByteArrayOutputStream(); int value;
-            while ((value = System.in.read()) != -1 && value != '\n') {
-                if (line.size() >= 72) throw new IllegalArgumentException("비밀번호 상한 초과"); line.write(value);
-            }
-            password = line.toString(StandardCharsets.UTF_8).toCharArray();
-        }
+        if (System.console() != null && System.console().isTerminal()) {
+            password = System.console().readPassword("새 관리자 비밀번호: ");
+            char[] confirm = password == null ? null : System.console().readPassword("새 관리자 비밀번호 확인: ");
+            try {
+                if (confirm == null || !Arrays.equals(password, confirm)) {
+                    if (password != null) Arrays.fill(password, '\0');
+                    throw new IllegalArgumentException("비밀번호 확인이 일치하지 않습니다");
+                }
+            } finally { if (confirm != null) Arrays.fill(confirm, '\0'); }
+        } else password = readLine(System.in);
         if (password == null) throw new IllegalArgumentException("비밀번호 필요");
         try {
             String text = new String(password);
@@ -32,6 +33,18 @@ final class AdminRecovery {
             recover(data, text);
         } finally { Arrays.fill(password, '\0'); }
         System.out.println("관리자 비밀번호를 재설정하고 TOTP와 복구 코드를 해제했습니다.");
+    }
+    /** 파이프 입력은 한 줄, 최대 72 UTF-8 바이트. 줄 끝 CR(CRLF)은 제거한다. 인자/환경/로그로 비밀번호를 전달하지 않는다. */
+    static char[] readLine(InputStream in) throws IOException {
+        ByteArrayOutputStream line = new ByteArrayOutputStream(); int value;
+        while ((value = in.read()) != -1 && value != '\n') {
+            if (line.size() >= 73) throw new IllegalArgumentException("비밀번호 상한 초과"); line.write(value);
+        }
+        byte[] bytes = line.toByteArray();
+        int length = bytes.length > 0 && bytes[bytes.length - 1] == '\r' ? bytes.length - 1 : bytes.length;
+        if (length > 72) throw new IllegalArgumentException("비밀번호 상한 초과");
+        char[] result = new String(bytes, 0, length, StandardCharsets.UTF_8).toCharArray();
+        Arrays.fill(bytes, (byte)0); return result;
     }
     private static void recover(Path data, String password) throws Exception {
         try (var connection = DriverManager.getConnection("jdbc:h2:file:" + data.resolve("metadata") + ";IFEXISTS=TRUE;DB_CLOSE_ON_EXIT=FALSE", "sa", "")) {

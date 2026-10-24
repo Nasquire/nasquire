@@ -79,6 +79,7 @@ export default function App() {
       </>}
       {!auth.configured && <small>{t('Use at least 12 characters (up to 72 UTF-8 bytes). This creates the only administrator.', '12자 이상, UTF-8 72바이트 이하. 단일 관리자 계정을 생성합니다.')}</small>}
       <button className="primary" disabled={busy}>{auth.configured ? t('Sign in', '로그인') : t('Create administrator', '관리자 생성')}</button>
+      {auth.totpRequired && <button type="button" disabled={busy} onClick={() => void run(async () => { await api('/login/totp', 'DELETE'); await refreshAuth() })}>{t('Cancel and use another account', '취소하고 비밀번호 단계로')}</button>}
     </form><p className="error" role="alert">{error}</p>
   </main>
 
