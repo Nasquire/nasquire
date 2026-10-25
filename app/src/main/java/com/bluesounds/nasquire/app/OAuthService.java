@@ -61,7 +61,9 @@ class OAuthService {
     }
     synchronized Map<String, Object> register(Map<String, Object> input) {
         requireEnabled(); cleanup();
-        if (!Set.of("client_name", "redirect_uris", "token_endpoint_auth_method", "grant_types", "response_types").containsAll(input.keySet())) throw invalid("invalid_client_metadata");
+        // RFC 7591 §2: 이해하지 않는 선택 메타데이터는 저장/조회하지 않고 무시한다.
+        // SDK의 application_type 등은 인증 방식·소스 권한·audience에 영향을 주지 않는다.
+        if (input.containsKey("scope") && !SCOPE.equals(input.get("scope"))) throw invalid("invalid_client_metadata");
         Object rawName = input.getOrDefault("client_name", "MCP client");
         if (!(rawName instanceof String name) || name.isBlank() || name.length() > 200 || name.chars().anyMatch(c -> c < 32 || c == 127)) throw invalid("invalid_client_metadata");
         if (!"none".equals(input.getOrDefault("token_endpoint_auth_method", "none"))) throw invalid("invalid_client_metadata");
@@ -80,7 +82,7 @@ class OAuthService {
             db.update("INSERT INTO oauth_clients(id,name,redirects,created) VALUES (?,?,?,?)", id, name, String.join("\n", redirects.stream().map(Object::toString).distinct().toList()), now());
             audit("register", 201);
         });
-        return Map.of("client_id", id, "client_name", name, "redirect_uris", redirects, "token_endpoint_auth_method", "none", "grant_types", List.of("authorization_code", "refresh_token"), "response_types", List.of("code"), "client_id_issued_at", now() / 1000);
+        return Map.of("client_id", id, "client_name", name, "redirect_uris", redirects, "token_endpoint_auth_method", "none", "grant_types", List.of("authorization_code", "refresh_token"), "response_types", List.of("code"), "client_id_issued_at", now() / 1000, "scope", SCOPE);
     }
     private void cleanup() {
         db.update("DELETE FROM oauth_tokens WHERE grant_id IN (SELECT id FROM oauth_grants WHERE expires<?)", now() - 86400000);

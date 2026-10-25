@@ -14,6 +14,8 @@
 - `frontend/public/icon.svg`: 시그니처 아이콘 복사본. 원본 자산은 수정하지 않는다.
 - `Dockerfile`: 다단계 `lite`(기본)·`full` 비루트 JRE, OCR 도구·헬스체크·OCI 라벨. `deploy/docker-compose*.yml`: lite/full/ML, 숫자 사용자 매핑·읽기 전용 소스·별도 업로드·데이터 볼륨. `deploy/unraid/`, `docs/install/`: NAS 템플릿·설치/백업/복구 안내. `.github/workflows/`: lite/full CI와 태그 전용 GHCR 게시(액션 SHA 고정).
 - `scripts/smoke.py`: 새 서버 데이터에 대한 curl 실제 API 검증(인증값 미출력).
+- `scripts/verify-browser.py`: Playwright Chromium 실제 화면·한/영·모바일·테마·axe 스모크. 선택 `VERIFY_FULL=true`는 full 설정 공급자 화면도 검사한다. 도구·임시 데이터·스크린샷은 `build/verification/`에만 둔다.
+- `scripts/verify-oauth-sdk.py`: 공식 Python MCP SDK OAuth·Streamable HTTP와 브라우저 승인·자동 갱신·철회 검증. 재현·한계는 `docs/verification/browser.md`, `docs/verification/oauth.md`. 두 스크립트는 8104 전용이며 다른 bootRun/빌드와 순차 실행한다.
 - `scripts/verify-runtime.py`: 문서 생성·bootRun·curl·RSS·서버 종료를 자동 수행. 결과는 무시되는 `build/verification/`에 생성한다.
 - `scripts/fetch-verification-models.py`: 명시적 내장 모델 검증 시 고정 리비전·SHA-256 모델 파일을 무시되는 build 폴더에 준비한다.
 - `docs/embeddings.md`, `docs/verification/vector.md`: 공급자·재색인·모델 출처·다중 아키텍처·실측 제한.
@@ -57,6 +59,7 @@
 - 시도 제한은 `LoginAttempts.acquire` 표로 확인·진행 중 예약을 원자 처리하고 실패 횟수 리셋·허용 시각 단축을 금지한다. 등록/해제는 `totp-manage:` 키로 분리, 등록도 비밀번호 재확인. 암호문은 `v2:`+용도별 AAD(`totp`/`embedding`), 키가 없거나 바뀌었는데 암호문이 있으면 새 키를 만들지 않고 `KeyUnavailable`(503·복구 안내).
 - 오프라인 복구: `java -jar app/build/libs/app-0.1.0.jar --recover-admin --data=/data` (앱 종료 필요). 웹 컨텍스트 없이 표준 입력 비밀번호를 검증하고 기존 DB 비밀번호 재설정·TOTP/복구 코드 삭제·감사를 트랜잭션 처리한다. 검증 기록은 `docs/verification/totp.md`.
 
+- full 관리 화면은 `frontend/src/Full.tsx`이며 lite에서는 off만 선택한다. 서버 가용성·키 비공개·주소 변경 시 키 폐기 정책을 따른다.
 - full 설정은 `/api/full` GET/PUT(관리자 세션+헤더 CSRF). 기본 off, 리랭커 키는 기존 embedding.key를 공유하고 AES-GCM v2 + AAD `reranker`, full.properties 0600. full 암호문이 남으면 공유 키 재생성 금지. 키 복호화 실패·full 미포함 상태의 활성 설정은 시작 거부하며 키 백업 복원/기능 off 뒤 구성 전환이 필요하다.
 - 리랭커는 일반 `/rerank` API만 구현, REST `rerank=true`·MCP `rerank: true` 선택. 소스 권한 적용 후 최대 topN만 전송하고 외부 순위만 수용하며 근거·원래 score 유지. 전체 시간/64 KiB/동시 외부 호출 1개 상한, 실패·혼잡 시 원래 순서.
 - OCR은 full 전용 Tesseract CLI(`/usr/bin/prlimit`, `/usr/bin/tesseract`, kor+eng 데이터 사전 준비). 이미지 프레임/텍스트 없는 PDF 쪽만 처리, `location.type=ocr`·쪽 보존. 임시 파일은 데이터 폴더 ocr-tmp, 소스 쓰기 금지. 쪽당 시간/주소 공간/출력·파일당 쪽·픽셀/문자 제한. 실제 OCR 비교·full 메모리 보장은 미완료, `docs/verification/full.md` 참조.

@@ -147,7 +147,7 @@
 
 - [ ] Docker 실제 512 MiB cgroup·파일 캐시 포함 메모리·동시 대용량 업로드·디스크 고갈 부하(환경/부하 자료 미준비).
 - [ ] arm64 실기·실제 NAS/NFS/SMB·다른 파일시스템에 놓인 업로드 폴더에서 네이티브 호출 검증. 이번 검증은 Linux amd64 로컬 파일시스템이다.
-- [ ] 실제 브라우저 한/영·모바일·접근성·HTTP Basic 인증 창 시각/동작 검증. TypeScript/Vite 빌드와 실제 HTTP 응답만 확인했다.
+- [x] 실제 Chromium 한/영·모바일·접근성·HTTP Basic challenge/자동 인증·공유 다운로드 검증. OS 네이티브 인증 창 시각 검증은 headless 한계로 남는다. [브라우저 검증](verification/browser.md).
 - [ ] 프로세스 강제 종료/정전 중 파일 이동과 H2 메타데이터의 일관성 복구 자동화. 24시간 지난 숨김 임시 파일은 시작 시 정리하며 미완료 휴지통 메타데이터는 운영자 점검이 필요하다. 원본 삭제 대신 휴지통을 사용하며 메타데이터를 먼저 기록한다.
 - [ ] 외부 프로세스가 업로드 폴더를 동시에 재배치하는 공격에 대한 스트레스/퍼징. 앱 전용 폴더 권한을 유지하고 일반 소스는 읽기 전용 마운트한다.
 - 기본은 연결 IP별 제한이며 신뢰 프록시를 명시할 때만 전달 IP를 사용한다. 4096항목 초과 시 LRU를 제거한다. 공유 비밀번호 잠금은 공유+IP로 격리한다. 분산 공격·상태 축출을 보완하려면 배포 경계의 제한도 필요하다.
@@ -169,7 +169,7 @@
 - [x] 권한 없는 로그인 대기 세션·최종 세션 ID/CSRF 교체·기존 LoginAttempts/감사 연계·복구 코드 10개 해시/일회 소모.
 - [x] 네트워크로 노출하지 않는 오프라인 관리자 복구 명령·README 절차·한/영 보안/로그인 UI.
 - [x] `./gradlew build -q` 종료 0(core 11개·app 10개), 실제 JAR 복구/DB 잠금 거부 종료 0, `VERIFY_PORT=8121 python3 scripts/verify-runtime.py` 종료 0 및 서버/포트 정리. 최대 RSS 283.0 MiB. 상세: [TOTP 검증](verification/totp.md).
-- [ ] 실제 브라우저 한/영·모바일·접근성 UI 검증(환경 미준비). MCP OAuth는 아래 5b에서 구현했다. 기존 배포/부하 한계는 미완료로 유지.
+- [x] 실제 Chromium 한/영·모바일·접근성·TOTP 등록/로그인 검증. [브라우저 검증](verification/browser.md). 기존 배포/부하 한계는 유지한다.
 
 ## TOTP 보안 교차 검토 반영 (2026-10-24)
 
@@ -177,7 +177,8 @@
 - [x] 등록 비밀번호 재확인, 등록/해제 별도 제한 키, 키 누락/변경 시 새 키 생성 금지·503·복구 안내, 용도별 AAD `v2:` 형식과 기존 형식 이전.
 - [x] 복구 코드 정규화, 오프라인 복구 확인 재입력·CR 제거, 로그인 코드 단계 취소(한/영).
 - [x] `./gradlew build -q` 종료 0, `verify-runtime.py`·`verify-admin-recovery.py` 종료 0. 상세: [TOTP 검증](verification/totp.md#교차-검토-반영-2026-10-24-기준-커밋-ad6a3b1).
-- [ ] 실제 브라우저 UI·실제 TTY 확인 재입력 검증, 키 오류 503 HTTP 통합 테스트.
+- [x] 실제 브라우저 TOTP UI 검증. [브라우저 검증](verification/browser.md).
+- [ ] 실제 TTY 확인 재입력 검증, 키 오류 503 HTTP 통합 테스트.
 - [x] 원격 임베딩 테스트 간헐 실패 원인 확인·공유 제외 정책 테스트 소스 격리: 4단계 최종 확인 절 참고.
 
 
@@ -251,7 +252,7 @@
 - [x] OCR 자식 회수 시 `/proc` 열거·stat 읽기·파싱 실패는 종료 미확인으로 처리한다. 확인 전에는 슬롯과 작업 폴더를 보유한다. 확실히 사라진 pid와 좀비만 종료로 보며 오류 경로 회귀 테스트 추가.
 - [x] app 간헐 실패 자연 재현(키워드 1건 기대·0건 실제)·원인 수정: 공유 제외 정책 검사를 전용 소스로 격리하고 제외 상태를 직접 색인해 원래 결과 보존 확인. 수정 후 `./gradlew :app:cleanTest :app:test -q` 10회 모두 종료 0(app 25개씩).
 - [x] 최종 `./gradlew build -q`·`./gradlew -Pfull build -q`·`VERIFY_PORT=8101 python3 scripts/verify-runtime.py` 각각 종료 0. core 27·app 25·full 19개 테스트 결과 실패·오류·생략 0. lite 최대 RSS 281.9 MiB, 서버·bootRun 종료/포트 반환 확인. [full 최종 확인](verification/full.md#최종-확인-기준-cd23e83)에 실패 근거와 최종 결과 기록.
-- [ ] 실제 OCR·실제 Qdrant·arm64·NAS/NFS/SMB·악성 코퍼스·512 MiB cgroup 부하 검증은 미실측. PaddleOCR·원격 OCR 클라이언트·full UI는 미구현이다.
+- [ ] 실제 OCR·실제 Qdrant·arm64·NAS/NFS/SMB·악성 코퍼스·512 MiB cgroup 부하 검증은 미실측. PaddleOCR·원격 OCR 클라이언트는 미구현이다. full UI는 아래 후속 검증에서 추가했다.
 - 수용한 한계: NAS/NFS 일반 파일 I/O가 반환하지 않으면 복사·추출은 시간 제한을 보장하지 못한다. 일반 텍스트 추출도 같은 한계다. 운영자는 soft/intr 마운트·타임아웃 설정을 권장하며 실제 동작은 사용하는 클라이언트/파일시스템에서 확인해야 한다.
 
 ## 5a단계 배포 이미지·CI·NAS 설치 안내 (2026-10-24)
@@ -272,4 +273,12 @@
 - [x] 통합 테스트 8개·실제 bootRun/curl DCR→관리자 승인→token→MCP 검색→refresh→revoke, 종료 0·서버/포트 정리. 초기 다운로드 권한 조회 실패와 수정 근거는 [OAuth 검증](verification/oauth.md).
 - [x] `./gradlew build -q`·`./gradlew -Pfull build -q` 종료 0(프런트엔드 포함), core 27·app 33·full 19개 실패·오류·생략 0. README·설치 안내·CLAUDE 규칙 갱신, 내부 식별자·경로·토큰 패턴 일치 없음.
 - [x] 5b 교차 검토 반영: DCR 미승인 최장기 행 교체·빈 소스 승인 재표시·응답별 Bearer challenge 수정과 회귀 테스트 추가. [상세](verification/oauth.md#교차-검토-반영).
-- [ ] 실제 외부 MCP 클라이언트·HTTPS 프록시·브라우저 동작은 별도 실측 필요.
+- [x] 공식 Python MCP SDK·실제 Chromium 승인/관리 화면 상호운용. 아래 후속 검증 참고.
+- [ ] HTTPS 프록시·외부 데스크톱 클라이언트·별도 OS 루프백 리스너 실측.
+
+## 5단계 후속 브라우저·공식 SDK 검증 (기준 ce94b82)
+
+- [x] headless Chromium lite 101개/full 103개 화면·한/영·1280/390·테마·axe·기능 흐름 검증(각 종료 0), 대비·포커스·모바일 내부 가로 스크롤 수정·full 설정 UI 추가. [브라우저 검증](verification/browser.md).
+- [x] 공식 Python MCP SDK 2.3.0 OAuthClientProvider 실측 종료 0, DCR 선택 메타데이터·승인 callback CSP 수정 및 보안 회귀 테스트. [OAuth 검증](verification/oauth.md#공식-sdk-상호운용).
+- [x] 최종 `./gradlew build -q`·`./gradlew -Pfull build -q` 종료 0(core 27·app 38·full 19, 실패/오류/생략 0), 내부 식별자·경로 검사 0건·8104 서버 종료 확인.
+- [ ] OS 네이티브 Basic 인증 창 시각/스크린리더·실제 모바일 기기·HTTPS 프록시·별도 OS 콜백 리스너·벽시계 1시간 서버 만료 실측. headless/루프백 범위이며 SDK 로컬 만료와 서버 Clock 테스트로 갱신·만료 거부를 각각 확인했다.

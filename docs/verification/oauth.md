@@ -65,3 +65,41 @@
 - 속도 제한 창은 프로세스 메모리라 재시작하면 초기화된다. 미승인 클라이언트는 24시간 뒤 논리 만료하고 등록/관리 조회 때 물리 삭제한다. 만료 승인·토큰은 상한 만료 후 하루가 지나면 같은 정리 경로에서 삭제한다. 회전 토큰의 재사용 감지용 해시는 승인 수명 동안 보관한다.
 - 동시 소비는 단일 앱 인스턴스의 직렬화와 DB 트랜잭션을 사용한다. 동일 데이터 디렉터리로 여러 앱 인스턴스를 실행하는 배포는 지원하지 않는다. 대규모 DCR/승인·장기 회전 DB 부하·독립 보안 감사는 미검증이다.
 - 기존 NAS/NFS 파일 I/O·full 메모리·arm64/cgroup 실측 한계는 이번 변경으로 해소하지 않았다.
+
+## 공식 SDK 상호운용
+
+기준 `ce94b82` 후속 검증. 공식 Python 패키지 `mcp==2.3.0`의 `OAuthClientProvider`, `streamable_http_client`, `ClientSession`을 사용한다. HTTP는 이 SDK의 `httpx2` 클라이언트를 그대로 사용한다. 설치는 `build/verification/venv`에만 수행하며 저장소 런타임 의존성에 추가하지 않는다.
+
+```sh
+# 브라우저 도구 준비는 browser.md 참고
+PLAYWRIGHT_BROWSERS_PATH=build/verification/deps/browsers build/verification/venv/bin/python scripts/verify-oauth-sdk.py
+```
+
+서버는 OAuth 활성화·`nasquire.public-url=http://127.0.0.1:8104`로 실행한다. 새 DB·로그·요약은 `build/verification/oauth-sdk/` 아래에 생성하며 기존 데이터를 덮어쓰지 않는다. 다른 bootRun/빌드와 동시에 실행하지 않는다. 인증값은 메모리에만 둔다.
+
+### 발견·수정
+
+- 최초 실행에서 MCP 401 → 보호 리소스 메타데이터 → 인가 서버 메타데이터는 통과했으나 `/oauth/register`가 `400 invalid_client_metadata`로 실패했다. SDK는 `scope`, `application_type` 등 선택 필드를 포함한다. 기존 엄격한 필드 목록을 바꿔 미지원 선택 메타데이터는 저장·외부 조회 없이 무시하며 `scope`는 `mcp:read`만 허용한다. 응답에도 실제 허용 scope를 명시한다. 근거: [RFC 7591 §2](https://www.rfc-editor.org/rfc/rfc7591.html#section-2), [공식 Python SDK](https://github.com/modelcontextprotocol/python-sdk), [MCP 2025-06-18 인가](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization), [2025-11-25 인가](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization).
+- Chromium은 승인 POST의 302 이동에도 `form-action`을 적용한다. 다른 origin의 등록된 루프백 callback으로 이동할 수 있도록, 승인 화면·응답의 CSP에 **검증된 callback origin만** 추가한다. `default-src 'self'`·`frame-ancestors 'none'`·`base-uri 'none'`은 유지한다. 임의 origin·와일드카드는 허용하지 않는다.
+- 회귀 테스트는 SDK 형태의 선택 필드·무시된 필드의 비저장/비반환·미승인 상태, 잘못된 scope와 비공개 클라이언트 인증 방식 거부, 승인 CSP의 callback origin을 확인한다. 기존 S256만 허용·고정 audience/resource·관리자 승인·소스 격리·읽기 전용·갱신 재사용 철회 테스트도 유지한다.
+
+### 실측 결과·제한
+
+최종 `scripts/verify-oauth-sdk.py`는 **종료 코드 0**이다. 실제 HTTP 단계는 요약 JSON에 경로/상태만 기록한다.
+
+1. `/mcp` 401·Bearer challenge → PRM(`/.well-known/oauth-protected-resource/mcp`) 200 → AS 메타데이터 200 → DCR 201.
+2. 별도 Chromium 컨텍스트 관리자 로그인 → 두 소스 중 하나만 선택·승인 → 실제 다른 origin 루프백 302 → code/state/iss 수신·SDK 검증 → token 200 → MCP initialize.
+3. SDK `tools/list`에서 읽기 전용 3개만 확인 → `search_documents`의 승인 소스 결과 → 미승인 소스 검색/다운로드 거부 → `download_file`·티켓 HTTP 다운로드 200.
+4. SDK 로컬 만료 → SDK 자동 refresh token 교환 200 → 액세스·리프레시 모두 회전 → `tools/list` 200.
+5. revoke 200 → 회전 액세스의 실제 `/mcp` 401 → 기발급 다운로드 주소 403. OAuth 관리 화면에도 클라이언트·철회된 승인 표시.
+
+승인 화면의 1280/390px·light/dark 네 조합에서 axe 위반/가로 넘침 0, 브라우저 콘솔 오류 0이다. 다크 승인 화면 링크의 대비 부족을 재현해 링크 색상을 수정하고 포커스 외곽선도 추가했다.
+
+아티팩트: `build/verification/oauth-sdk/summary.json`, `consent-*.png`, `management.png`, `bootrun.log`, `build/verification/oauth-sdk-run.log`. 최초 성공은 `oauth-sdk-success-1/`에도 남겼으며, 이후 두 소스 격리·승인 접근성 검사를 추가한 최종 실행도 통과했다. 실패 이력 `oauth-sdk-attempt-1/`의 DCR 400, 다른 origin callback 차단 및 callback 라우트 훅의 리다이렉트 제약을 확인한 `oauth-sdk-attempt-2/`~`6/`, 다중 소스 strict locator 오류 `7/`, 다크 대비 위반 `8/`은 모두 종료 1이며 원인 수정 후 최종 통과했다. 서버/JVM·bootRun 종료 및 8104 반환을 확인했다.
+
+서버의 1시간 수명은 낮추지 않으며 SDK의 로컬 만료 시각만 과거로 옮겨 자동 refresh를 유도한다. 서버 측 실제 만료 거부는 기존 Clock 기반 Java 회귀 테스트에서 확인한다. 벽시계로 1시간 기다리는 실측은 수행하지 않는다.
+
+8104 이외의 포트를 열지 않기 위해 callback은 `http://localhost:8104/LICENSE.txt`의 기존 공개 경로를 사용한다. 브라우저의 실제 302 이동 요청 이벤트에서 code/state/iss를 받아 SDK에 전달하며 별도 클라이언트 리스너는 띄우지 않는다. HTTPS 프록시·외부 데스크톱 클라이언트·실제 OS 콜백 리스너는 검증 범위 밖이다. 원격 서비스에 접속하지 않는다.
+
+
+최종 `./gradlew build -q`·`./gradlew -Pfull build -q`도 모두 종료 0이다. core 27·app 38·full 19개 테스트 실패/오류/생략 0이며, 실제 서버 Clock 기반 만료·갱신 재사용/철회·소스 격리 회귀 테스트를 포함한다. 상세 빌드 결과는 `build/verification/followup/build-results.json`을 따른다.

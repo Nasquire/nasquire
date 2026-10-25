@@ -88,6 +88,7 @@ class OAuthIntegrationTest {
         String path = "/oauth/authorize?" + form(authorization(id, verifier));
         var page = request(client, path, "GET", null, false, false, null);
         assertEquals(200, page.statusCode()); assertTrue(page.headers().firstValue("Content-Security-Policy").orElseThrow().contains("frame-ancestors 'none'"));
+        assertTrue(page.headers().firstValue("Content-Security-Policy").orElseThrow().contains("form-action 'self' https://client.example.com"));
         String nonce = hidden(page.body(), "nonce"), consentCsrf = hidden(page.body(), "_csrf");
         String body = "decision=approve&nonce=" + enc(nonce) + "&_csrf=" + enc(consentCsrf) + sources.stream().map(s -> "&sources=" + enc(s)).collect(java.util.stream.Collectors.joining());
         var req = HttpRequest.newBuilder(URI.create(url("/oauth/authorize"))).header("Content-Type", "application/x-www-form-urlencoded").POST(HttpRequest.BodyPublishers.ofString(body)).build();
@@ -137,6 +138,21 @@ class OAuthIntegrationTest {
         assertEquals(413, request(anonymous, "/oauth/register", "POST", Map.of("client_name", "x".repeat(25000)), false, false, null).statusCode());
         for (int i = 0; i < 60; i++) assertEquals(400, token(Map.of()).statusCode());
         assertEquals(429, token(Map.of()).statusCode());
+    }
+    @Test void officialSdkMetadataKeepsPublicReadOnlyRegistration() throws Exception {
+        var input = new HashMap<String, Object>(Map.of("client_name", "Official SDK", "redirect_uris", List.of("http://127.0.0.1:8104/callback"),
+                "token_endpoint_auth_method", "none", "grant_types", List.of("authorization_code", "refresh_token"),
+                "response_types", List.of("code"), "scope", "mcp:read", "application_type", "native",
+                "client_uri", "https://client.example.com", "unknown_extension", Map.of("ignored", true)));
+        var registered = json(request(anonymous, "/oauth/register", "POST", input, false, false, null), 201);
+        assertEquals("none", registered.get("token_endpoint_auth_method").asText());
+        assertEquals("mcp:read", registered.get("scope").asText());
+        assertFalse(registered.has("application_type")); assertFalse(registered.has("client_uri"));
+        assertFalse(registered.has("unknown_extension")); assertFalse(registered.has("client_secret"));
+        assertFalse((Boolean)oauth.client(registered.get("client_id").asText()).get("APPROVED"));
+        input.put("scope", "mcp:write"); assertThrows(OAuthService.Error.class, () -> oauth.register(input));
+        input.put("scope", "mcp:read"); input.put("token_endpoint_auth_method", "client_secret_post");
+        assertThrows(OAuthService.Error.class, () -> oauth.register(input));
     }
     @Test void registrationEvictsOnlyOldestUnapprovedWithoutGrant() throws Exception {
         oauth.maxClients = 3;

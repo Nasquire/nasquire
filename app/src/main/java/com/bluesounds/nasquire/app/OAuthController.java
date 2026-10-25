@@ -57,7 +57,7 @@ class OAuthController {
     @GetMapping(value = "/oauth/authorize", produces = MediaType.TEXT_HTML_VALUE)
     String authorize(HttpServletRequest request, HttpServletResponse response, Authentication auth, CsrfToken csrf) {
         var a = oauth.validate(parameters(request));
-        secure(response);
+        secure(response, a.redirect());
         if (!admin(auth)) return page("Administrator login / 관리자 로그인", """
                 <p>Sign in to approve this MCP client / MCP 클라이언트 승인을 위해 로그인하세요.</p>
                 <form id="login"><label>Username / 사용자명 <input name="username" autocomplete="username" required></label>
@@ -95,6 +95,7 @@ class OAuthController {
             if (a == null || nonce == null || !nonce.equals(request.getParameter("nonce")) || System.currentTimeMillis() - a.created() > 600000) throw OAuthService.invalid("invalid_request");
             session.removeAttribute("oauth.pending"); session.removeAttribute("oauth.nonce");
         }
+        secure(response, a.redirect());
         String decision = request.getParameter("decision"), result;
         if ("approve".equals(decision)) {
             String[] sources = request.getParameterValues("sources");
@@ -118,6 +119,7 @@ class OAuthController {
                   const data = new FormData(form), headers = {[auth.csrfHeader]: auth.csrfToken};
                   headers['Content-Type'] = json ? 'application/json' : 'application/x-www-form-urlencoded';
                   const response = await fetch(url, {method:'POST', headers, body:json ? JSON.stringify(Object.fromEntries(data)) : new URLSearchParams(data)});
+                  await response.text();
                   form.reset();
                   if (response.status === 202) { login.hidden=true; totp.hidden=false; }
                   else if (response.ok) location.reload();
@@ -133,12 +135,19 @@ class OAuthController {
         response.setHeader("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
         response.setHeader("Referrer-Policy", "no-referrer"); response.setHeader("Cache-Control", "no-store");
     }
+    static void secure(HttpServletResponse response, String redirect) {
+        secure(response);
+        // Chromium은 form-action을 POST 뒤 302 이동에도 적용한다. 검증한 콜백 origin만 허용한다.
+        URI uri = URI.create(redirect);
+        String origin = uri.getScheme() + "://" + uri.getRawAuthority();
+        response.setHeader("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' " + origin);
+    }
     static String page(String title, String content) {
         return "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Nasquire</title><link rel=\"stylesheet\" href=\"/oauth/style.css\"><main><a href=\"/\">Nasquire</a><h1>" + title + "</h1>" + content + "</main></html>";
     }
     @GetMapping(value = "/oauth/style.css", produces = "text/css") String style() {
         oauth.requireEnabled();
-        return "body{font:16px system-ui,sans-serif;background:#f5f5f5;color:#20232a}main{max-width:640px;margin:5vh auto;background:white;padding:2rem;border-radius:12px}label{display:block;margin:1rem 0}input,button{font:inherit;padding:.5rem}button{margin:.5rem;cursor:pointer}@media(prefers-color-scheme:dark){body{background:#15171b;color:#eee}main{background:#24272e}}";
+        return "body{font:16px system-ui,sans-serif;background:#f5f5f5;color:#20232a}main{max-width:640px;margin:5vh auto;background:white;padding:2rem;border-radius:12px}label{display:block;margin:1rem 0}a{color:#1e3a8a}:focus-visible{outline:2px solid #3463d6;outline-offset:2px}input,button{font:inherit;padding:.5rem;max-width:100%;box-sizing:border-box}button{margin:.5rem;cursor:pointer}@media(prefers-color-scheme:dark){body{background:#15171b;color:#eee}main{background:#24272e}a{color:#a9c3ff}}";
     }
     static String hidden(String key, String value) { return "<input type=\"hidden\" name=\"" + esc(key) + "\" value=\"" + esc(value) + "\">"; }
     static String esc(String value) { return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&#39;"); }

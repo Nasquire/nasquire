@@ -3,6 +3,7 @@ import { useTheme } from './theme'
 import Files from './Files'
 import Security from './Security'
 import OAuth from './OAuth'
+import Full from './Full'
 
 const ko = navigator.language.toLowerCase().startsWith('ko')
 const t = (en: string, kr: string) => ko ? kr : en
@@ -10,9 +11,9 @@ type Auth = { configured: boolean; totpRequired: boolean; authenticated: boolean
 type Source = { kind: string; id: string; name: string; path: string; includes: string[]; excludes: string[]; status: { state: string; indexed: number; pending: number; errors: number; message: string } }
 type Token = { id: string; name: string; expiresAt: number; sources: string[]; revoked: boolean }
 type Hit = { source: string; sourceName: string; path: string; page: number; text: string; score: number }
-const pages = ['sources', 'files', 'embeddings', 'security', 'tokens', 'search', 'about'] as const
+const pages = ['sources', 'files', 'embeddings', 'full', 'security', 'tokens', 'search', 'about'] as const
 type Page = typeof pages[number]
-const titles = { security: t('Security', '보안'), files: t('Files and shares', '파일·공유'), embeddings: t('Embeddings', '임베딩 설정'), sources: t('Sources', '소스 관리'), tokens: t('API tokens', 'API 토큰'), search: t('Search playground', '검색 시험'), about: t('About', '정보') }
+const titles = { full: t('Full settings', 'full 설정'), security: t('Security', '보안'), files: t('Files and shares', '파일·공유'), embeddings: t('Embeddings', '임베딩 설정'), sources: t('Sources', '소스 관리'), tokens: t('API tokens', 'API 토큰'), search: t('Search playground', '검색 시험'), about: t('About', '정보') }
 
 export default function App() {
   const [embedding, setEmbedding] = useState<Record<string, unknown>>()
@@ -72,6 +73,7 @@ export default function App() {
       if (auth.totpRequired) { await api('/login/totp', 'POST', Object.fromEntries(data)); await refreshAuth(); return }
       if (!auth.configured) await api('/setup', 'POST', Object.fromEntries(data))
       const res = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', [auth.csrfHeader]: auth.csrfToken }, body: new URLSearchParams(data as unknown as Record<string, string>) })
+      await res.text()
       if (!res.ok) throw new Error(t('Login failed', '로그인 실패'))
       await refreshAuth()
     })}>
@@ -90,6 +92,7 @@ export default function App() {
     <div className="sidebar-bottom"><select aria-label={t('Theme', '테마')} value={theme} onChange={e => setTheme(e.target.value as typeof theme)}><option value="auto">{t('System theme', '자동 테마')}</option><option value="light">{t('Light', '라이트')}</option><option value="dark">{t('Dark', '다크')}</option></select><button onClick={() => void run(async () => { await api('/logout', 'POST'); setSecret(''); setHits([]); setDocument(''); await refreshAuth() })}>{t('Sign out', '로그아웃')}</button></div>
   </aside><main className="main"><header>{titles[page]}</header><div className="content">
     {error && <p className="error" role="alert">{error}</p>}
+    {page === 'full' && <Full api={api} />}
     {page === 'security' && <Security api={api} />}
     {page === 'files' && <Files sources={sources} api={api} csrfHeader={auth.csrfHeader} csrfToken={auth.csrfToken} />}
     {page === 'sources' && <><h1>{t('Your knowledge, connected', '내 폴더를 지식으로')}</h1><p>{t('Standard sources are read-only. Enable an upload source in a separate writable folder.', '일반 소스는 읽기 전용입니다. 별도 쓰기 가능 폴더를 업로드 소스로 등록할 수 있습니다.')}</p>
