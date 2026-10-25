@@ -269,7 +269,9 @@ with tempfile.TemporaryDirectory(prefix='nasquire-smoke-') as folder:
     csrf = curl('/api/auth')['csrfToken']
     assert curl(query, token=token, csrf_enabled=False)
     assert len(curl('/mcp', 'POST', {'jsonrpc': '2.0', 'id': 40, 'method': 'tools/list'}, token=token, csrf_enabled=False)['result']['tools']) == 3
-    curl('/api/login/totp', 'POST', {'code': totp_code(enrollment['secret'], int(time.time() // 30))})
+    # 30초 경계를 넘어도 해제 코드가 로그인 단계 다음(서버 ±1 허용 안)이 되도록 기준 단계를 한 번만 계산한다.
+    login_step = int(time.time() // 30)
+    curl('/api/login/totp', 'POST', {'code': totp_code(enrollment['secret'], login_step)})
     auth = curl('/api/auth'); csrf = auth['csrfToken']; assert auth['authenticated']
     curl('/api/logout', 'POST', expected=204)
     csrf = curl('/api/auth')['csrfToken']
@@ -278,7 +280,7 @@ with tempfile.TemporaryDirectory(prefix='nasquire-smoke-') as folder:
     code = recovery[0].upper()
     curl('/api/login/totp', 'POST', {'code': f' {code[:20]}-{code[20:]} '})
     csrf = curl('/api/auth')['csrfToken']
-    curl('/api/totp/disable', 'POST', {'password': password, 'code': totp_code(enrollment['secret'], int(time.time() // 30) + 1)})
+    curl('/api/totp/disable', 'POST', {'password': password, 'code': totp_code(enrollment['secret'], login_step + 1)})
     assert not curl('/api/totp')['enabled']
     print('PASS TOTP password-confirmed enrollment, pending session denial/cancel, code login, normalized recovery login, disable, Bearer/MCP unaffected')
     curl('/api/tokens/' + issued['id'], 'DELETE')

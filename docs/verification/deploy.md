@@ -128,3 +128,15 @@ VERIFY_PORT=8104 python3 scripts/verify-runtime.py
 
 
 이번 수정 검증은 `./gradlew build -q`·`./gradlew -Pfull build -q` 각각 종료 0이며 최종 core 28·app 47·full 21개 실패/오류/생략 0이다. 기준 FullSettings로 새 회귀를 실행하면 3건 실패·종료 1로 증상을 재현한다. 내부 정보 검사 일치 0건(`rg` 종료 1), 공백 검사 종료 0이다. 아티팩트는 `build/verification/ocr-name/`에 보존했다. 개발 서버·컨테이너는 시작하지 않았다.
+
+## arm64 컨테이너 재측정 (이름 전달 수정 후, 기준 d8e83a5)
+
+Apple Silicon 호스트의 arm64 Linux VM(Colima vz, cgroup v2)에서 운영자가 lite·full 이미지를 다시 빌드해 확인했다. 메모리 제한은 스왑 없이 적용했고 읽기 전용 루트·`cap_drop ALL`·`no-new-privileges`·비루트 사용자로 실행했다.
+
+| 이미지 | 메모리 제한 | 확인 | cgroup memory.peak | OOM |
+| --- | --- | --- | --- | --- |
+| full | 1 GiB | OCR 켜기 후 이미지 전용 PDF·PNG 색인 오류 0, 영문·한글 키워드가 두 파일 모두 `location.type=ocr`로 검색 | 297 MiB | 0 |
+| full | 1 GiB | `scripts/smoke.py` 전 단계 3회 중 2회 통과, 1회는 스모크 스크립트의 TOTP 단계 계산이 30초 경계를 넘은 실패(서버 ±1 허용 밖 코드 생성) → 스크립트 수정 | 336–345 MiB | 0 |
+| lite | 512 MiB | `scripts/smoke.py` 전 단계 통과, 헬스 체크 약 9초 | 300 MiB | 0 |
+
+OCR 시험 문서는 Pillow로 만든 텍스트 레이어 없는 단일 쪽 이미지 PDF와 같은 내용의 PNG 두 개뿐이다. 실제 스캔 문서의 정확도·속도, 큰 문서·많은 쪽 OCR의 메모리는 여전히 미실측이다.
