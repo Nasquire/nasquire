@@ -252,7 +252,7 @@
 - [x] OCR 자식 회수 시 `/proc` 열거·stat 읽기·파싱 실패는 종료 미확인으로 처리한다. 확인 전에는 슬롯과 작업 폴더를 보유한다. 확실히 사라진 pid와 좀비만 종료로 보며 오류 경로 회귀 테스트 추가.
 - [x] app 간헐 실패 자연 재현(키워드 1건 기대·0건 실제)·원인 수정: 공유 제외 정책 검사를 전용 소스로 격리하고 제외 상태를 직접 색인해 원래 결과 보존 확인. 수정 후 `./gradlew :app:cleanTest :app:test -q` 10회 모두 종료 0(app 25개씩).
 - [x] 최종 `./gradlew build -q`·`./gradlew -Pfull build -q`·`VERIFY_PORT=8101 python3 scripts/verify-runtime.py` 각각 종료 0. core 27·app 25·full 19개 테스트 결과 실패·오류·생략 0. lite 최대 RSS 281.9 MiB, 서버·bootRun 종료/포트 반환 확인. [full 최종 확인](verification/full.md#최종-확인-기준-cd23e83)에 실패 근거와 최종 결과 기록.
-- [ ] 실제 Qdrant·내장 모델 arm64·NAS/NFS/SMB·악성 코퍼스·전체 full cgroup 부하 검증. 후속 운영자 arm64 PNG OCR·lite 512 MiB cgroup은 통과했으나 PDF OCR 실패·실제 OCR 품질 비교는 미완료다. PaddleOCR·원격 OCR 클라이언트는 미구현이다. full UI는 아래 후속 검증에서 추가했다.
+- [ ] 실제 Qdrant·내장 모델 arm64·NAS/NFS/SMB·악성 코퍼스·전체 full cgroup 부하 검증. 후속 운영자 arm64 PNG OCR·lite 512 MiB cgroup은 통과했다. PDF OCR 이름 누락은 아래 후속 수정에 반영했으며 컨테이너 재측정·실제 OCR 품질 비교는 미완료다. PaddleOCR·원격 OCR 클라이언트는 미구현이다. full UI는 아래 후속 검증에서 추가했다.
 - 수용한 한계: NAS/NFS 일반 파일 I/O가 반환하지 않으면 복사·추출은 시간 제한을 보장하지 못한다. 일반 텍스트 추출도 같은 한계다. 운영자는 soft/intr 마운트·타임아웃 설정을 권장하며 실제 동작은 사용하는 클라이언트/파일시스템에서 확인해야 한다.
 
 ## 5a단계 배포 이미지·CI·NAS 설치 안내 (2026-10-24)
@@ -263,7 +263,7 @@
 - [x] Docker 공통·Synology·Unraid·TrueNAS 설치 문서와 XML 템플릿. UID/GID·메모리 실측 한계·HTTPS/민감 로그 제외·백업·Qdrant 세대 재색인·오프라인 관리자 복구.
 - [x] 운영자 실측: amd64 Kaniko lite/full 이미지 빌드 성공(`ce94b82`, no-push), lite bootJar 512 MiB cgroup v2 스모크 전 단계 PASS(memory.peak 344 MiB·OOM 0). [측정 범위](verification/deploy.md#운영자-추가-실측-기록-2026-10-25).
 - [x] 운영자 arm64 lite 이미지 실제 기동·약 9초 healthy·컨테이너 512/384/320 MiB 제한 스모크 PASS(peak 320/294/294 MiB·OOM 0). amd64는 JAR cgroup·이미지 빌드만 확인.
-- [ ] NAS 실기·대규모 문서·전체 full 부하·GHCR 게시·Actions 실실행. arm64 full PNG OCR은 성공했으나 이미지 전용 PDF OCR 실패는 해결 확인 전. 게시·서버 접속은 수행하지 않는다.
+- [ ] NAS 실기·대규모 문서·전체 full 부하·GHCR 게시·Actions 실실행. arm64 full PNG OCR은 성공했으며 이미지 전용 PDF OCR 이름 누락은 후속 수정했다. 수정 후 컨테이너 실측은 운영자가 수행한다. 게시·서버 접속은 수행하지 않는다.
 - [x] 5b MCP OAuth — 아래 5b 구현·검증 절 참조.
 
 ## 5b단계 MCP OAuth (2026-10-24, 기준 b724657)
@@ -298,6 +298,14 @@
 - [x] 운영자 arm64 lite 컨테이너 제한·PNG OCR·이미지 크기 결과와 로컬 48문서 디스크 예시를 [배포 검증](verification/deploy.md)에 기록.
 - [x] 추출 WARN·자식 종료 코드/시간 초과/예외 종류 진단, 관리자 세션 전용 상태 API 최근 실패 최대 5건. 원문·절대 경로·자식 stderr 노출 없음.
 - [x] JPEG 이미지 전용 PDF의 자식 렌더→PNG→가짜 Tesseract→한/영 검색·쪽 근거 회귀 테스트 추가. Docker 기본 JVM 환경·실행 JAR 경로도 별도 검증.
-- [ ] **운영자 arm64 full 이미지 전용 PDF 실패 원인 확정·수정·재배포 실측.** 로컬 amd64에서는 재현하지 못했고 Docker·arm64 실행기·실제 Tesseract가 없다. 25초 관찰만으로 시간 초과라고 확정하지 않는다. 다음 실측에서 WARN의 render/tesseract 단계·exit·timeout·exception을 수집한다. 보안 격리는 유지했다.
+- [x] **운영자 arm64 full 이미지 전용 PDF 실패 원인 확정·코드 수정.** FullSettings 위임이 원래 이름을 버려 확장자 없는 고정 fd를 image 모드로 넘겼다(`stage=render exit=2`·지원하지 않는 이미지). 원래 이름을 OCR 공급자와 off 시 PDF 폴백에 전달하도록 수정했다.
+- [ ] 수정본 컨테이너 재배포·실제 Tesseract PDF OCR 재측정은 운영자가 후속 수행한다. Docker·arm64 실행기·실제 Tesseract가 없는 로컬에서는 가짜 OCR 공급자와 실제 격리 자식 JVM으로 검증하며 보안 격리는 유지한다.
 
 - [x] 이번 최종 lite/full 빌드 각각 종료 0(core 28·app 44·full 21), 실행 JAR·Docker 기본 JVM 옵션의 PDF 회귀 2건 종료 0. 48문서 스모크 종료 0·8104 반환, 내부 정보 검사 무일치·공백 검사 통과.
+
+## PDF OCR 원래 이름 보존 수정 (기준 b0bdf4e)
+
+- [x] FullSettings의 이름·내용 분리 오버로드 추가. supports는 원래 이름 기준, 기존 extract/단일 경로 호출도 같은 위임 경로를 사용한다. core·app·full의 다른 추출기/위임을 점검했으며 같은 누락은 없다.
+- [x] 확장자 없는 내용 + `scan.pdf`, PNG·기존 extract, OCR off PDF 폴백, FullSettings→IndexingService→SecureFiles 고정 fd→검색 OCR 근거 회귀 테스트 추가.
+- [x] 기준 코드에서 신규 회귀 3건 실패(종료 1), 수정 후 lite/full 빌드 각각 종료 0. 최종 core 28·app 47·full 21개 실패/오류/생략 0, 내부 정보 검사 일치 0건(`rg` 종료 1). 상세는 [full 검증](verification/full.md#pdf-ocr-원래-이름-보존-수정-기준-b0bdf4e).
+- [ ] 수정 후 arm64 컨테이너 재측정은 운영자가 수행한다. 실제 OCR 정확도·full 메모리 보장은 미완료다.

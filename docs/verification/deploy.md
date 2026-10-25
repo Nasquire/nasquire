@@ -86,7 +86,7 @@ arm64 이미지 크기는 lite 638 MB, full 899 MB였다. amd64 lite/full은 Kan
 
 코드상 렌더 작업자는 부모 환경을 이미 비우고 별도 `-Xmx192m`·주소 공간 2048 MiB로 실행한다. `ocrMemoryMiB=512`는 Tesseract의 주소 공간 제한이다. 한 쪽 렌더링의 기존 파일 단위 시간 상한은 15+10=25초이므로 관찰 시간은 렌더 시간 초과와 부합하지만 **원인 확정 근거는 아니다**. Dockerfile 기본 옵션은 변경하지 않았다. 이번 변경은 자식 종료 코드·시간 초과·예외 종류만 안전한 진단으로 남기고, 색인 WARN에는 소스 상대 경로만 기록한다. stderr·원문·예외 메시지·스택은 노출하지 않는다. 관리자 세션 전용 소스 상태 API에 최근 실패 최대 5건의 상대 경로와 안전한 사유를 추가했다. 실패 목록은 메모리에만 있으며 다음 검사/재시작 때 갱신된다.
 
-Linux amd64에서 PDFBox 생성 JPEG PDF 및 운영자 방식으로 Pillow 12.1.1·Noto Sans CJK 44pt로 생성한 1400×500 L → RGB PDF(`full/src/test/resources/scan-pillow.pdf`) → 격리 자식 JVM → PNG → 가짜 Tesseract → 한/영 검색·OCR 쪽 근거 경로를 검증했다. 실행 JAR와 Dockerfile 기본 `JAVA_TOOL_OPTIONS`에서도 검사한다. 실제 Tesseract 정확도 검증이 아니다. 현재 Docker·arm64 실행기·Tesseract가 없어 운영자 실패는 재현하지 못했으며 **PDF 버그 수정·수정 후 arm64 재측정은 미완료**다. 주소 공간·힙·시간·환경 초기화·0700 작업 폴더·자손 회수 제한은 유지했다.
+Linux amd64에서 PDFBox 생성 JPEG PDF 및 운영자 방식으로 Pillow 12.1.1·Noto Sans CJK 44pt로 생성한 1400×500 L → RGB PDF(`full/src/test/resources/scan-pillow.pdf`) → 격리 자식 JVM → PNG → 가짜 Tesseract → 한/영 검색·OCR 쪽 근거 경로를 검증했다. 실행 JAR와 Dockerfile 기본 `JAVA_TOOL_OPTIONS`에서도 검사한다. 실제 Tesseract 정확도 검증이 아니다. 당시 Docker·arm64 실행기·Tesseract가 없어 운영자 실패를 재현하지 못했다. 이후 원래 이름 누락을 확정·수정했으며 아래 후속 수정 절을 따른다. 수정 후 arm64 재측정은 운영자가 수행한다. 주소 공간·힙·시간·환경 초기화·0700 작업 폴더·자손 회수 제한은 유지했다.
 
 재현 명령(빌드와 순차 실행):
 
@@ -116,4 +116,15 @@ VERIFY_PORT=8104 python3 scripts/verify-runtime.py
 | 내부 정보 패턴 `rg` | 1 | 일치 0건(무일치 종료 코드) |
 | `git diff --check` | 0 | 공백 오류 없음 |
 
-전체 빌드 테스트는 core 28·app 44·full 21개, 실패/오류/생략 모두 0이었다. 이후 실행 JAR 회귀 2건도 실패/오류/생략 0이다. 필수 빌드 실패는 없었다. 그러나 운영자 arm64 실패를 로컬에서 재현하지 못해 원인 확정·버그 수정·수정 후 컨테이너 재측정은 완료하지 못했다.
+전체 빌드 테스트는 core 28·app 44·full 21개, 실패/오류/생략 모두 0이었다. 이후 실행 JAR 회귀 2건도 실패/오류/생략 0이다. 필수 빌드 실패는 없었다. 당시 운영자 arm64 실패를 로컬에서 재현하지 못했다. 이후 원인 확정·코드 수정은 아래 후속 절에 반영했으며 수정 후 컨테이너 재측정은 미완료다.
+
+### PDF OCR 이름 보존 후속 수정 (기준 b0bdf4e)
+
+운영자가 arm64 컨테이너에서 원인을 확정했다. `FullSettings.extractor()`가 이름·내용 분리 `extractLocated(name, content, ...)`를 재정의하지 않아 기본 구현이 원래 PDF 이름을 버렸다. 색인기의 확장자 없는 SecureFiles 고정 fd 경로가 image 모드로 전달되어 `OcrWorker.image()`의 지원하지 않는 이미지 오류(`stage=render exit=2`)가 났다. 운영자의 pdf 모드·쪽 1 수동 실행은 정상이며 PNG는 원래 image 모드라 성공했다. 관찰된 25초만으로 시간 초과를 확정하지 않는다.
+
+위임은 OCR 공급자와 OCR off 시 PDF 폴백 모두 원래 이름을 사용하고 내용은 고정 fd에서 읽도록 수정했다. 다른 운영 추출기/래퍼도 점검했다. 회귀 테스트는 FullSettings와 실제 IndexingService 경로를 거쳐 격리 자식 PDF 렌더링·가짜 OCR 공급자·한/영 검색의 `location.type=ocr`와 쪽 1을 확인한다. 기존 주소 공간·힙·시간·환경 초기화·0700 폴더·자손 회수 제한은 유지했다. 상세 결과는 [full 검증](full.md#pdf-ocr-원래-이름-보존-수정-기준-b0bdf4e)에 기록한다.
+
+수정 후 arm64 컨테이너·실제 Tesseract PDF OCR 재측정은 운영자가 후속 수행한다. 로컬 테스트는 실제 OCR 정확도·속도·RSS 및 full cgroup 메모리 보장의 근거가 아니다.
+
+
+이번 수정 검증은 `./gradlew build -q`·`./gradlew -Pfull build -q` 각각 종료 0이며 최종 core 28·app 47·full 21개 실패/오류/생략 0이다. 기준 FullSettings로 새 회귀를 실행하면 3건 실패·종료 1로 증상을 재현한다. 내부 정보 검사 일치 0건(`rg` 종료 1), 공백 검사 종료 0이다. 아티팩트는 `build/verification/ocr-name/`에 보존했다. 개발 서버·컨테이너는 시작하지 않았다.
