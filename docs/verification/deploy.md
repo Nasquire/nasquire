@@ -53,3 +53,13 @@ docker stats --no-stream
 실제 검증에서는 `docker inspect`의 Health/State/OOMKilled와 cgroup `memory.peak`, 부하 중 `docker stats`를 수집하고, 등록/색인/검색 뒤 종료한다. 잠깐 유휴 stats만으로 512 MiB 충족을 판단하지 않는다. full은 `tesseract --list-langs`, `prlimit --version`, `setsid --version`, OCR 스캔 PDF/이미지의 실제 인식과 프로세스 회수도 확인한다.
 
 상세 로컬 아티팩트(공개 커밋 제외): `build/verification/deploy/`의 `lite-build.log`, `full-build.log`, `*-build.exit`, `test-summary.json`, `check-static.py`, `static-results.json`, `static.log`, `static.exit`, `internal-scan.log`, `internal-scan.exit`. 스캔 패턴에는 내부 값이 있으므로 원문은 공개 문서에 복사하지 않았다. git add/commit/push와 이미지 게시는 수행하지 않았으며 커밋 메시지는 루트 `.ai-commit-msg`다.
+
+
+## 운영자 추가 실측 기록 (2026-10-25)
+
+아래는 운영자가 직접 수행하여 전달한 결과이며 이번 OAuth 수정본을 재배포한 결과는 아니다.
+
+- Linux amd64 cgroup v2에서 `systemd-run --scope -p MemoryMax=512M -p MemorySwapMax=0`으로 lite bootJar를 실행했다. Dockerfile과 같은 `JAVA_TOOL_OPTIONS`를 사용하고 `scripts/smoke.py`의 48문서 색인·검색·MCP·다운로드·16 MiB 업로드·공유·TOTP·토큰 철회가 전 단계 PASS였다. cgroup `memory.peak` 344 MiB, 프로세스 최대 RSS 352.6 MiB, `memory.events`의 `max`·`oom`·`oom_kill`은 모두 0이었다. 서로 다른 계측 범위/표본의 수치를 동일 지표로 비교하지 않는다.
+- 이는 JVM 스코프의 512 MiB 제한 실측이며 **컨테이너 이미지 자체를 512 MiB로 실행한 결과는 아니다**. 전체 full 부하 보장도 아니다.
+- 기준 커밋 `ce94b82`에서 Kubernetes 일회성 파드의 Kaniko executor `--no-push`로 amd64 `--target lite`와 `--target full` 이미지 빌드가 모두 성공했다. Dockerfile 이미지 빌드 미검증 항목 중 amd64 빌드만 해소했다.
+- 이미지 실행·실제 HEALTHCHECK·컨테이너 메모리 제한·arm64·Actions 실행은 여전히 미검증이다. 전달된 PASS/성공 결과 외 원본 로그·종료 코드 아티팩트는 이 저장소에 제공되지 않았으며 별도 숫자 코드를 추정하지 않는다.

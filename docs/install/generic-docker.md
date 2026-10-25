@@ -108,3 +108,7 @@ docker compose -f deploy/docker-compose.ml.yml up -d
 ## CI·이미지 생성
 
 push/PR은 lite/full Gradle 빌드와 amd64/arm64 Buildx 빌드만 수행한다. `v1.2.3` 같은 `v*` 태그만 `:lite`, `:full`, `:1.2.3-lite`, `:1.2.3-full`, `:latest`(lite)를 GHCR에 게시한다. 게시 job에만 `packages:write`를 부여하며 액션은 커밋 SHA로 고정한다. SBOM/프로비넌스는 [Docker 공식 방식](https://docs.docker.com/build/ci/github-actions/attestations/)으로 켠다. PR 빌드는 레지스트리에 출력하지 않아 게시된 증명도 없다. 이 작업에서는 워크플로를 실제 실행하거나 이미지 로그인·게시를 하지 않았다.
+
+## MCP OAuth
+
+HTTPS 프록시와 `NASQUIRE_PUBLIC_URL=https://nasquire.example.com`을 설정하고 `NASQUIRE_OAUTH_ENABLED=true`로 켠다. 클라이언트 연결 주소는 `https://nasquire.example.com/mcp`다. 관리자 로그인·TOTP(설정 시) 뒤 허용 소스를 승인한다. OAuth 토큰은 MCP 읽기 전용이며 REST에는 기존 API 토큰을 사용한다. [상세 설정·제한·철회](oauth.md)를 참고한다.

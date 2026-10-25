@@ -29,34 +29,39 @@ public class SecurityConfiguration {
     }
     @Bean UserDetailsService users(Storage store) { return store::user; }
     @Bean BCryptPasswordEncoder passwordEncoder() { return new BCryptPasswordEncoder(12); }
-    @Bean SecurityFilterChain security(HttpSecurity http, Storage storage, LoginAttempts attempts, ClientAddresses addresses, TotpService totp, @Value("${nasquire.upload-max-bytes:33554432}") long maximum, @Value("${nasquire.mcp-allowed-origins:}") String allowedOrigins) throws Exception {
+    @Bean SecurityFilterChain security(HttpSecurity http, Storage storage, LoginAttempts attempts, ClientAddresses addresses, TotpService totp, OAuthService oauth, @Value("${nasquire.upload-max-bytes:33554432}") long maximum, @Value("${nasquire.mcp-allowed-origins:}") String allowedOrigins) throws Exception {
         http.authorizeHttpRequests(a -> a
                 .requestMatchers("/", "/index.html", "/assets/**", "/icon.svg", "/LICENSE.txt", "/react-LICENSE.txt", "/LICENSE-EXCEPTIONS.md", "/api/auth", "/api/setup", "/api/login", "/api/login/totp", "/download", "/error").permitAll()
+                .requestMatchers("/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-authorization-server", "/oauth/register", "/oauth/token", "/oauth/revoke", "/oauth/login.js", "/oauth/style.css").permitAll()
+                .requestMatchers(org.springframework.http.HttpMethod.GET, "/oauth/authorize").permitAll()
                 .requestMatchers("/mcp").authenticated()
                 .requestMatchers("/api/search", "/api/document", "/api/download").authenticated()
                 .anyRequest().hasRole("ADMIN"))
-            .csrf(c -> c.ignoringRequestMatchers(r -> r.getAttribute("nasquire.token") != null)
+            .csrf(c -> c.ignoringRequestMatchers(r -> r.getAttribute("nasquire.token") != null || Set.of("/oauth/register", "/oauth/token", "/oauth/revoke").contains(r.getServletPath()))
                     .csrfTokenRepository(new HttpSessionCsrfTokenRepository())
                     .csrfTokenRequestHandler(new CsrfTokenRequestHandler() {
                         private final XorCsrfTokenRequestAttributeHandler delegate = new XorCsrfTokenRequestAttributeHandler();
                         @Override public void handle(HttpServletRequest req, HttpServletResponse res, java.util.function.Supplier<CsrfToken> token) { delegate.handle(req, res, token); }
                         @Override public String resolveCsrfTokenValue(HttpServletRequest req, CsrfToken token) {
-                            return req.getHeader(token.getHeaderName()) == null ? null : delegate.resolveCsrfTokenValue(req, token);
+                            return (req.getHeader(token.getHeaderName()) != null || req.getServletPath().equals("/oauth/authorize")) ? delegate.resolveCsrfTokenValue(req, token) : null;
                         }
                     }))
+            .addFilterBefore(new OAuthGuard(oauth, attempts, addresses), CsrfFilter.class)
             .addFilterBefore(new MultipartGuard(maximum), CsrfFilter.class)
             .addFilterBefore(new LoginGuard(attempts, addresses, storage), org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class)
-            .addFilterBefore(new BearerFilter(storage, Arrays.stream(allowedOrigins.split(",")).map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toSet())), CsrfFilter.class)
+            .addFilterBefore(new BearerFilter(storage, oauth, attempts, addresses, Arrays.stream(allowedOrigins.split(",")).map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toSet())), CsrfFilter.class)
             .formLogin(f -> f.securityContextRepository(new PasswordContextRepository(totp::enabled)).loginProcessingUrl("/api/login")
                     .successHandler((req, res, auth) -> {
                         if (totp.enabled()) {
                             var context = SecurityContextHolder.createEmptyContext();
                             SecurityContextHolder.setContext(context);
                             new org.springframework.security.web.context.HttpSessionSecurityContextRepository().saveContext(context, req, res);
+                            req.getSession().removeAttribute("admin.authenticatedAt");
                             req.getSession().setAttribute("totp.pending", new TotpController.Pending(auth.getName(), System.currentTimeMillis(), new java.util.concurrent.atomic.AtomicInteger()));
                             storage.audit("anonymous", "login-totp-required", 202); res.setStatus(202);
                         } else {
                             req.getSession().removeAttribute("totp.pending");
+                            req.getSession().setAttribute("admin.authenticatedAt", System.currentTimeMillis());
                             var ticket = LoginGuard.ticket(req); if (ticket != null) attempts.succeeded(ticket);
                             storage.audit("admin", "login", 200); res.setStatus(200);
                         }
@@ -111,20 +116,88 @@ public class SecurityConfiguration {
         static LoginAttempts.Ticket ticket(HttpServletRequest req) { return (LoginAttempts.Ticket)req.getAttribute(TICKET); }
     }
 
+    static void oauthError(HttpServletResponse res, int status, String error) throws IOException {
+        res.setStatus(status); res.setContentType("application/json"); res.getWriter().write("{\"error\":\"" + error + "\"}");
+    }
+    static class OAuthGuard extends OncePerRequestFilter {
+        private final OAuthService oauth; private final LoginAttempts attempts; private final ClientAddresses addresses;
+        OAuthGuard(OAuthService oauth, LoginAttempts attempts, ClientAddresses addresses) { this.oauth = oauth; this.attempts = attempts; this.addresses = addresses; }
+        protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain) throws IOException, ServletException {
+            String path = req.getServletPath();
+            if (path.startsWith("/oauth/") || path.startsWith("/.well-known/oauth-")) {
+                res.setHeader("Cache-Control", "no-store");
+                if (!oauth.enabled()) { res.setStatus(404); return; }
+                if (Set.of("/oauth/register", "/oauth/token", "/oauth/revoke").contains(path)) {
+                    String endpoint = path.substring(7);
+                    if (!path.equals("/oauth/register") && req.getQueryString() != null) { oauthError(res, 400, "invalid_request"); return; }
+                    if (!attempts.allowOAuth(endpoint, addresses.address(req), System.currentTimeMillis())) {
+                        boolean valid = false;
+                        if (endpoint.equals("token") && req.getContentType() != null && req.getContentType().startsWith("application/x-www-form-urlencoded")) {
+                            try { valid = oauth.validTokenRequest(OAuthController.parameters(req)); } catch (OAuthService.Error ignored) { }
+                        }
+                        if (!valid) {
+                            oauth.auditLimited("rate-limit-" + endpoint, addresses.address(req), 429);
+                            res.setHeader("Retry-After", "60"); oauthError(res, 429, "temporarily_unavailable"); return;
+                        }
+                    }
+                }
+            }
+            if (path.equals("/oauth/register")) {
+                byte[] body = req.getInputStream().readNBytes(24577);
+                if (body.length > 24576) { res.setStatus(413); return; }
+                var wrapped = new HttpServletRequestWrapper(req) {
+                    @Override public ServletInputStream getInputStream() {
+                        var input = new java.io.ByteArrayInputStream(body);
+                        return new ServletInputStream() {
+                            public int read() { return input.read(); }
+                            public int read(byte[] bytes, int offset, int length) { return input.read(bytes, offset, length); }
+                            public boolean isFinished() { return input.available() == 0; }
+                            public boolean isReady() { return true; }
+                            public void setReadListener(ReadListener listener) { throw new UnsupportedOperationException(); }
+                        };
+                    }
+                };
+                chain.doFilter(wrapped, res); return;
+            }
+            chain.doFilter(req, res);
+        }
+    }
+
     static class BearerFilter extends OncePerRequestFilter {
         private final Storage storage;
         private final Set<String> allowedOrigins;
-        BearerFilter(Storage storage, Set<String> allowedOrigins) { this.storage = storage; this.allowedOrigins = allowedOrigins; }
+        private final OAuthService oauth;
+        private final LoginAttempts attempts;
+        private final ClientAddresses addresses;
+        BearerFilter(Storage storage, OAuthService oauth, LoginAttempts attempts, ClientAddresses addresses, Set<String> allowedOrigins) { this.storage = storage; this.oauth = oauth; this.attempts = attempts; this.addresses = addresses; this.allowedOrigins = allowedOrigins; }
+        private void unauthorized(HttpServletRequest req, HttpServletResponse res, String metadata, boolean token) throws IOException {
+            if (req.getServletPath().equals("/mcp") && !attempts.allowOAuth("mcp-invalid", addresses.address(req), System.currentTimeMillis())) {
+                oauth.auditLimited("rate-limit-mcp", addresses.address(req), 429);
+                res.setHeader("Retry-After", "60"); oauthError(res, 429, "temporarily_unavailable"); return;
+            }
+            res.setHeader("WWW-Authenticate", "Bearer" + (token ? " error=\"invalid_token\"" + (metadata.isEmpty() ? "" : ",") : "") + metadata);
+            res.setStatus(401);
+        }
         protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain) throws IOException, ServletException {
             String header = req.getHeader("Authorization");
             boolean mcp = req.getServletPath().equals("/mcp");
+            String metadata = mcp && oauth.enabled() ? " resource_metadata=\"" + oauth.issuer + "/.well-known/oauth-protected-resource/mcp\"" : "";
             if (mcp && req.getHeader("Origin") != null && !allowedOrigins.contains(req.getHeader("Origin"))) {
                 res.setStatus(403); return;
             }
             if (header == null && !mcp) { chain.doFilter(req, res); return; }
-            if (header == null || !header.startsWith("Bearer ") || header.length() > 256) { res.setStatus(401); return; }
+            if (header == null || !header.startsWith("Bearer ") || header.length() > 256) {
+                unauthorized(req, res, metadata, header != null); return;
+            }
             var identity = storage.authenticate(hash(header.substring(7)));
-            if (identity == null) { storage.audit("invalid-token", req.getMethod() + " " + req.getServletPath(), 401); res.setStatus(401); return; }
+            if (identity == null && mcp) identity = oauth.authenticate(hash(header.substring(7)));
+            if (identity != null && identity.tokenId().startsWith("oauth:") && identity.sources().isEmpty()) {
+                res.setHeader("WWW-Authenticate", "Bearer error=\"insufficient_scope\", scope=\"mcp:read\"" + (metadata.isEmpty() ? "" : "," + metadata)); res.setStatus(403); return;
+            }
+            if (identity == null) {
+                unauthorized(req, res, metadata, true);
+                oauth.auditLimited("invalid-token", addresses.address(req), res.getStatus()); return;
+            }
             req.setAttribute("nasquire.token", identity);
             var context = SecurityContextHolder.createEmptyContext();
             context.setAuthentication(new UsernamePasswordAuthenticationToken(identity, null, List.of()));

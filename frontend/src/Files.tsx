@@ -40,6 +40,7 @@ export default function Files({ sources, api, csrfHeader, csrfToken }: { sources
           const file = data.get('file') as File
           const body = new FormData(); body.set('file', file)
           const res = await fetch('/api' + base + '?' + new URLSearchParams({ path: join(file.name), overwrite: String(data.get('overwrite') === 'on') }), { method: 'POST', headers: { [csrfHeader]: csrfToken }, body })
+          await res.text()
           if (!res.ok) throw new Error(t('Upload failed', '업로드 실패') + ` (${res.status})`)
         })}><label>{t('File', '파일')}<input name="file" type="file" required /></label><label><input name="overwrite" type="checkbox" />{t('Replace existing file', '기존 파일 덮어쓰기')}</label><button disabled={busy}>{t('Upload', '업로드')}</button></form>
         <form onSubmit={e => submit(e, data => api(base + '/folder', 'POST', { path: join(String(data.get('name'))) }))}><label>{t('New folder', '새 폴더')}<input name="name" required /></label><button disabled={busy}>{t('Create folder', '폴더 만들기')}</button></form>

@@ -14,6 +14,8 @@
 - `frontend/public/icon.svg`: 시그니처 아이콘 복사본. 원본 자산은 수정하지 않는다.
 - `Dockerfile`: 다단계 `lite`(기본)·`full` 비루트 JRE, OCR 도구·헬스체크·OCI 라벨. `deploy/docker-compose*.yml`: lite/full/ML, 숫자 사용자 매핑·읽기 전용 소스·별도 업로드·데이터 볼륨. `deploy/unraid/`, `docs/install/`: NAS 템플릿·설치/백업/복구 안내. `.github/workflows/`: lite/full CI와 태그 전용 GHCR 게시(액션 SHA 고정).
 - `scripts/smoke.py`: 새 서버 데이터에 대한 curl 실제 API 검증(인증값 미출력).
+- `scripts/verify-browser.py`: Playwright Chromium 실제 화면·한/영·모바일·테마·axe 스모크. 선택 `VERIFY_FULL=true`는 full 설정 공급자 화면도 검사한다. 도구·임시 데이터·스크린샷은 `build/verification/`에만 둔다.
+- `scripts/verify-oauth-sdk.py`: 공식 Python MCP SDK OAuth·Streamable HTTP와 브라우저 승인·자동 갱신·철회 검증. 재현·한계는 `docs/verification/browser.md`, `docs/verification/oauth.md`. 두 스크립트는 8104 전용이며 다른 bootRun/빌드와 순차 실행한다.
 - `scripts/verify-runtime.py`: 문서 생성·bootRun·curl·RSS·서버 종료를 자동 수행. 결과는 무시되는 `build/verification/`에 생성한다.
 - `scripts/fetch-verification-models.py`: 명시적 내장 모델 검증 시 고정 리비전·SHA-256 모델 파일을 무시되는 build 폴더에 준비한다.
 - `docs/embeddings.md`, `docs/verification/vector.md`: 공급자·재색인·모델 출처·다중 아키텍처·실측 제한.
@@ -57,6 +59,7 @@
 - 시도 제한은 `LoginAttempts.acquire` 표로 확인·진행 중 예약을 원자 처리하고 실패 횟수 리셋·허용 시각 단축을 금지한다. 등록/해제는 `totp-manage:` 키로 분리, 등록도 비밀번호 재확인. 암호문은 `v2:`+용도별 AAD(`totp`/`embedding`), 키가 없거나 바뀌었는데 암호문이 있으면 새 키를 만들지 않고 `KeyUnavailable`(503·복구 안내).
 - 오프라인 복구: `java -jar app/build/libs/app-0.1.0.jar --recover-admin --data=/data` (앱 종료 필요). 웹 컨텍스트 없이 표준 입력 비밀번호를 검증하고 기존 DB 비밀번호 재설정·TOTP/복구 코드 삭제·감사를 트랜잭션 처리한다. 검증 기록은 `docs/verification/totp.md`.
 
+- full 관리 화면은 `frontend/src/Full.tsx`이며 lite에서는 off만 선택한다. 서버 가용성·키 비공개·주소 변경 시 키 폐기 정책을 따른다.
 - full 설정은 `/api/full` GET/PUT(관리자 세션+헤더 CSRF). 기본 off, 리랭커 키는 기존 embedding.key를 공유하고 AES-GCM v2 + AAD `reranker`, full.properties 0600. full 암호문이 남으면 공유 키 재생성 금지. 키 복호화 실패·full 미포함 상태의 활성 설정은 시작 거부하며 키 백업 복원/기능 off 뒤 구성 전환이 필요하다.
 - 리랭커는 일반 `/rerank` API만 구현, REST `rerank=true`·MCP `rerank: true` 선택. 소스 권한 적용 후 최대 topN만 전송하고 외부 순위만 수용하며 근거·원래 score 유지. 전체 시간/64 KiB/동시 외부 호출 1개 상한, 실패·혼잡 시 원래 순서.
 - OCR은 full 전용 Tesseract CLI(`/usr/bin/prlimit`, `/usr/bin/tesseract`, kor+eng 데이터 사전 준비). 이미지 프레임/텍스트 없는 PDF 쪽만 처리, `location.type=ocr`·쪽 보존. 임시 파일은 데이터 폴더 ocr-tmp, 소스 쓰기 금지. 쪽당 시간/주소 공간/출력·파일당 쪽·픽셀/문자 제한. 실제 OCR 비교·full 메모리 보장은 미완료, `docs/verification/full.md` 참조.
@@ -68,3 +71,9 @@
 - OCR 복사는 자식 실행과 같은 시간 상한을 쓰며 setsid 프로세스 그룹·자손 종료 확인 뒤 결과를 검사하고 슬롯을 반환한다(종료 확인 지연 시 회수자가 슬롯 유지). 부모도 PNG 쪽당 16 MiB·합계 256 MiB와 열린 fd 일반 파일을 재검사한다. ocr-worker 직접 실행은 실경로 `ocr-tmp/job-*`·현재 사용자 소유·0700 폴더만 허용한다. SearchIndex의 두 번째 종료 대기 뒤에도 활성 작업이 있으면 공급자·저장소 폐기는 마지막 exit()까지 미루며 실제 close는 공통 잠금 밖에서 한다.
 
 - 공유 전송은 열린 fd의 fstat dev/ino를 저장된 fileKey와 대조하고 그 fd만 사용한다. 폴더 공유는 확인한 루트 핸들을 유지하며 core SecureFiles의 openat·NOFOLLOW로 하위를 연다. OCR 회수의 `/proc` 열거·stat 읽기/파싱 실패는 종료 미확인으로 처리해 슬롯·작업 폴더를 보유한다. NAS/NFS 일반 파일 I/O 자체가 반환하지 않으면 복사·추출 시간 상한은 보장하지 못한다(일반 텍스트와 동일).
+
+- MCP OAuth: `nasquire.oauth.enabled` 기본 off, HTTPS 공개 origin 필요(루프백 HTTP 개발 예외). JDBC 내장 인가 서버·DCR 공개 클라이언트·S256 PKCE·resource/audience 고정, 외부 토큰 전달 금지.
+- OAuth 코드는 60초·1회용, 액세스는 1시간·MCP 전용, 리프레시는 회전·30일 상한·직전 토큰 10초 동일 응답 유예(다음 회전 전)·그 밖의 재사용 시 계열 철회. 원문 저장/로그 금지, 관리자 승인·관리 철회는 기존 세션(TOTP 포함)+CSRF.
+- OAuth 소스는 명시 승인 집합만 허용하며 빈 집합은 권한 없음이다. `oauth:` 식별자의 현재 권한 재검사를 다운로드에도 적용한다. 검증은 `VERIFY_PORT=8104 python3 scripts/verify-oauth.py`, 상세는 `docs/verification/oauth.md`.
+
+- OAuth 승인은 최근 10분 내 관리자 인증이 필요하며 pending/nonce는 단일 세션 객체다. 토큰/철회 쿼리는 거부하고, IPv6 /64 제한·정상 토큰 증명 예외·미승인 IP당 20개·감사 종류별 분당 1회·마지막 승인 만료 후 30일 정리를 적용한다. 프록시 설정/신뢰 경계는 `docs/install/oauth.md`를 따른다.
