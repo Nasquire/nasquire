@@ -73,5 +73,7 @@
 - 공유 전송은 열린 fd의 fstat dev/ino를 저장된 fileKey와 대조하고 그 fd만 사용한다. 폴더 공유는 확인한 루트 핸들을 유지하며 core SecureFiles의 openat·NOFOLLOW로 하위를 연다. OCR 회수의 `/proc` 열거·stat 읽기/파싱 실패는 종료 미확인으로 처리해 슬롯·작업 폴더를 보유한다. NAS/NFS 일반 파일 I/O 자체가 반환하지 않으면 복사·추출 시간 상한은 보장하지 못한다(일반 텍스트와 동일).
 
 - MCP OAuth: `nasquire.oauth.enabled` 기본 off, HTTPS 공개 origin 필요(루프백 HTTP 개발 예외). JDBC 내장 인가 서버·DCR 공개 클라이언트·S256 PKCE·resource/audience 고정, 외부 토큰 전달 금지.
-- OAuth 코드는 60초·1회용, 액세스는 1시간·MCP 전용, 리프레시는 회전·30일 상한·재사용 시 계열 철회. 원문 저장/로그 금지, 관리자 승인·관리 철회는 기존 세션(TOTP 포함)+CSRF.
-- OAuth 소스는 명시 승인 집합만 허용하며 빈 집합은 권한 없음이다. `oauth:` 식별자의 현재 권한 재검사를 다운로드에도 적용한다. 검증은 `VERIFY_PORT=8103 python3 scripts/verify-oauth.py`, 상세는 `docs/verification/oauth.md`.
+- OAuth 코드는 60초·1회용, 액세스는 1시간·MCP 전용, 리프레시는 회전·30일 상한·직전 토큰 10초 동일 응답 유예(다음 회전 전)·그 밖의 재사용 시 계열 철회. 원문 저장/로그 금지, 관리자 승인·관리 철회는 기존 세션(TOTP 포함)+CSRF.
+- OAuth 소스는 명시 승인 집합만 허용하며 빈 집합은 권한 없음이다. `oauth:` 식별자의 현재 권한 재검사를 다운로드에도 적용한다. 검증은 `VERIFY_PORT=8104 python3 scripts/verify-oauth.py`, 상세는 `docs/verification/oauth.md`.
+
+- OAuth 승인은 최근 10분 내 관리자 인증이 필요하며 pending/nonce는 단일 세션 객체다. 토큰/철회 쿼리는 거부하고, IPv6 /64 제한·정상 토큰 증명 예외·미승인 IP당 20개·감사 종류별 분당 1회·마지막 승인 만료 후 30일 정리를 적용한다. 프록시 설정/신뢰 경계는 `docs/install/oauth.md`를 따른다.

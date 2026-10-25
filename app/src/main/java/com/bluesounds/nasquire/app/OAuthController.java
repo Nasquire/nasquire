@@ -13,10 +13,17 @@ import org.springframework.web.bind.annotation.*;
 class OAuthController {
     private final OAuthService oauth;
     private final Storage storage;
-    OAuthController(OAuthService oauth, Storage storage) { this.oauth = oauth; this.storage = storage; }
+    private final ClientAddresses addresses;
+    OAuthController(OAuthService oauth, Storage storage, ClientAddresses addresses) { this.oauth = oauth; this.storage = storage; this.addresses = addresses; }
     @ExceptionHandler(OAuthService.Error.class)
-    ResponseEntity<Map<String, String>> error(OAuthService.Error error) {
-        return ResponseEntity.status(error.status).cacheControl(CacheControl.noStore()).body(Map.of("error", error.error));
+    ResponseEntity<?> error(OAuthService.Error error, HttpServletResponse response) {
+        if (error instanceof OAuthService.RedirectError e) {
+            secure(response, e.redirect);
+            return ResponseEntity.status(302).location(URI.create(callback(e.redirect, "error=" + enc(e.error), e.state))).build();
+        }
+        var builder = ResponseEntity.status(error.status).cacheControl(CacheControl.noStore());
+        if (error.status == 429) builder.header("Retry-After", "60");
+        return builder.body(Map.of("error", error.error));
     }
     @GetMapping({"/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"})
     Map<String, Object> resource() {
@@ -34,8 +41,8 @@ class OAuthController {
         result.put("authorization_response_iss_parameter_supported", true); return result;
     }
     @PostMapping(value = "/oauth/register", consumes = MediaType.APPLICATION_JSON_VALUE)
-    ResponseEntity<Map<String, Object>> register(@RequestBody Map<String, Object> input) {
-        return ResponseEntity.status(201).cacheControl(CacheControl.noStore()).body(oauth.register(input));
+    ResponseEntity<Map<String, Object>> register(@RequestBody Map<String, Object> input, HttpServletRequest request) {
+        return ResponseEntity.status(201).cacheControl(CacheControl.noStore()).body(oauth.register(input, addresses.address(request)));
     }
     static Map<String, String> parameters(HttpServletRequest request) {
         var result = new HashMap<String, String>();
@@ -58,7 +65,7 @@ class OAuthController {
     String authorize(HttpServletRequest request, HttpServletResponse response, Authentication auth, CsrfToken csrf) {
         var a = oauth.validate(parameters(request));
         secure(response, a.redirect());
-        if (!admin(auth)) return page("Administrator login / 관리자 로그인", """
+        if (!admin(auth) || !recent(request)) return page("Administrator login / 관리자 로그인", """
                 <p>Sign in to approve this MCP client / MCP 클라이언트 승인을 위해 로그인하세요.</p>
                 <form id="login"><label>Username / 사용자명 <input name="username" autocomplete="username" required></label>
                 <label>Password / 비밀번호 <input name="password" type="password" autocomplete="current-password" required></label><button>Sign in / 로그인</button></form>
@@ -67,12 +74,16 @@ class OAuthController {
                 """);
         return consentPage(request, a, csrf, "");
     }
+    record Pending(OAuthService.Authorization authorization, String nonce) { }
+    static boolean recent(HttpServletRequest request) {
+        var session = request.getSession(false);
+        return session != null && session.getAttribute("admin.authenticatedAt") instanceof Long at && System.currentTimeMillis() - at < 600000;
+    }
     private String consentPage(HttpServletRequest request, OAuthService.Authorization a, CsrfToken csrf, String error) {
         String nonce = OAuthService.random();
         // 세션마다 승인 대기는 하나만 두어 임의 클라이언트 요청의 메모리 사용을 제한한다.
-        request.getSession().setAttribute("oauth.pending", a);
-        request.getSession().setAttribute("oauth.nonce", nonce);
-        StringBuilder body = new StringBuilder("<p>Client / 클라이언트: <strong>" + esc(oauth.client(a.client()).get("NAME").toString()) + "</strong></p><p>Redirect host / 이동 호스트: " + esc(URI.create(a.redirect()).getHost()) + "</p><p>Scope / 요청 범위: mcp:read (Read only / 읽기 전용)</p><form method=\"post\" action=\"/oauth/authorize\">");
+        request.getSession().setAttribute("oauth.pending", new Pending(a, nonce));
+        StringBuilder body = new StringBuilder("<p>Client / 클라이언트: <strong>" + esc(oauth.client(a.client()).get("NAME").toString()) + "</strong></p><p>Self-registered, unverified client / 자가 등록된 확인되지 않은 클라이언트</p><p>Redirect URI / 이동 주소: " + esc(a.redirect()) + "</p><p>Scope / 요청 범위: mcp:read (Read only / 읽기 전용)</p><form method=\"post\" action=\"/oauth/authorize\">");
         body.append(hidden(csrf.getParameterName(), csrf.getToken())).append(hidden("nonce", nonce));
         if (!error.isEmpty()) body.append("<p role=\"alert\">").append(esc(error)).append("</p>");
         var sources = storage.sources();
@@ -86,14 +97,14 @@ class OAuthController {
     String consent(HttpServletRequest request, HttpServletResponse response, Authentication auth, CsrfToken csrf) {
         oauth.requireEnabled(); secure(response);
         if (!admin(auth)) throw new OAuthService.Error("access_denied", 401);
+        if (!recent(request)) throw new OAuthService.Error("login_required", 401);
         var session = request.getSession(false);
         if (session == null) throw OAuthService.invalid("invalid_request");
         OAuthService.Authorization a;
         synchronized (session) {
-            a = (OAuthService.Authorization)session.getAttribute("oauth.pending");
-            String nonce = (String)session.getAttribute("oauth.nonce");
-            if (a == null || nonce == null || !nonce.equals(request.getParameter("nonce")) || System.currentTimeMillis() - a.created() > 600000) throw OAuthService.invalid("invalid_request");
-            session.removeAttribute("oauth.pending"); session.removeAttribute("oauth.nonce");
+            Pending pending = (Pending)session.getAttribute("oauth.pending");
+            if (pending == null || !pending.nonce().equals(request.getParameter("nonce")) || oauth.now() - pending.authorization().created() > 600000) throw OAuthService.invalid("invalid_request");
+            a = pending.authorization(); session.removeAttribute("oauth.pending");
         }
         secure(response, a.redirect());
         String decision = request.getParameter("decision"), result;
@@ -107,8 +118,11 @@ class OAuthController {
         } else if ("deny".equals(decision)) { oauth.audit("deny", 200); result = "error=access_denied"; }
         else throw OAuthService.invalid("invalid_request");
         response.setStatus(302);
-        response.setHeader("Location", a.redirect() + (a.redirect().contains("?") ? "&" : "?") + result + "&state=" + enc(a.state()) + "&iss=" + enc(oauth.issuer));
+        response.setHeader("Location", callback(a.redirect(), result, a.state()));
         return null;
+    }
+    private String callback(String redirect, String result, String state) {
+        return redirect + (redirect.contains("?") ? "&" : "?") + result + (state == null ? "" : "&state=" + enc(state)) + "&iss=" + enc(oauth.issuer);
     }
     @GetMapping(value = "/oauth/login.js", produces = "text/javascript") String loginScript() {
         oauth.requireEnabled();

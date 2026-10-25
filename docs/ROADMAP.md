@@ -261,7 +261,8 @@
 - [x] push/PR의 lite/full Gradle·멀티 아키텍처 Buildx 빌드. `v*` 태그 전용 GHCR `lite`/`full`/버전별 태그/`latest=lite`, 게시 job만 packages:write, 액션 SHA 고정·SBOM/프로비넌스.
 - [x] lite 기본 compose·full override·ML 독립 예시. 메모리 제한·:ro 소스·선택 업로드 쓰기 볼륨·HTTPS 공개 URL·신뢰 프록시 경계.
 - [x] Docker 공통·Synology·Unraid·TrueNAS 설치 문서와 XML 템플릿. UID/GID·메모리 실측 한계·HTTPS/민감 로그 제외·백업·Qdrant 세대 재색인·오프라인 관리자 복구.
-- [ ] Docker 이미지 빌드/기동·HEALTHCHECK·512 MiB cgroup 측정 — Docker 실행 파일 없음. 정적 대체 검증과 필수 빌드 결과는 [배포 검증](verification/deploy.md).
+- [x] 운영자 실측: amd64 Kaniko lite/full 이미지 빌드 성공(`ce94b82`, no-push), lite bootJar 512 MiB cgroup v2 스모크 전 단계 PASS(memory.peak 344 MiB·OOM 0). [측정 범위](verification/deploy.md#운영자-추가-실측-기록-2026-10-25).
+- [ ] 이미지 실제 기동·HEALTHCHECK·컨테이너 자체 512 MiB 검증. JVM 스코프 실측과 이미지 빌드 성공으로 이 항목을 완료 처리하지 않는다.
 - [ ] arm64·NAS 실기·실제 OCR/전체 full 부하·GHCR 게시와 Actions 실실행 — 미실측/미수행. 게시·서버 접속은 이번 범위에서 실행하지 않는다.
 - [x] 5b MCP OAuth — 아래 5b 구현·검증 절 참조.
 
@@ -282,3 +283,11 @@
 - [x] 공식 Python MCP SDK 2.3.0 OAuthClientProvider 실측 종료 0, DCR 선택 메타데이터·승인 callback CSP 수정 및 보안 회귀 테스트. [OAuth 검증](verification/oauth.md#공식-sdk-상호운용).
 - [x] 최종 `./gradlew build -q`·`./gradlew -Pfull build -q` 종료 0(core 27·app 38·full 19, 실패/오류/생략 0), 내부 식별자·경로 검사 0건·8104 서버 종료 확인.
 - [ ] OS 네이티브 Basic 인증 창 시각/스크린리더·실제 모바일 기기·HTTPS 프록시·별도 OS 콜백 리스너·벽시계 1시간 서버 만료 실측. headless/루프백 범위이며 SDK 로컬 만료와 서버 Clock 테스트로 갱신·만료 거부를 각각 확인했다.
+
+
+## MCP OAuth 2차 교차 검토 반영 (기준 a44466d)
+
+- [x] M2 콜백 origin CSP·M3 DCR 미지 메타데이터 무시 기존 처리 확인.
+- [x] M1 정상 토큰 증명 예외·IPv6 /64·4096 창 축출·신뢰 프록시 필수 설정과 경고.
+- [x] L1–L9 감사 집계·Cf 거부/전체 URI 경고·본문 전용·직전 refresh 10초 유예·클라이언트 정리/동일 IP 상한·오류 규격·MCP 실패 제한/읽기 잠금 제거·원자 pending·10분 최근 인증.
+- [x] 항목별 회귀·lite/full 빌드·실제 OAuth/공식 SDK 재검증 모두 종료 0(core 27·app 44·full 19, 실패/오류/생략 0). 내부 정보 검사 0건·8104 종료 확인. [상세](verification/oauth.md#2차-교차-검토-반영).

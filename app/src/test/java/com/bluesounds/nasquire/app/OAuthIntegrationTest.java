@@ -73,6 +73,8 @@ class OAuthIntegrationTest {
     }
 
     @BeforeEach void reset() {
+        db.update("DELETE FROM audit");
+        ((Map<?, ?>)ReflectionTestUtils.getField(attempts, "auditWindows")).clear();
         db.update("DELETE FROM oauth_tokens"); db.update("DELETE FROM oauth_grants"); db.update("DELETE FROM oauth_clients");
         oauth.clock = Clock.systemUTC(); oauth.maxClients = OAuthService.MAX_CLIENTS;
         ((Map<?, ?>)ReflectionTestUtils.getField(attempts, "windows")).clear();
@@ -136,7 +138,7 @@ class OAuthIntegrationTest {
         assertEquals(429, request(anonymous, "/oauth/register", "POST", Map.of("redirect_uris", List.of(REDIRECT)), false, false, null).statusCode());
         ((Map<?, ?>)ReflectionTestUtils.getField(attempts, "windows")).clear();
         assertEquals(413, request(anonymous, "/oauth/register", "POST", Map.of("client_name", "x".repeat(25000)), false, false, null).statusCode());
-        for (int i = 0; i < 60; i++) assertEquals(400, token(Map.of()).statusCode());
+        for (int i = 0; i < 60; i++) assertEquals(401, token(Map.of()).statusCode());
         assertEquals(429, token(Map.of()).statusCode());
     }
     @Test void officialSdkMetadataKeepsPublicReadOnlyRegistration() throws Exception {
@@ -209,7 +211,7 @@ class OAuthIntegrationTest {
     @Test void bearerChallengeOnlyForAuthenticationAndScopeFailures() throws Exception {
         var invalid = mcpResponse(OAuthService.random(), "tools/list", Map.of());
         assertEquals(401, invalid.statusCode());
-        assertEquals("Bearer resource_metadata=\"" + ISSUER + "/.well-known/oauth-protected-resource/mcp\"", invalid.headers().firstValue("WWW-Authenticate").orElseThrow());
+        assertEquals("Bearer error=\"invalid_token\", resource_metadata=\"" + ISSUER + "/.well-known/oauth-protected-resource/mcp\"", invalid.headers().firstValue("WWW-Authenticate").orElseThrow());
         var origin = HttpRequest.newBuilder(URI.create(url("/mcp"))).header("Origin", "https://other.example.com").POST(HttpRequest.BodyPublishers.noBody()).build();
         var denied = anonymous.send(origin, HttpResponse.BodyHandlers.ofString());
         assertEquals(403, denied.statusCode()); assertTrue(denied.headers().firstValue("WWW-Authenticate").isEmpty());
@@ -293,10 +295,11 @@ class OAuthIntegrationTest {
             results = workers.invokeAll(List.of(refresh, refresh)); successes = 0;
             for (var result : results) {
                 var r = result.get();
-                if (r.containsKey("access_token")) { successes++; assertNull(oauth.authenticate(SecurityConfiguration.hash(r.get("access_token").toString()))); }
-                else assertEquals("invalid_grant", r.get("error"));
+                if (r.containsKey("access_token")) { successes++; assertNotNull(oauth.authenticate(SecurityConfiguration.hash(r.get("access_token").toString()))); }
+                else fail("유예 안 동시 갱신 실패");
             }
-            assertEquals(1, successes);
+            assertEquals(2, successes);
+            assertEquals(results.get(0).get(), results.get(1).get());
         }
     }
     @Test void sourceIsolationReadOnlyAudienceAndApiCoexistence() throws Exception {
@@ -341,8 +344,11 @@ class OAuthIntegrationTest {
         var wrongClient = new HashMap<>(p); wrongClient.put("client_id", register()); assertEquals(400, token(wrongClient).statusCode());
         var rotated = json(token(p), 200); String access = rotated.get("access_token").asText();
         assertFalse(refresh.equals(rotated.get("refresh_token").asText())); assertEquals(200, mcpResponse(access, "tools/list", Map.of()).statusCode());
+        assertEquals(rotated, json(token(p), 200));
+        oauth.clock = Clock.offset(Clock.systemUTC(), Duration.ofSeconds(11));
         assertEquals(400, token(p).statusCode()); assertEquals(401, mcpResponse(access, "tools/list", Map.of()).statusCode());
         p.put("refresh_token", rotated.get("refresh_token").asText()); assertEquals(400, token(p).statusCode());
+        oauth.clock = Clock.systemUTC();
         var again = issued(id, verifier, List.of(source)); access = again.get("access_token").asText();
         assertEquals(200, request(anonymous, "/oauth/revoke", "POST", Map.of("client_id", id, "token", again.get("refresh_token").asText()), true, false, null).statusCode()); assertEquals(401, mcpResponse(access, "tools/list", Map.of()).statusCode());
         var expiry = issued(id, verifier, List.of(source));
@@ -357,4 +363,85 @@ class OAuthIntegrationTest {
         for (String secret : List.of(verifier, code, refresh, initial.get("access_token").asText(), active.get("access_token").asText())) assertFalse(persisted.contains(secret));
         String audit = storage.audit().toString(); for (String action : List.of("register", "approve", "issue", "refresh", "refresh-reuse", "revoke", "admin-revoke")) assertTrue(audit.contains("oauth-" + action));
     }
+
+    @Test void saturatedTokenAndMcpBucketsKeepValidCredentialsWorking() throws Exception {
+        String id = register(), verifier = OAuthService.random();
+        String code = approve(id, verifier, List.of(source));
+        for (int i = 0; i < 65; i++) token(Map.of());
+        var limited = token(Map.of());
+        assertEquals("temporarily_unavailable", json(limited, 429).get("error").asText());
+        assertEquals("60", limited.headers().firstValue("Retry-After").orElseThrow());
+        var initial = json(token(exchange(id, code, verifier)), 200);
+        var refresh = Map.of("grant_type", "refresh_token", "client_id", id, "refresh_token", initial.get("refresh_token").asText(), "resource", RESOURCE);
+        var rotated = json(token(refresh), 200);
+        assertEquals(rotated, json(token(refresh), 200));
+        for (int i = 0; i < 65; i++) mcpResponse("invalid", "tools/list", Map.of());
+        assertEquals(429, mcpResponse("invalid", "tools/list", Map.of()).statusCode());
+        assertEquals(200, mcpResponse(rotated.get("access_token").asText(), "tools/list", Map.of()).statusCode());
+        assertEquals(1, db.queryForObject("SELECT COUNT(*) FROM audit WHERE action='oauth-rate-limit-token'", Integer.class));
+    }
+    @Test void queryStringsClientErrorsAndSafeAuthorizationRedirects() throws Exception {
+        String id = register(), verifier = OAuthService.random();
+        for (String endpoint : List.of("token", "revoke")) {
+            var response = request(anonymous, "/oauth/" + endpoint + "?secret=forbidden", "POST", Map.of("client_id", id), true, false, null);
+            assertEquals("invalid_request", json(response, 400).get("error").asText());
+            assertEquals(401, request(anonymous, "/oauth/" + endpoint, "POST", Map.of("client_id", "unknown"), true, false, null).statusCode());
+        }
+        for (var error : Map.of("scope", "invalid_scope", "resource", "invalid_target", "response_type", "unsupported_response_type").entrySet()) {
+            var parameters = authorization(id, verifier); parameters.put(error.getKey(), "wrong"); parameters.remove("state");
+            var response = request(anonymous, "/oauth/authorize?" + form(parameters), "GET", null, false, false, null);
+            assertEquals(302, response.statusCode());
+            var callback = parse(URI.create(response.headers().firstValue("Location").orElseThrow()).getRawQuery());
+            assertEquals(error.getValue(), callback.get("error")); assertEquals(ISSUER, callback.get("iss")); assertFalse(callback.containsKey("state"));
+            parameters.put("state", "preserved state");
+            response = request(anonymous, "/oauth/authorize?" + form(parameters), "GET", null, false, false, null);
+            assertEquals("preserved state", parse(URI.create(response.headers().firstValue("Location").orElseThrow()).getRawQuery()).get("state"));
+            parameters.put("redirect_uri", "https://attacker.example.com/");
+            assertEquals(400, request(anonymous, "/oauth/authorize?" + form(parameters), "GET", null, false, false, null).statusCode());
+        }
+    }
+    @Test void unicodeNameConsentAddressAndClientRetention() throws Exception {
+        for (String name : List.of("fake\u202eclient", "zero\u200bwidth", "mark\u2066"))
+            assertThrows(OAuthService.Error.class, () -> oauth.register(Map.of("redirect_uris", List.of(REDIRECT), "client_name", name)));
+        String id = register(), verifier = OAuthService.random();
+        var page = request(client, "/oauth/authorize?" + form(authorization(id, verifier)), "GET", null, false, false, null);
+        assertTrue(page.body().contains(REDIRECT)); assertTrue(page.body().contains("자가 등록된 확인되지 않은 클라이언트"));
+        approve(id, verifier, List.of(source));
+        oauth.clock = Clock.offset(Clock.systemUTC(), Duration.ofDays(59)); oauth.view(); assertNotNull(oauth.client(id));
+        oauth.clock = Clock.offset(Clock.systemUTC(), Duration.ofDays(61)); oauth.view(); assertThrows(OAuthService.Error.class, () -> oauth.client(id));
+        oauth.clock = Clock.systemUTC();
+        for (int i = 0; i < 25; i++) oauth.register(Map.of("redirect_uris", List.of(REDIRECT)), "2001:db8::" + Integer.toHexString(i + 1));
+        assertEquals(20, db.queryForObject("SELECT COUNT(*) FROM oauth_clients WHERE approved=FALSE", Integer.class));
+        assertEquals(1, db.queryForObject("SELECT COUNT(*) FROM audit WHERE action='oauth-register-evict'", Integer.class));
+    }
+    @Test void recentAuthenticationAndAtomicPendingAreRequiredAtConsent() {
+        var controller = new OAuthController(oauth, storage, new ClientAddresses(""));
+        var request = new org.springframework.mock.web.MockHttpServletRequest();
+        var response = new org.springframework.mock.web.MockHttpServletResponse();
+        var csrfToken = new org.springframework.security.web.csrf.DefaultCsrfToken("X-CSRF-TOKEN", "_csrf", "test-csrf");
+        var admin = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken("admin", null,
+                List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ADMIN")));
+        String id = oauth.register(Map.of("redirect_uris", List.of(REDIRECT))).get("client_id").toString();
+        authorization(id, OAuthService.random()).forEach(request::addParameter);
+        request.getSession().setAttribute("admin.authenticatedAt", System.currentTimeMillis() - 600001);
+        assertTrue(controller.authorize(request, response, admin, csrfToken).contains("id=\"login\""));
+        request.getSession().setAttribute("admin.authenticatedAt", System.currentTimeMillis());
+        controller.authorize(request, response, admin, csrfToken);
+        var pending = (OAuthController.Pending)request.getSession().getAttribute("oauth.pending");
+        assertNotNull(pending); assertNull(request.getSession().getAttribute("oauth.nonce"));
+        controller.authorize(request, response, admin, csrfToken);
+        var replacement = (OAuthController.Pending)request.getSession().getAttribute("oauth.pending");
+        assertNotEquals(pending.nonce(), replacement.nonce());
+        request.setParameter("nonce", pending.nonce()); request.setParameter("decision", "approve"); request.setParameter("sources", source);
+        assertEquals(400, assertThrows(OAuthService.Error.class, () -> controller.consent(request, response, admin, csrfToken)).status);
+        request.setParameter("nonce", replacement.nonce());
+        request.getSession().setAttribute("admin.authenticatedAt", System.currentTimeMillis() - 600001);
+        assertEquals(401, assertThrows(OAuthService.Error.class, () -> controller.consent(request, response, admin, csrfToken)).status);
+        assertEquals(0, db.queryForObject("SELECT COUNT(*) FROM oauth_grants", Integer.class));
+        request.getSession().setAttribute("admin.authenticatedAt", System.currentTimeMillis());
+        controller.consent(request, response, admin, csrfToken);
+        assertEquals(302, response.getStatus()); assertNull(request.getSession().getAttribute("oauth.pending"));
+        assertEquals(400, assertThrows(OAuthService.Error.class, () -> controller.consent(request, response, admin, csrfToken)).status);
+    }
+
 }

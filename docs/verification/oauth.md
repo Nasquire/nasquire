@@ -103,3 +103,46 @@ PLAYWRIGHT_BROWSERS_PATH=build/verification/deps/browsers build/verification/ven
 
 
 최종 `./gradlew build -q`·`./gradlew -Pfull build -q`도 모두 종료 0이다. core 27·app 38·full 19개 테스트 실패/오류/생략 0이며, 실제 서버 Clock 기반 만료·갱신 재사용/철회·소스 격리 회귀 테스트를 포함한다. 상세 빌드 결과는 `build/verification/followup/build-results.json`을 따른다.
+
+## 2차 교차 검토 반영
+
+검증일 2026-10-25, 기준 `a44466d`. M2의 승인 POST 후 CSP는 검증된 해당 redirect origin만 허용하고, M3의 DCR 미지 메타데이터는 무시·미저장하며 scope는 `mcp:read`만 허용하는 기존 처리를 확인했다. 두 항목을 다시 구현하지 않고 기존 회귀를 유지했다.
+
+| 항목 | 반영 정책과 회귀 근거 |
+| --- | --- |
+| M1 | 엔드포인트별 IP 제한. 제한 창이 차도 유효 코드+PKCE·클라이언트·redirect·resource 또는 유효 리프레시 증명을 별도 조회해 통과시킨다. IPv6 /64 집계, 4096 창 포화 시 가장 오래된 창 축출. `saturatedTokenAndMcpBucketsKeepValidCredentialsWorking`, `OAuthRateLimitTest`에서 정상 교환/갱신·새 IP 허용 검증. 프록시 목록 없는 OAuth 시작 경고를 `OAuthDisabledTest`에서 확인. 필수 설정/전달 헤더 전략은 [설치 안내](../install/oauth.md). |
+| M2·M3 | 콜백 origin CSP와 SDK 선택 메타데이터 회귀를 유지. `officialSdkMetadataKeepsPublicReadOnlyRegistration`과 승인 테스트에서 허용 origin·미지 필드 미저장·scope 제한 확인. |
+| L1 | 429 및 register-evict 감사는 IP(/64)·종류별 분당 첫 1회만 기록하고 반복은 억제한다. 감사 창 4096개가 차면 새 키의 감사도 억제하여 축출을 이용한 로그 홍수를 막는다. 분산 IP 공격의 모든 개별 사건/횟수를 보존하지 않는 정책이다. `OAuthRateLimitTest`와 토큰 포화/등록 정리 테스트로 확인. |
+| L2 | 이름의 Unicode Cf 코드 포인트(양방향 제어·제로폭 포함)를 거부. 승인 HTML은 전체 redirect URI(스킴·호스트·명시 포트·경로·쿼리)를 escape해 표시하고 자가 등록된 미확인 클라이언트 경고를 붙인다. `unicodeNameConsentAddressAndClientRetention` 및 루프백 콜백 승인 회귀. |
+| L3 | token/revoke는 빈 쿼리를 포함해 쿼리 문자열이 있으면 파라미터 파싱 전 400 `invalid_request`. 본문 form만 허용. `queryStringsClientErrorsAndSafeAuthorizationRedirects`. |
+| L4 | 정상 리프레시 회전 직후 직전 토큰을 10초 미만 동안 재제출하면 같은 액세스/리프레시 응답을 돌려준다. 후속 토큰이 이미 회전했거나 10초가 지났으면 이전 토큰 재사용으로 계열 전체를 철회한다. 유예 요청은 새 토큰을 만들거나 만료 상한을 연장하지 않는다. 동시 갱신 2건 동일 응답·유예 후 재사용 철회를 Clock/동시성 회귀로 확인. |
+| L5 | 미승인은 IP(/64)의 해시별 최대 20개이며 먼저 같은 IP의 가장 오래된 미승인을 교체한다. 전체 1000개 포화 시 승인 없는 최장기 행 교체 정책도 유지. 승인 클라이언트는 마지막 승인 만료 시각을 별도 보존하고 유효 승인이 없으며 그 시각에서 30일이 지나면 다음 등록/관리 조회에서 정리한다. 기존 행은 시작 시 승인 만료 최댓값(없으면 생성 시각)으로 이전한다. 59/61일 경계·동일 /64 상한·승인 행 보호 회귀. |
+| L6 | client/redirect 검증 뒤 인가 오류는 검증된 콜백으로 error·선택 state·iss를 반환. state 미제공 시 성공/거부/오류에서 생략한다. token/revoke의 invalid_client는 401, 429는 OAuth JSON과 Retry-After, 토큰을 제시한 401의 Bearer challenge에는 invalid_token을 넣는다. 관련 HTTP 오류/안전 redirect 회귀 유지·추가. |
+| L7 | authenticate/identity는 조회만 수행하므로 서비스 synchronized를 제거했다. 잘못된/누락 Bearer MCP 요청을 IP(/64)당 분당 60회 제한하고 정상 Bearer는 영향받지 않는다. 포화 HTTP 회귀 및 기존 소스 격리·철회 테스트. |
+| L8 | Authorization과 nonce를 하나의 Pending 레코드로 만들어 단일 세션 속성에 저장. POST에서는 세션 잠금 안에서 검증·소비한다. 대기 교체 후 이전 nonce와 소비된 nonce 재사용 거부 회귀. |
+| L9 | 비밀번호 로그인 최종 성공 또는 TOTP/복구 코드 최종 성공 시각을 세션에 기록. 승인 GET/POST 모두 10분 이내 인증을 요구한다. 오래된 GET은 기존 비밀번호→선택 TOTP 로그인 화면을 보여주고, POST는 401로 거부한다. 원래 인가 URL을 다시 열어 재인증해야 한다. 오래된 GET/POST·최근 인증 후 승인과 기존 TOTP 대기/완료 HTTP 회귀. |
+
+리프레시 응답 유예는 프로세스 메모리의 최대 1000계열 캐시로만 제공하며 DB/감사에는 원문 토큰을 저장하지 않는다. 유효기간이 지난 항목은 다음 토큰 요청 때 제거한다. 재시작 또는 캐시 포화로 응답이 없으면 유예를 제공하지 않고 기존 재사용 철회 정책으로 실패한다. 유예 동안 직전 토큰을 가진 주체가 같은 응답을 얻을 수 있으므로 HTTPS와 본문/헤더 로그 제외가 필수다. 다중 인스턴스 간 유예는 지원하지 않는다.
+
+속도 제한은 단일 프로세스 메모리이며 대규모 분산 트래픽·표 축출 공격·유효 토큰을 보유한 주체의 부하는 프록시 경계 제한도 필요하다. 유효 토큰 예외 판별은 제한 포화 상태에서도 인덱스 기반 읽기 조회가 필요하다. 승인/발급/철회 변경의 원자성 잠금은 유지했다.
+
+### 실행 결과
+
+최종 명령별 결과와 상세 로그는 `build/verification/oauth-review2/`에 기록한다. 초기에 변경된 생성자 인자를 누락한 테스트의 컴파일 실패(종료 1), 직접 만든 승인 플래그 행의 보존 조건 차이로 기존 회귀 1건 실패(종료 1)가 있었으며 테스트 인자와 유효한 보존 시각 조건을 수정했다. 이후 OAuth 회귀는 종료 0이었다.
+
+
+| 최종 명령 | 종료 코드 | 결과 |
+| --- | ---: | --- |
+| `./gradlew :app:test --tests '*OAuth*' -q` | 0 | OAuth 정책·오류·동시성·제한·최근 인증 회귀 통과 |
+| `./gradlew build -q` | 0 | lite 빌드·프런트엔드·런타임 클래스 경로 검사·테스트 통과 |
+| `./gradlew -Pfull build -q` | 0 | full 빌드·테스트 통과 |
+| `VERIFY_PORT=8104 python3 scripts/verify-oauth.py` | 0 | DCR·로그인·CSRF 승인·코드 교환·MCP 검색·refresh·revoke 통과 |
+| `PLAYWRIGHT_BROWSERS_PATH=build/verification/deps/browsers build/verification/venv/bin/python scripts/verify-oauth-sdk.py` | 0 | 공식 SDK 401 발견→DCR→실제 Chromium 승인→callback→MCP·자동 refresh·철회 통과 |
+| 내부 식별자·경로·키 패턴 `rg -l` 검사 | 1 | 추적 파일·새 회귀·커밋 메시지 일치 0건(검사 래퍼 종료 0) |
+| `git diff --check` | 0 | 공백 오류 없음 |
+
+최종 테스트 합계 core 27·app 44·full 19개, 실패·오류·생략 모두 0. 빌드와 실제 서버 검증은 순서대로 실행했으며 두 스크립트는 8104만 사용하고 서버 종료/포트 반환을 확인했다. 기존 가상환경·브라우저를 사용했으며 패키지를 설치하지 않았다. 마지막 JAR는 full 빌드 산출물이고 두 실제 bootRun 검증은 기본 lite 구성이다.
+
+상세 아티팩트는 공개 커밋에서 제외하는 `build/verification/oauth-review2/`의 `commands.json`, `test-summary.json`, `regression.log`, `lite-build.log`, `full-build.log`, `verify-oauth.log`, `verify-oauth-sdk.log`, `sdk-summary.json`, `internal-scan.json`, 초기 실패 `oauth-compile.log`·`oauth-tests.log`다. 실제 SDK 서버 로그·브라우저 자료는 `build/verification/oauth-sdk/`, curl 서버 로그·요약은 `build/verification/oauth-bootrun.log`·`oauth-summary.json`이다.
+
+이번 수정본의 외부 HTTPS 프록시·별도 OS 콜백 리스너·데스크톱 제품 연결·다중 인스턴스·장시간/분산 부하는 환경/범위상 미검증이다. 승인 화면의 10분 만료는 서버 Clock/세션 시각 회귀로 확인했고 실제 브라우저를 10분 기다리는 실측은 하지 않았다. 배포 실측은 [운영자 전달 결과](deploy.md#운영자-추가-실측-기록-2026-10-25)이며 이번 OAuth 수정본의 배포를 의미하지 않는다. 이미지 실행·헬스체크·arm64·Actions 실행은 여전히 미검증이다.

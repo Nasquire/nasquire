@@ -76,15 +76,33 @@ class LoginAttempts {
     }
     private record Window(long start, int count) { }
     private final Map<String, Window> windows = new LinkedHashMap<>();
-    /** OAuth 공개 엔드포인트의 성공 요청도 포함하는 IP별 고정 창 제한. 활성 항목은 축출하지 않는다. */
+    /** IPv6 주소 회전은 /64 하나의 제한 키로 집계한다. DNS 조회는 하지 않는다. */
+    static String network(String ip) {
+        if (ip != null && ip.contains(":") && ip.matches("[0-9a-fA-F:]+")) try {
+            byte[] bytes = java.net.InetAddress.getByName(ip).getAddress();
+            if (bytes.length == 16) return HexFormat.of().formatHex(Arrays.copyOf(bytes, 8)) + "/64";
+        } catch (java.net.UnknownHostException ignored) { }
+        return ip;
+    }
+    /** 엔드포인트별 IP 창, 표가 가득 차면 가장 오래된 항목을 축출한다. */
     synchronized boolean allowOAuth(String endpoint, String ip, long now) {
         windows.entrySet().removeIf(e -> now - e.getValue().start >= 60000);
-        String key = endpoint + ":" + ip;
+        String key = endpoint + ":" + network(ip);
         var window = windows.get(key);
         int maximum = endpoint.equals("register") ? 10 : 60;
-        if (window == null && windows.size() >= 4096 || window != null && window.count >= maximum) return false;
+        if (window != null && window.count >= maximum) return false;
+        if (window == null && windows.size() >= 4096) windows.remove(windows.keySet().iterator().next());
         windows.put(key, new Window(window == null ? now : window.start, window == null ? 1 : window.count + 1));
         return true;
+    }
+    private final Map<String, Long> auditWindows = new LinkedHashMap<>();
+    synchronized boolean auditOAuth(String kind, String ip, long now) {
+        auditWindows.entrySet().removeIf(e -> now - e.getValue() >= 60000);
+        String key = kind + ":" + network(ip);
+        if (auditWindows.containsKey(key)) return false;
+        // 감사 표 포화 시 추가 기록도 억제하여 축출을 이용한 감사 홍수를 막는다.
+        if (auditWindows.size() >= 4096) return false;
+        auditWindows.put(key, now); return true;
     }
     /** 실패 기록을 지운다(테스트·운영 초기화). */
     synchronized void reset(String prefix, String ip, String account) {

@@ -97,6 +97,7 @@ class TotpController {
                 return;
             }
             request.changeSessionId(); request.getSession().removeAttribute("totp.pending");
+            request.getSession().setAttribute("admin.authenticatedAt", System.currentTimeMillis());
             var context = SecurityContextHolder.createEmptyContext();
             context.setAuthentication(new UsernamePasswordAuthenticationToken(storage.user(pending.username), null, storage.user(pending.username).getAuthorities()));
             SecurityContextHolder.setContext(context); new HttpSessionSecurityContextRepository().saveContext(context, request, response);
