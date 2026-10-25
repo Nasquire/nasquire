@@ -1,6 +1,7 @@
 package com.bluesounds.nasquire.full;
 
 import com.bluesounds.nasquire.core.Providers;
+import com.bluesounds.nasquire.core.ExtractionFailure;
 import java.io.*;
 import java.nio.file.*;
 import java.util.concurrent.*;
@@ -35,12 +36,17 @@ public final class TesseractOcrProvider implements Providers.OcrProvider {
             if (tessdata != null && !tessdata.isBlank()) environment.put("TESSDATA_PREFIX", tessdata);
             command.redirectOutput(ProcessBuilder.Redirect.DISCARD); command.redirectError(ProcessBuilder.Redirect.DISCARD);
             process = command.start();
-            if (!process.waitFor(seconds, TimeUnit.SECONDS)) throw new IOException("OCR 시간 상한 초과");
+            if (!process.waitFor(seconds, TimeUnit.SECONDS)) throw new ExtractionFailure("tesseract", null, true, "TimeoutException");
             Path result = folder.resolve("result.txt");
-            if (process.exitValue() != 0 || !Files.isRegularFile(result, LinkOption.NOFOLLOW_LINKS) || Files.size(result) > 1048576) throw new IOException("OCR 실행 실패");
+            if (process.exitValue() != 0) throw new ExtractionFailure("tesseract", process.exitValue(), false, "ProcessFailure");
+            if ( !Files.isRegularFile(result, LinkOption.NOFOLLOW_LINKS) || Files.size(result) > 1048576) throw new ExtractionFailure("tesseract-output", process.exitValue(), false, "OutputFailure");
             return Files.readString(result);
         } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException("OCR 중단"); }
-        catch (IOException e) { throw new IllegalStateException("OCR 실행 파일·언어 데이터·제한을 확인하세요"); }
+        catch (IOException e) {
+            var detail = e instanceof ExtractionFailure ? e
+                    : new ExtractionFailure("tesseract", null, false, e.getClass().getName());
+            throw new IllegalStateException("OCR 실행 파일·언어 데이터·제한을 확인하세요", detail);
+        }
         finally {
             if (process != null && process.isAlive()) {
                 process.descendants().forEach(ProcessHandle::destroyForcibly); process.destroyForcibly();

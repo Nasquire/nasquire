@@ -126,15 +126,19 @@ public final class FullSettings implements AutoCloseable {
     }
     public TextExtractor extractor() {
         return new TextExtractor() {
-            public boolean supports(Path path) { synchronized (FullSettings.this) { return ocr != null && ocr.supports(path); } }
+            public boolean supports(Path name) { synchronized (FullSettings.this) { return ocr != null && ocr.supports(name); } }
             public void extract(Path path, PageConsumer consumer, int max) throws IOException { extractLocated(path, (p, l, t) -> consumer.accept(p, t), max); }
             public void extractLocated(Path path, LocatedConsumer consumer, int max) throws IOException {
+                extractLocated(path, path, consumer, max);
+            }
+            @Override
+            public void extractLocated(Path name, Path content, LocatedConsumer consumer, int max) throws IOException {
                 TextExtractor snapshot; synchronized (FullSettings.this) { snapshot = ocr; }
                 // 설정 해제와 색인 선택이 겹쳐도 텍스트 PDF는 기존 추출기로 처리한다.
                 if (snapshot == null) {
-                    if (new PdfTextExtractor().supports(path)) new PdfTextExtractor().extractLocated(path, consumer, max);
+                    if (new PdfTextExtractor().supports(name)) new PdfTextExtractor().extractLocated(name, content, consumer, max);
                     else throw new IOException("OCR 공급자가 꺼졌습니다");
-                } else snapshot.extractLocated(path, consumer, max);
+                } else snapshot.extractLocated(name, content, consumer, max);
             }
         };
     }

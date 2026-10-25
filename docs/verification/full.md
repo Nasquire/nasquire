@@ -335,3 +335,27 @@ OCR 종료 확인은 `/proc` 열거·stat 읽기·파싱 실패를 종료 미확
 빌드와 bootRun은 순차 실행했다. 마지막 bootJar는 full 구성이고 런타임 검증은 lite bootRun이다. 필수 완료 기준은 모두 통과했다. 위 조사 중 실패 1회는 수정 전 증상이며 실패 근거를 삭제하지 않았다. 실제 OCR·외부 서비스·다른 아키텍처/파일시스템·cgroup 검증은 앞 절의 이유로 미수행이다.
 
 상세 아티팩트(공개 커밋 제외): `build/verification/final/`의 `results.json`(원인 수정 전 조사·빌드), `stable-results.json`(수정 후 10회·최종 빌드·런타임의 명령/종료 코드/시간), `app-final-08.log`·`app-final-08/app/`·`reproduced-failure.txt`(자연 재현), `app-stable-01`~`app-stable-10`의 로그·XML, `stable-lite-build.log`·`stable-full-build.log`와 모듈별 XML, `test-summary.json`, `runtime.log`·`measurement.json`·`smoke.txt`·`bootrun.log`, `changed-files.txt`. 커밋 메시지는 저장소 루트 `.ai-commit-msg`에 작성했으며 git add/commit/push는 수행하지 않았다.
+
+
+## PDF OCR 원래 이름 보존 수정 (기준 b0bdf4e)
+
+운영자 arm64 진단으로 FullSettings 위임의 이름·내용 분리 오버로드 누락을 확정했다. 기본 구현이 `name`을 버려 확장자 없는 고정 fd를 image 모드로 전달했고 `OcrWorker.image()`가 지원하지 않는 이미지(`stage=render exit=2`)로 실패했다. pdf 모드·쪽 1 수동 실행은 정상이었다. FullSettings는 원래 이름을 OCR 공급자와 OCR off 시 PDF 폴백에 전달하며 내용은 고정 fd로 읽는다. supports는 원래 이름으로 판단한다. TextExtractor에 별도 이름을 받는 extract 오버로드는 없으며 기존 extract/단일 경로 extractLocated는 이름·내용 분리 경로로 연결된다.
+
+**기존 b0bdf4e 회귀 테스트는 OcrTextExtractor를 직접 사용해 FullSettings 위임을 거치지 않았으므로 이름 누락을 잡지 못했다.**
+
+core·app·full 전체의 `new TextExtractor()`·구현 클래스·위임을 점검했다. 운영 위임은 FullSettings 한 곳이며 OfficeTextExtractor·OcrTextExtractor는 이미 이름 오버로드를 구현한다. PdfTextExtractor·PlainTextExtractor는 내용 파싱에 확장자 분기가 필요 없어 기본 구현을 유지한다. 테스트용 실패/교체 추출기도 운영 위임이 아니다.
+
+`FullSettingsOcrTest`는 확장자 없는 임시 내용 + 존재하지 않는 원래 이름 `scan.pdf`로 실제 격리 PDF 렌더러와 가짜 OCR 공급자를 실행한다. 단일 경로 extract·PNG도 검사한다. 별도 색인 테스트는 FullSettings→IndexingService→SecureFiles 고정 fd→실제 PDF 렌더러→가짜 OCR→Lucene 한/영 검색에서 `location.type=ocr`·쪽 1을 확인한다. OCR off 테스트는 원래 PDF 이름으로 폴백을 선택하고 확장자 없는 내용에서 텍스트를 읽는지, PNG는 거부하는지 검사한다. full 전용 두 테스트는 lite에서 명시적으로 생략되며 PDF 폴백 테스트는 두 구성 모두 실행한다.
+
+수정 후 컨테이너 재측정은 운영자가 후속 수행한다. 로컬 Docker·arm64 실행기·실제 Tesseract가 없어 실제 OCR 정확도·속도·RSS·full cgroup 검증은 수행하지 않는다. 보안 격리/제한은 변경하지 않았다. 상세 아티팩트(공개 커밋 제외): `build/verification/ocr-name/`.
+
+
+| 검증 명령·조건 | 종료 코드 | 결과 |
+| --- | ---: | --- |
+| 기준 b0bdf4e의 FullSettings로 `./gradlew -Pfull :app:test --tests '*FullSettingsOcrTest' -q` | 1 | 3건 모두 실패: 직접 PDF 호출은 `stage=render exit=2`·IllegalArgumentException, 색인 결과 0건, OCR off PDF 폴백은 IOException. 실행 뒤 수정본 복원, 실패 XML·로그 보존 |
+| `./gradlew build -q` | 0 | lite 빌드 통과. 새 테스트 중 full 전용 2건은 조건부 생략, PDF 폴백은 통과 |
+| `./gradlew -Pfull build -q` | 0 | core 28·app 47·full 21개, 실패/오류/생략 모두 0. 신규 회귀 3건 통과 |
+| 내부 식별자·경로·비밀값 패턴 `rg --pcre2` | 1 | 공개 대상 추적/미추적 파일에서 일치 0건. 기존 거부 테스트의 `example.com` 가상 자격 증명은 제외 |
+| `git diff --check` | 0 | 공백 오류 없음 |
+
+개발 서버는 시작하지 않았다. 상세 로그·종료 코드: `build/verification/ocr-name/`의 `baseline.log`, `baseline.exit`, `baseline-test.xml`, `lite-build.log`, `lite-build.exit`, `lite-test.xml`, `full-build.log`, `full-build.exit`, `full-test.xml`, `test-summary.json`, `extractor-audit.txt`, `internal-scan.log`, `internal-scan.exit`, `diff-check.log`, `diff-check.exit`, `environment.json`. 최초 내부 패턴 검사는 기존 `example.com` 거부 테스트 2건을 탐지했으며 `internal-scan-initial.*`로 보존했다. 실제 내부 정보 검출은 없었다. 커밋 메시지는 `.ai-commit-msg`에 한국어로 작성했고 git add/commit/push는 수행하지 않았다.

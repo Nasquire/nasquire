@@ -75,6 +75,54 @@ class FullProviderTest {
         assertThrows(IllegalStateException.class, () -> p.recognize(new byte[] {1}, "kor+eng")); assertTrue(System.nanoTime() - start < 3_000_000_000L);
         try (var files = Files.list(temp.resolve("ocr-tmp"))) { assertEquals(0, files.count()); }
     }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void jpegOnlyPdfThroughWorkerAndTesseract(boolean pillow) throws Exception {
+        Path fake = temp.resolve("fake-pdf-ocr");
+        Files.writeString(fake, "#!/bin/sh\n[ -z \"$JAVA_TOOL_OPTIONS\" ] || exit 9\n[ -s \"$1\" ] || exit 8\nprintf 'OCRTESTALPHA 스캔 베타' > \"$2.txt\"\n");
+        assertTrue(fake.toFile().setExecutable(true));
+        Path pdf = temp.resolve("jpeg-scan.pdf");
+        var image = new java.awt.image.BufferedImage(1400, 500, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        var graphics = image.createGraphics();
+        graphics.setColor(java.awt.Color.WHITE); graphics.fillRect(0, 0, 1400, 500);
+        graphics.setColor(java.awt.Color.BLACK); graphics.drawString("Scanned invoice OCRTESTALPHA 2026", 30, 80); graphics.dispose();
+        try (var doc = new org.apache.pdfbox.pdmodel.PDDocument()) {
+            var page = new org.apache.pdfbox.pdmodel.PDPage(new org.apache.pdfbox.pdmodel.common.PDRectangle(1400, 500));
+            doc.addPage(page);
+            try (var content = new org.apache.pdfbox.pdmodel.PDPageContentStream(doc, page)) {
+                content.drawImage(org.apache.pdfbox.pdmodel.graphics.image.JPEGFactory.createFromImage(doc, image), 0, 0, 1400, 500);
+            }
+            doc.save(pdf.toFile());
+        } finally { image.flush(); }
+        if (pillow) {
+            // Pillow 12.1.1, L(1400×500)·Noto Sans CJK 44pt·한/영 문구 → RGB PDF 저장 표본.
+            // 바이너리 표본으로 보관해 테스트 실행에 Python/Pillow·시스템 글꼴 설치가 필요하지 않다.
+            try (var sample = getClass().getResourceAsStream("/scan-pillow.pdf")) {
+                assertNotNull(sample); Files.copy(sample, pdf, StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
+        var extractor = new OcrTextExtractor(new TesseractOcrProvider(temp, 30, 512, fake.toString()), 20, temp);
+        String oldClassPath = System.getProperty("java.class.path");
+        String jar = System.getenv("NASQUIRE_OCR_TEST_JAR");
+        if (jar != null) System.setProperty("java.class.path", jar);
+        try {
+            extractor.extractLocated(pdf, (page, location, text) -> {
+                assertEquals(1, page); assertEquals("ocr", location.type());
+                assertEquals("OCRTESTALPHA 스캔 베타", text);
+            }, 1000);
+            try (var index = new SearchIndex(temp.resolve("jpeg-index"));
+                 var indexing = new IndexingService(index, 32 * 1024 * 1024, 10000, 0, List.of(extractor))) {
+                indexing.scan(List.of(new Source("pdf", "PDF", temp, List.of("**/*.pdf"), List.of())));
+                assertEquals(1, indexing.status("pdf").indexed()); assertEquals(0, indexing.status("pdf").errors());
+                for (String query : List.of("OCRTESTALPHA", "베타")) {
+                    var hits = index.search(query, Set.of("pdf"), 10);
+                    assertEquals(1, hits.size()); assertEquals("ocr", hits.getFirst().location().type());
+                    assertEquals(1, hits.getFirst().location().page());
+                }
+            }
+        } finally { System.setProperty("java.class.path", oldClassPath); }
+        try (var files = Files.list(temp.resolve("ocr-tmp"))) { assertEquals(0, files.count()); }
+    }
     @Test void ocrImagesPdfPageEvidenceAndCharacterPagePixelLimits() throws Exception {
         var calls = new AtomicInteger();
         var extractor = new OcrTextExtractor((image, language) -> { assertEquals("kor+eng", language); calls.incrementAndGet(); return "인식 OCR"; }, 1, temp);
