@@ -40,9 +40,23 @@ public final class OcrWorker {
             };
             Files.writeString(folder.resolve("count"), String.valueOf(count), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
             return OK;
-        } catch (OcrTextExtractor.Limit | IllegalArgumentException e) { return LIMIT; }
-        catch (OutOfMemoryError e) { return MEMORY; }
-        catch (Throwable e) { return FAILED; }
+        } catch (OcrTextExtractor.Limit | IllegalArgumentException e) { report(args, e); return LIMIT; }
+        catch (OutOfMemoryError e) { report(args, e); return MEMORY; }
+        catch (Throwable e) { report(args, e); return FAILED; }
+    }
+
+    /** 스택·메시지 대신 예외 종류만 제한된 파일에 남긴다. */
+    private static void report(String[] args, Throwable failure) {
+        if (args.length < 2) return;
+        Path folder = Path.of(args[1]);
+        if (!jobFolder(folder)) return;
+        Throwable cause = failure;
+        for (int depth = 0; depth < 4 && cause.getCause() != null; depth++) cause = cause.getCause();
+        String type = failure.getClass().getName();
+        if (cause != failure) type += "$cause$" + cause.getClass().getName();
+        if (type.length() > 160) type = failure.getClass().getName();
+        try { Files.writeString(folder.resolve("failure"), type, StandardOpenOption.CREATE_NEW); }
+        catch (IOException ignored) { }
     }
 
     /**

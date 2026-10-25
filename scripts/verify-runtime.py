@@ -74,6 +74,10 @@ with tempfile.TemporaryDirectory(prefix='runtime-', dir=artifacts) as folder, (a
         measurement = {'embedding': os.environ.get('VERIFY_EMBEDDING', 'off'), 'documents': 48, 'officeHwp': 8, 'markdown': 20, 'pdf': 20, 'pdfPages': 40, 'heapMiB': 256, 'gc': 'SerialGC',
                        'startupPeakRssKiB': peak_rss, 'workloadPeakRssKiB': workload, 'peakRssMiB': round(max(peak_rss, workload) / 1024, 1),
                        'uploadBytes': 16777216, 'uploadShareCurl': True, 'strictContainerLimit': False, 'curlSmokeExitCode': result.returncode}
+        # 파일 논리 크기 합계이며 파일시스템 할당량·모델·업로드 크기와 구분한다.
+        index_folder = pathlib.Path(folder) / 'data' / 'index'
+        measurement['indexFileBytes'] = sum(p.stat().st_size for p in index_folder.rglob('*') if p.is_file())
+        measurement['sampleFileBytes'] = sum(p.stat().st_size for p in (root / 'build' / 'samples').rglob('*') if p.is_file())
         (artifacts / 'measurement.json').write_text(json.dumps(measurement, indent=2) + '\n')
         print(json.dumps(measurement, indent=2))
     finally:

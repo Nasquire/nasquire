@@ -67,6 +67,8 @@ class ApplicationIntegrationTest {
         assertEquals(1, json(call("/api/search?query=ocean", "GET", null, token, false), 200).size());
         assertEquals(403, call("/api/search?query=ocean&source=" + otherId, "GET", null, token, false).statusCode());
         assertEquals(403, call("/api/tokens", "GET", null, token, false).statusCode());
+        assertEquals(403, call("/api/sources/" + id + "/status", "GET", null, token, false).statusCode());
+        assertEquals(200, call("/api/sources/" + id + "/status", "GET", null, null, true).statusCode());
         assertEquals(403, call("/api/sources", "POST", Map.of(), token, false).statusCode());
         assertEquals(401, call("/api/search?query=ocean", "GET", null, "bad-token", false).statusCode());
         assertEquals(401, call("/mcp", "POST", Map.of(), null, true).statusCode());

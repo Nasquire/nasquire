@@ -62,7 +62,7 @@
 
 ### 남은 일·검증 한계
 
-- [ ] Docker가 없는 환경이므로 이미지 빌드·실제 512 MiB cgroup·비루트 PUID/PGID 볼륨 권한·amd64/arm64 실행 검증.
+- [x] 운영자 후속 실측: amd64 lite/full 이미지 빌드·lite JAR 512 MiB cgroup, arm64 lite 컨테이너 512/384/320 MiB·비루트·읽기 전용 루트·업로드 네이티브 실행. [범위](verification/deploy.md#arm64-컨테이너-운영자-실측-2026-10-25-기준-0bb5463). 실제 NAS ACL·amd64 컨테이너 실행은 미검증.
 - [ ] 실제 NAS 대용량 자료·큰 PDF/손상 PDF·다중 클라이언트 부하와 파일 캐시 포함 메모리 측정.
 - [x] 로그인 시도 제한: IP·계정별 실패 지연/일시 잠금·감사·성공 초기화.
 - [x] 선택 TOTP·관리자 복구 절차·한/영 등록/해제 및 로그인 UI 구현(API 통합 검증, 실제 브라우저 검증은 아래 미완료 유지).
@@ -85,7 +85,7 @@
 - [x] THIRD-PARTY·운영 설정·모델 출처·SHA-256·native amd64/arm64 포함 여부 문서화. LICENSE·LICENSE-EXCEPTIONS.md·NOTICE 유지.
 - [x] 가짜 원격 HTTP 공급자로 별도 curl·MCP 혼합 검색 및 RSS 실측: 286212 KiB(279.5 MiB), 서버 종료·포트 반환 확인.
 - [ ] **내장 모델을 켠 512 MiB 목표 달성: 미완료.** 최종 실측 876256 KiB(855.7 MiB). 초기 861.3 MiB, ONNX 설정 조정 860.5 MiB, 할당자/토크나이저 병렬 조정 후 855.7 MiB로 목표 초과. 작은 배치·직렬 추론만으로는 해결되지 않았다. 더 작은 다국어 모델 또는 네이티브 토크나이저/모델 로드 메모리 개선이 필요하다. 512 MiB compose에서 내장 모델을 켜지 않는다.
-- [ ] Docker 실제 cgroup 512 MiB, arm64 네이티브 실행, 실제 브라우저 한/영 화면·접근성 검증. amd64 모델 실행과 JAR 내 양쪽 native 파일 포함만 확인했다.
+- [ ] 내장 모델의 Docker cgroup·arm64 네이티브 추론 실측. lite 컨테이너와 업로드 arm64 네이티브·headless 브라우저 검증은 후속 절에서 확인했으며 내장 ONNX 모델 arm64 실행을 의미하지 않는다.
 
 ### 판단한 것
 
@@ -252,7 +252,7 @@
 - [x] OCR 자식 회수 시 `/proc` 열거·stat 읽기·파싱 실패는 종료 미확인으로 처리한다. 확인 전에는 슬롯과 작업 폴더를 보유한다. 확실히 사라진 pid와 좀비만 종료로 보며 오류 경로 회귀 테스트 추가.
 - [x] app 간헐 실패 자연 재현(키워드 1건 기대·0건 실제)·원인 수정: 공유 제외 정책 검사를 전용 소스로 격리하고 제외 상태를 직접 색인해 원래 결과 보존 확인. 수정 후 `./gradlew :app:cleanTest :app:test -q` 10회 모두 종료 0(app 25개씩).
 - [x] 최종 `./gradlew build -q`·`./gradlew -Pfull build -q`·`VERIFY_PORT=8101 python3 scripts/verify-runtime.py` 각각 종료 0. core 27·app 25·full 19개 테스트 결과 실패·오류·생략 0. lite 최대 RSS 281.9 MiB, 서버·bootRun 종료/포트 반환 확인. [full 최종 확인](verification/full.md#최종-확인-기준-cd23e83)에 실패 근거와 최종 결과 기록.
-- [ ] 실제 OCR·실제 Qdrant·arm64·NAS/NFS/SMB·악성 코퍼스·512 MiB cgroup 부하 검증은 미실측. PaddleOCR·원격 OCR 클라이언트는 미구현이다. full UI는 아래 후속 검증에서 추가했다.
+- [ ] 실제 Qdrant·내장 모델 arm64·NAS/NFS/SMB·악성 코퍼스·전체 full cgroup 부하 검증. 후속 운영자 arm64 PNG OCR·lite 512 MiB cgroup은 통과했으나 PDF OCR 실패·실제 OCR 품질 비교는 미완료다. PaddleOCR·원격 OCR 클라이언트는 미구현이다. full UI는 아래 후속 검증에서 추가했다.
 - 수용한 한계: NAS/NFS 일반 파일 I/O가 반환하지 않으면 복사·추출은 시간 제한을 보장하지 못한다. 일반 텍스트 추출도 같은 한계다. 운영자는 soft/intr 마운트·타임아웃 설정을 권장하며 실제 동작은 사용하는 클라이언트/파일시스템에서 확인해야 한다.
 
 ## 5a단계 배포 이미지·CI·NAS 설치 안내 (2026-10-24)
@@ -262,8 +262,8 @@
 - [x] lite 기본 compose·full override·ML 독립 예시. 메모리 제한·:ro 소스·선택 업로드 쓰기 볼륨·HTTPS 공개 URL·신뢰 프록시 경계.
 - [x] Docker 공통·Synology·Unraid·TrueNAS 설치 문서와 XML 템플릿. UID/GID·메모리 실측 한계·HTTPS/민감 로그 제외·백업·Qdrant 세대 재색인·오프라인 관리자 복구.
 - [x] 운영자 실측: amd64 Kaniko lite/full 이미지 빌드 성공(`ce94b82`, no-push), lite bootJar 512 MiB cgroup v2 스모크 전 단계 PASS(memory.peak 344 MiB·OOM 0). [측정 범위](verification/deploy.md#운영자-추가-실측-기록-2026-10-25).
-- [ ] 이미지 실제 기동·HEALTHCHECK·컨테이너 자체 512 MiB 검증. JVM 스코프 실측과 이미지 빌드 성공으로 이 항목을 완료 처리하지 않는다.
-- [ ] arm64·NAS 실기·실제 OCR/전체 full 부하·GHCR 게시와 Actions 실실행 — 미실측/미수행. 게시·서버 접속은 이번 범위에서 실행하지 않는다.
+- [x] 운영자 arm64 lite 이미지 실제 기동·약 9초 healthy·컨테이너 512/384/320 MiB 제한 스모크 PASS(peak 320/294/294 MiB·OOM 0). amd64는 JAR cgroup·이미지 빌드만 확인.
+- [ ] NAS 실기·대규모 문서·전체 full 부하·GHCR 게시·Actions 실실행. arm64 full PNG OCR은 성공했으나 이미지 전용 PDF OCR 실패는 해결 확인 전. 게시·서버 접속은 수행하지 않는다.
 - [x] 5b MCP OAuth — 아래 5b 구현·검증 절 참조.
 
 ## 5b단계 MCP OAuth (2026-10-24, 기준 b724657)
@@ -291,3 +291,13 @@
 - [x] M1 정상 토큰 증명 예외·IPv6 /64·4096 창 축출·신뢰 프록시 필수 설정과 경고.
 - [x] L1–L9 감사 집계·Cf 거부/전체 URI 경고·본문 전용·직전 refresh 10초 유예·클라이언트 정리/동일 IP 상한·오류 규격·MCP 실패 제한/읽기 잠금 제거·원자 pending·10분 최근 인증.
 - [x] 항목별 회귀·lite/full 빌드·실제 OAuth/공식 SDK 재검증 모두 종료 0(core 27·app 44·full 19, 실패/오류/생략 0). 내부 정보 검사 0건·8104 종료 확인. [상세](verification/oauth.md#2차-교차-검토-반영).
+
+## arm64 컨테이너 실측·PDF OCR 후속 (기준 0bb5463)
+
+- [x] README·Docker 공통 설치 문서에 64비트 amd64/arm64·32비트 ARM 미지원, 구성별 최소/권장 CPU·메모리·디스크와 실측 한계 표 반영.
+- [x] 운영자 arm64 lite 컨테이너 제한·PNG OCR·이미지 크기 결과와 로컬 48문서 디스크 예시를 [배포 검증](verification/deploy.md)에 기록.
+- [x] 추출 WARN·자식 종료 코드/시간 초과/예외 종류 진단, 관리자 세션 전용 상태 API 최근 실패 최대 5건. 원문·절대 경로·자식 stderr 노출 없음.
+- [x] JPEG 이미지 전용 PDF의 자식 렌더→PNG→가짜 Tesseract→한/영 검색·쪽 근거 회귀 테스트 추가. Docker 기본 JVM 환경·실행 JAR 경로도 별도 검증.
+- [ ] **운영자 arm64 full 이미지 전용 PDF 실패 원인 확정·수정·재배포 실측.** 로컬 amd64에서는 재현하지 못했고 Docker·arm64 실행기·실제 Tesseract가 없다. 25초 관찰만으로 시간 초과라고 확정하지 않는다. 다음 실측에서 WARN의 render/tesseract 단계·exit·timeout·exception을 수집한다. 보안 격리는 유지했다.
+
+- [x] 이번 최종 lite/full 빌드 각각 종료 0(core 28·app 44·full 21), 실행 JAR·Docker 기본 JVM 옵션의 PDF 회귀 2건 종료 0. 48문서 스모크 종료 0·8104 반환, 내부 정보 검사 무일치·공백 검사 통과.

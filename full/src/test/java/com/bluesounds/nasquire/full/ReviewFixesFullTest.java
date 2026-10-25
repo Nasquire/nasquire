@@ -57,7 +57,10 @@ class ReviewFixesFullTest {
         } finally { com.bluesounds.nasquire.core.OcrScratch.deleteTree(relative); }
         // 자식이 상한 위반·실패로 끝나면 그 파일만 실패한다.
         Path broken = Files.write(temp.resolve("broken.png"), new byte[] {1, 2, 3});
-        assertThrows(IOException.class, () -> new OcrTextExtractor(provider, 1, temp).extractLocated(broken, (p, l, t) -> { }, 100));
+        var failed = assertThrows(com.bluesounds.nasquire.core.ExtractionFailure.class,
+                () -> new OcrTextExtractor(provider, 1, temp).extractLocated(broken, (p, l, t) -> { }, 100));
+        assertEquals(2, failed.exitCode());
+        assertTrue(failed.getMessage().contains("timeout=false, exception=java.lang.IllegalArgumentException"));
         // 소스 밖을 가리키는 링크는 열지 않는다.
         Path link = Files.createSymbolicLink(temp.resolve("link.png"), image);
         assertThrows(IOException.class, () -> new OcrTextExtractor(provider, 1, temp).extractLocated(link, (p, l, t) -> { }, 100));

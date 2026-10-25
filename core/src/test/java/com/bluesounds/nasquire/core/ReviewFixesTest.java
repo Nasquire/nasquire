@@ -61,6 +61,31 @@ class ReviewFixesTest {
         }
     }
 
+    @Test void recentFailuresAreBoundedRelativeAndDoNotExposeExceptionMessages() throws Exception {
+        Path root = Files.createDirectories(temp.resolve("failures"));
+        for (int i = 0; i < 7; i++) Files.writeString(root.resolve("bad-" + i + ".txt"), "input");
+        TextExtractor extractor = new TextExtractor() {
+            public boolean supports(Path path) { return true; }
+            public void extract(Path path, PageConsumer consumer, int max) throws IOException {
+                throw new IOException("private-path-and-document-content");
+            }
+        };
+        try (var index = new SearchIndex(temp.resolve("failure-index"));
+             var indexing = new IndexingService(index, 1 << 20, 1000, 0, List.of(extractor))) {
+            indexing.scan(List.of(new Source("s", "S", root, List.of(), List.of())));
+            var status = indexing.status("s");
+            assertEquals(7, status.errors()); assertEquals(5, status.recentFailures().size());
+            for (var failure : status.recentFailures()) {
+                assertTrue(failure.path().matches("bad-[0-6]\\.txt"));
+                assertEquals("IOException", failure.reason());
+            }
+            assertThrows(UnsupportedOperationException.class, () -> status.recentFailures().clear());
+        }
+        var failure = new ExtractionFailure("render", 3, false, "java.lang.OutOfMemoryError");
+        assertTrue(failure.getMessage().contains("exit=3, timeout=false"));
+        assertFalse(new ExtractionFailure("/private", 1, false, "secret content").getMessage().contains("secret"));
+    }
+
     @Test void slowQdrantDoesNotHoldIndexLock() throws Exception {
         Path root = Files.createDirectories(temp.resolve("root"));
         var a = new Source("a", "A", root, List.of(), List.of());

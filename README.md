@@ -27,7 +27,7 @@ full 이미지에는 Tesseract 실행 파일과 kor+eng 데이터가 포함됩�
 
 ## Docker 빠른 시작
 
-Linux amd64/arm64용 이미지는 `ghcr.io/nasquire/nasquire:lite`(기본·`:latest`)와 `:full`입니다. 첫 릴리스 게시 전에는 pull이 실패할 수 있으며 이번 단계에서는 게시하지 않았습니다. 이미지·arm64 실행은 아직 미검증입니다.
+Linux amd64/arm64용 이미지는 `ghcr.io/nasquire/nasquire:lite`(기본·`:latest`)와 `:full`입니다. 첫 릴리스 게시 전에는 pull이 실패할 수 있으며 이번 단계에서는 게시하지 않았습니다. arm64 컨테이너 실행·헬스체크·lite 메모리 제한 실측은 [배포 검증](docs/verification/deploy.md)에 기록했습니다. 실제 NAS·대규모 부하·Actions는 미검증입니다.
 
 데이터 폴더를 실행 UID/GID가 쓸 수 있게 먼저 준비하고 HTTPS 프록시를 구성하세요. 일반 문서는 읽기 전용으로 연결합니다.
 
@@ -44,6 +44,26 @@ docker compose -f deploy/docker-compose.yml up -d
 - [Docker 공통 설치·HTTPS·백업·업그레이드·관리자 복구](docs/install/generic-docker.md)
 - [Synology Container Manager](docs/install/synology.md) · [Unraid와 XML 템플릿](docs/install/unraid.md) · [TrueNAS SCALE](docs/install/truenas.md)
 - [배포·CI 검증과 미실측 항목](docs/verification/deploy.md) · [full 메모리 실측](docs/verification/full.md)
+
+## 최소·권장 사양
+
+64비트 Linux amd64·arm64를 지원 대상으로 합니다. 32비트 ARM은 지원하지 않습니다. 아래 메모리는 컨테이너 제한이며 호스트 OS·다른 서비스의 여유 메모리는 별도로 확보하세요.
+
+| 구성 | 최소: CPU / 메모리 제한 / 디스크 | 권장: CPU / 메모리 제한 / 디스크 |
+| --- | --- | --- |
+| lite 키워드 검색 | 1코어 / 512 MiB / 이미지 + 데이터 | 2코어 / 1 GiB / 이미지 + 데이터용 SSD·여유 공간 |
+| lite + 원격 임베딩 | 1코어 / 512 MiB / 이미지 + 데이터·벡터 색인 | 2코어 / 1 GiB / 데이터용 SSD·벡터 증가분 여유 |
+| full OCR(내장 모델 off) | 1코어 / 1 GiB / 이미지 + 데이터·OCR 임시 공간 | 2코어 / 2 GiB / 데이터용 SSD·OCR 임시 공간 |
+| full + 내장 임베딩·로컬 리랭커 | 2코어 / 1.5 GiB / 이미지 + 데이터·모델 | 4코어 / 3~4 GiB / 데이터·모델용 SSD |
+| ML 전용 서버(full 이미지) | 2코어 / 2 GiB / 이미지 + 모델·OCR 임시 공간 | 4코어 / 3~4 GiB / 모델·OCR 임시 공간용 SSD |
+
+CPU·권장 메모리는 소규모 운영을 위한 시작 기준이며 처리량 보장값은 아닙니다. lite는 arm64 컨테이너 512/384/320 MiB 제한에서 스모크를 통과했지만, **최소 지원 기준은 512 MiB**입니다. 384/320 MiB는 소규모 시험 결과로 보장하지 않습니다. 원격 임베딩의 공급자 비용·서버 자원은 별도입니다.
+
+arm64 이미지 크기는 lite 약 638 MB, full 약 899 MB(운영자 측정)입니다. 디스크는 이미지 크기에 `/data`의 DB·색인·로그·백업 여유와 선택 업로드/휴지통을 더하고, 모델을 쓰면 실제 모델 파일 크기와 다운로드 임시 공간을 더합니다. 색인은 원본 파일 개수/바이트만으로 산정할 수 없고 추출 텍스트 양·벡터 수에 비례합니다. OCR은 작업당 PNG 합계 상한 256 MiB 외에 원본 복사·PDF scratch 공간이 필요합니다.
+
+내장 E5 검색 서버의 기존 최대 RSS는 855.7 MiB이며 로컬 리랭커/ML 서버도 512 MiB를 초과했습니다. ML 두 모델 실측은 1047.8 MiB입니다. full OCR의 1 GiB는 PNG 1건 성공을 근거로 한 시작 기준이며 **PDF OCR 실패는 아직 해결 확인 전**입니다. 1.5 GiB/2 GiB도 모델·OCR 동시 부하를 보장하지 않습니다. 문서 수 증가에 따른 메모리 영향·대규모 자료는 미실측입니다.
+
+실측 범위와 소규모 디스크 예시는 [배포 검증](docs/verification/deploy.md)을 참고하세요.
 
 ## Configuration
 
@@ -73,7 +93,7 @@ java --enable-native-access=ALL-UNNAMED -Xmx256m -XX:+UseSerialGC -jar app/build
 
 Include/exclude globs use paths relative to the source, one per line in the UI. An empty include list includes all supported formats. `**/*.pdf` includes root-level PDFs too. Default exclusions always apply: `@eaDir`, `#recycle`, `#snapshot`, `.DS_Store`, `Thumbs.db`, `~$*`, `.~*`, backup `*~`, and `.tmp`, `.temp`, `.part`, `.swp`, `.swo`, `.crdownload` files. Directory symlinks are skipped; file symlinks are read only when their resolved target stays inside the source. Returned relative names use NFC normalization. Source and data directories must not overlap.
 
-One low-priority worker scans and indexes sequentially. Size/mtime changes and deletions are reflected on later scans. Changes preserving both values require **Reindex**. Failed extraction is reported in source status and retried. A restart rebuilds source indexes after stability checks. Text is split into 1200-character chunks without overlap; PDF page numbers start at 1. The `location` field records PDF `page`, PowerPoint `slide`, Excel `sheet`/`rowFrom`/`rowTo`, and Word/HWP `paragraph`/optional `heading`. Existing `page` is a compatibility field (extraction order for new formats); use `location` for citations. Paragraph locations do not imply printed pages. Scanned PDFs need future OCR support. Search returns chunk text without HTML highlighting.
+One low-priority worker scans and indexes sequentially. Size/mtime changes and deletions are reflected on later scans. Changes preserving both values require **Reindex**. Failed extraction is reported in source status and retried. A restart rebuilds source indexes after stability checks. Text is split into 1200-character chunks without overlap; PDF page numbers start at 1. The `location` field records PDF `page`, PowerPoint `slide`, Excel `sheet`/`rowFrom`/`rowTo`, and Word/HWP `paragraph`/optional `heading`. Existing `page` is a compatibility field (extraction order for new formats); use `location` for citations. Paragraph locations do not imply printed pages. Scanned PDFs require full OCR; the reported arm64 image-only PDF failure remains under investigation. Search returns chunk text without HTML highlighting.
 
 Office/HWP parsing additionally caps originals at 8 MiB, ZIP entries at 1024, inflated entries at 8 MiB and total inflated bytes at 16 MiB, with a minimum 1% compression ratio. XML depth is capped at 64 and nodes at 100000 per entry; HWP total expanded streams are capped at 2 MiB. Files exceeding these limits, encrypted or corrupt files, and documents with over 4096 nonempty extraction units are reported as errors. XLSX shared strings/styles and XLS SST remain in bounded memory. Formula values come from saved results; formulas are never executed. These conservative limits trade large-document coverage for the 512 MiB runtime goal.
 
@@ -90,7 +110,7 @@ Authenticate reading requests with `Authorization: Bearer <token>` or an adminis
 | GET, POST | `/api/sources` | List/register sources (`name`, `path`, `includes`, `excludes`, optional `kind`: `directory` or `upload`) |
 | PUT, DELETE | `/api/sources/{id}` | Update/remove a source |
 | POST | `/api/sources/{id}/reindex` | Queue a complete rebuild |
-| GET | `/api/sources/{id}/status` | State, indexed/pending file counts, errors |
+| GET | `/api/sources/{id}/status` | State, indexed/pending file counts, errors, up to five recent relative paths and safe failure reasons (administrator session only) |
 | GET, POST | `/api/tokens` | List/issue tokens (`name`, `expiresAt` in Unix milliseconds, `sources` ID array) |
 | DELETE | `/api/tokens/{id}` | Revoke a token |
 | GET | `/api/audit` | Most recent 200 events (10,000 retained) |

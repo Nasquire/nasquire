@@ -87,6 +87,10 @@ public final class OcrTextExtractor implements TextExtractor {
     String recognizeImage(byte[] data) throws IOException {
         try (var job = sandbox.single(data)) { return recognize(job.page(1)); }
         catch (Limit e) { throw new IllegalArgumentException("이미지 오류"); }
+        catch (ExtractionFailure e) {
+            if (Integer.valueOf(OcrWorker.LIMIT).equals(e.exitCode())) throw new IllegalArgumentException("이미지 오류");
+            throw e;
+        }
     }
     /** 이미지 상한 위반. ML 서버는 입력 오류(400)로 바꾼다. */
     static final class Limit extends IOException { Limit(String message) { super(message); } }

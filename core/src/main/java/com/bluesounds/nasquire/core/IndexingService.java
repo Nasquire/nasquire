@@ -9,7 +9,14 @@ import java.util.function.Supplier;
 
 /** 단일 낮은 우선순위 작업자가 검사·추출·색인을 순서대로 수행한다. */
 public final class IndexingService implements AutoCloseable {
-    public record Status(String state, int indexed, int pending, int errors, String message) { }
+    private static final System.Logger LOG = System.getLogger(IndexingService.class.getName());
+    public record Failure(String path, String reason) { }
+    public record Status(String state, int indexed, int pending, int errors, String message, List<Failure> recentFailures) {
+        public Status { recentFailures = List.copyOf(recentFailures); }
+        public Status(String state, int indexed, int pending, int errors, String message) {
+            this(state, indexed, pending, errors, message, List.of());
+        }
+    }
     private record Stamp(long size, long mtime, long stableSince, boolean indexed) { }
     private final SearchIndex index;
     private final long maxBytes, stableMillis;
@@ -64,6 +71,7 @@ public final class IndexingService implements AutoCloseable {
         var previous = snapshots.computeIfAbsent(source.id(), k -> new HashMap<>());
         var next = new HashMap<String, Stamp>();
         int[] counts = {0, 0, 0};
+        var failures = new ArrayList<Failure>();
         statuses.put(source.id(), new Status("scanning", 0, 0, 0, ""));
         try {
             Path root = source.root().toRealPath();
@@ -127,14 +135,22 @@ public final class IndexingService implements AutoCloseable {
                     } catch (IOException | RuntimeException | OutOfMemoryError | StackOverflowError e) {
                         // 한 파일의 추출 메모리 부족이 소스 전체 검사를 멈추지 않게 그 파일만 오류로 남긴다.
                         counts[2]++;
+                        // 예외 메시지·스택에는 절대 경로·문서 내용·원격 응답이 있을 수 있어 출력하지 않는다.
+                        Throwable detail = e;
+                        for (int depth = 0; depth < 4 && !(detail instanceof ExtractionFailure) && detail.getCause() != null; depth++) detail = detail.getCause();
+                        String reason = detail instanceof ExtractionFailure ? e.getClass().getSimpleName() + ": " + detail.getMessage() : e.getClass().getSimpleName();
+                        String relativeName = Source.normalized(relative).replaceAll("[\\p{Cntrl}\\p{Cf}]", "?");
+                        LOG.log(System.Logger.Level.WARNING, "파일 추출 실패: {0}; {1}", relativeName, reason);
+                        if (failures.size() == 5) failures.removeFirst();
+                        failures.add(new Failure(relativeName, reason));
                     }
-                    statuses.put(source.id(), new Status("scanning", counts[0], counts[1], counts[2], ""));
+                    statuses.put(source.id(), new Status("scanning", counts[0], counts[1], counts[2], "", failures));
                     return FileVisitResult.CONTINUE;
                 }
             });
             for (String deleted : previous.keySet()) if (!next.containsKey(deleted)) index.delete(source.id() + ":" + deleted);
             snapshots.put(source.id(), next);
-            return new Status(counts[2] == 0 ? "ready" : "error", counts[0], counts[1], counts[2], counts[2] == 0 ? "" : "일부 파일 추출 실패");
+            return new Status(counts[2] == 0 ? "ready" : "error", counts[0], counts[1], counts[2], counts[2] == 0 ? "" : "일부 파일 추출 실패", failures);
         } catch (IOException | RuntimeException e) {
             return new Status("error", 0, 0, 1, "소스를 읽을 수 없습니다");
         }

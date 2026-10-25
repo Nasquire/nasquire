@@ -1,6 +1,7 @@
 package com.bluesounds.nasquire.full;
 
 import com.bluesounds.nasquire.core.OcrScratch;
+import com.bluesounds.nasquire.core.ExtractionFailure;
 import java.io.*;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
@@ -90,23 +91,30 @@ final class OcrSandbox {
             environment.put("PATH", "/usr/bin:/bin"); environment.put("LANG", "C.UTF-8"); environment.put("MALLOC_ARENA_MAX", "2");
             builder.redirectInput(ProcessBuilder.Redirect.from(new File("/dev/null")));
             builder.redirectOutput(ProcessBuilder.Redirect.DISCARD); builder.redirectError(ProcessBuilder.Redirect.DISCARD);
-            process = builder.start();
+            try { process = builder.start(); }
+            catch (IOException e) { throw new ExtractionFailure("render-start", null, false, e.getClass().getName()); }
             boolean finished;
             try { finished = process.waitFor(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS); }
             catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException("OCR 중단"); }
-            if (!finished) throw new IOException("이미지 렌더링·디코딩 시간 초과");
+            if (!finished) throw new ExtractionFailure("render", null, true, "TimeoutException");
             int exit = process.exitValue();
             // 결과 검사 전에 남은 자손도 회수해 출력 파일 변경을 막는다. 미회수 시 finally의 회수자가 슬롯을 보유한다.
             if (!kill(process, 5_000)) throw new IOException("OCR 자손 종료 확인 실패");
             process = null;
-            if (exit == OcrWorker.LIMIT) throw new OcrTextExtractor.Limit("OCR 이미지 상한 초과 또는 입력 오류");
-            if (exit == OcrWorker.MEMORY) throw new IOException("이미지 처리 메모리 부족");
-            if (exit != OcrWorker.OK) throw new IOException("OCR 이미지 작업자 실패");
+            if (exit != OcrWorker.OK) {
+                String type = "unknown";
+                try { type = new String(readBounded(folder.resolve("failure"), 160), java.nio.charset.StandardCharsets.US_ASCII); }
+                catch (IOException ignored) { }
+                throw new ExtractionFailure("render", exit, false, type);
+            }
             int count;
-            try { count = Integer.parseInt(new String(readBounded(folder.resolve("count"), 16), java.nio.charset.StandardCharsets.US_ASCII).trim()); }
-            catch (NumberFormatException e) { throw new IOException("OCR 이미지 작업자 출력 오류"); }
-            if (count < 1 || count > maxPages || (!pages.isEmpty() && count != units)) throw new IOException("OCR 이미지 작업자 출력 오류");
-            checkOutput(folder, count);
+            try {
+                count = Integer.parseInt(new String(readBounded(folder.resolve("count"), 16), java.nio.charset.StandardCharsets.US_ASCII).trim());
+                if (count < 1 || count > maxPages || (!pages.isEmpty() && count != units)) throw new IOException("OCR 이미지 작업자 출력 오류");
+                checkOutput(folder, count);
+            } catch (IOException | NumberFormatException e) {
+                throw new ExtractionFailure("render-output", exit, false, e.getClass().getName());
+            }
             done = true;
             return new Job(folder, count);
         } finally {
