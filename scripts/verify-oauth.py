@@ -111,7 +111,7 @@ with tempfile.TemporaryDirectory(prefix='oauth-', dir=artifacts) as temporary, (
         client_id = registration['client_id']
         passed('DCR without authorization')
         csrf = json_call('/api/auth', admin=True)['csrfToken']
-        password = secrets.token_urlsafe(24)
+        password = secrets.token_urlsafe(24) + 'a1!'
         curl('/api/setup', 'POST', {'username': 'admin', 'password': password}, admin=True)
         curl('/api/login', 'POST', {'username': 'admin', 'password': password}, form=True, admin=True)
         password = None

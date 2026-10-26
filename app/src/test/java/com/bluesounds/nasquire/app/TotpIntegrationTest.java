@@ -45,7 +45,7 @@ class TotpIntegrationTest {
     int login() throws Exception {
         auth();
         var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/login")).header("X-CSRF-TOKEN", csrf)
-                .header("Content-Type", "application/x-www-form-urlencoded").POST(HttpRequest.BodyPublishers.ofString("username=admin&password=example-password-123")).build();
+                .header("Content-Type", "application/x-www-form-urlencoded").POST(HttpRequest.BodyPublishers.ofString("username=admin&password=legacy-password")).build();
         int status = client.send(request, HttpResponse.BodyHandlers.ofString()).statusCode(); auth(); return status;
     }
     void resetAttempts() { attempts.reset("", "127.0.0.1", "admin"); attempts.reset(LoginAttempts.MANAGE, "127.0.0.1", "admin"); }
@@ -53,14 +53,18 @@ class TotpIntegrationTest {
     String sessionId() { return ((CookieManager)client.cookieHandler().orElseThrow()).getCookieStore().getCookies().stream().filter(c -> c.getName().equals("JSESSIONID")).findFirst().orElseThrow().getValue(); }
     @Test void enrollmentChallengeRecoveryAndDisable() throws Exception {
         auth();
+        var invalidPassword = json(call("/api/setup", "POST", Map.of("username", "admin", "password", "abcdef12"), null, true), 400);
+        assertEquals(PasswordPolicy.MESSAGE, invalidPassword.get("error").asText());
         json(call("/api/setup", "POST", Map.of("username", "admin", "password", "example-password-123"), null, true), 200);
+        // 이전 규칙으로 만든 계정은 새 정책에 맞지 않아도 로그인·TOTP 등록/해제가 가능해야 한다.
+        db.update("UPDATE administrator SET password_hash=?", new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder(12).encode("legacy-password"));
         assertEquals(200, login());
         assertFalse(json(call("/api/totp", "GET", null, null, false), 200).get("enabled").asBoolean());
         assertEquals(403, call("/api/totp/enroll", "POST", null, null, false).statusCode());
         // 등록도 현재 비밀번호 재확인이 필요하다.
         assertEquals(401, call("/api/totp/enroll", "POST", null, null, true).statusCode()); resetAttempts();
         assertEquals(401, call("/api/totp/enroll", "POST", Map.of("password", "wrong-password"), null, true).statusCode()); resetAttempts();
-        var enrollment = json(call("/api/totp/enroll", "POST", Map.of("password", "example-password-123"), null, true), 200);
+        var enrollment = json(call("/api/totp/enroll", "POST", Map.of("password", "legacy-password"), null, true), 200);
         String secret = enrollment.get("secret").asText();
         assertTrue(enrollment.get("uri").asText().contains("digits=6&period=30"));
         assertEquals(401, call("/api/totp/enable", "POST", Map.of("code", "bad"), null, true).statusCode()); resetAttempts();
@@ -81,7 +85,7 @@ class TotpIntegrationTest {
         for (String path : List.of("/api/sources", "/api/tokens", "/api/embeddings", "/api/totp", "/api/search?query=test")) {
             int status = call(path, "GET", null, null, false).statusCode(); assertTrue(status == 401 || status == 403, path);
         }
-        int denied = call("/api/totp/enroll", "POST", Map.of("password", "example-password-123"), null, true).statusCode(); assertTrue(denied == 401 || denied == 403);
+        int denied = call("/api/totp/enroll", "POST", Map.of("password", "legacy-password"), null, true).statusCode(); assertTrue(denied == 401 || denied == 403);
         assertEquals(200, call("/api/search?query=test", "GET", null, token, false).statusCode());
         var tools = json(call("/mcp", "POST", Map.of("jsonrpc", "2.0", "id", 1, "method", "tools/list"), token, false), 200);
         assertEquals(3, tools.at("/result/tools").size());
@@ -101,8 +105,8 @@ class TotpIntegrationTest {
         assertTrue(json(call("/api/auth", "GET", null, null, false), 200).get("authenticated").asBoolean());
         assertEquals(200, call("/api/sources", "GET", null, null, false).statusCode());
         assertEquals(401, call("/api/totp/disable", "POST", Map.of("password", "wrong", "code", Totp.code(secret, step+1)), null, true).statusCode()); resetAttempts();
-        assertEquals(401, call("/api/totp/disable", "POST", Map.of("password", "example-password-123", "code", recovery), null, true).statusCode()); resetAttempts();
-        assertEquals(401, call("/api/totp/disable", "POST", Map.of("password", "example-password-123", "code", "bad"), null, true).statusCode()); resetAttempts();
+        assertEquals(401, call("/api/totp/disable", "POST", Map.of("password", "legacy-password", "code", recovery), null, true).statusCode()); resetAttempts();
+        assertEquals(401, call("/api/totp/disable", "POST", Map.of("password", "legacy-password", "code", "bad"), null, true).statusCode()); resetAttempts();
         resetAttempts(); int disableFailures = auditCount("totp-disable", 401);
         // 등록/해제 실패는 로그인과 분리된 키로 제한되어 관리자 로그인까지 잠그지 않는다.
         assertEquals(401, call("/api/totp/disable", "POST", Map.of("password", "wrong", "code", "000000"), null, true).statusCode());
@@ -142,7 +146,7 @@ class TotpIntegrationTest {
         assertEquals(200, call("/api/login/totp", "POST", Map.of("code", codes.get(1).asText()), null, true).statusCode()); auth();
         // 시간 진행 없이 해제 성공 조건을 검증하도록 DB의 재생 기준만 이전 단계로 이동한다.
         db.update("UPDATE administrator SET totp_step=?", step-1);
-        assertEquals(200, call("/api/totp/disable", "POST", Map.of("password", "example-password-123", "code", Totp.code(secret, step)), null, true).statusCode());
+        assertEquals(200, call("/api/totp/disable", "POST", Map.of("password", "legacy-password", "code", Totp.code(secret, step)), null, true).statusCode());
         assertFalse(json(call("/api/totp", "GET", null, null, false), 200).get("enabled").asBoolean());
         assertEquals(0, db.queryForObject("SELECT COUNT(*) FROM recovery_codes", Integer.class));
         String audit = call("/api/audit", "GET", null, null, false).body();

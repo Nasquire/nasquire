@@ -71,7 +71,7 @@ with tempfile.TemporaryDirectory(prefix='runtime-', dir=artifacts) as folder, (a
         if result.returncode:
             raise SystemExit(result.returncode)
         workload = next(int(line.split('=')[1]) for line in result.stdout.splitlines() if line.startswith('PEAK_APPLICATION_RSS_KIB='))
-        measurement = {'embedding': os.environ.get('VERIFY_EMBEDDING', 'off'), 'documents': 48, 'officeHwp': 8, 'markdown': 20, 'pdf': 20, 'pdfPages': 40, 'heapMiB': 256, 'gc': 'SerialGC',
+        measurement = {'embedding': os.environ.get('VERIFY_EMBEDDING', 'off'), 'documents': 48, 'officeHwp': 8, 'markdown': 20, 'pdf': 20, 'pdfPages': 40, 'heapMiB': 256 if os.environ.get('VERIFY_EMBEDDING') == 'builtin' else 192, 'gc': 'SerialGC',
                        'startupPeakRssKiB': peak_rss, 'workloadPeakRssKiB': workload, 'peakRssMiB': round(max(peak_rss, workload) / 1024, 1),
                        'uploadBytes': 16777216, 'uploadShareCurl': True, 'strictContainerLimit': False, 'curlSmokeExitCode': result.returncode}
         # 파일 논리 크기 합계이며 파일시스템 할당량·모델·업로드 크기와 구분한다.

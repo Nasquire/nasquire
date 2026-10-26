@@ -11,15 +11,16 @@ import java.util.function.Supplier;
 public final class IndexingService implements AutoCloseable {
     private static final System.Logger LOG = System.getLogger(IndexingService.class.getName());
     public record Failure(String path, String reason) { }
-    public record Status(String state, int indexed, int pending, int errors, String message, List<Failure> recentFailures) {
-        public Status { recentFailures = List.copyOf(recentFailures); }
+    public record Status(String state, int indexed, int pending, int errors, String message, List<Failure> recentFailures, int oversized, List<String> recentOversized) {
+        public Status { recentFailures = List.copyOf(recentFailures); recentOversized = List.copyOf(recentOversized); }
         public Status(String state, int indexed, int pending, int errors, String message) {
-            this(state, indexed, pending, errors, message, List.of());
+            this(state, indexed, pending, errors, message, List.of(), 0, List.of());
         }
     }
     private record Stamp(long size, long mtime, long stableSince, boolean indexed) { }
     private final SearchIndex index;
-    private final long maxBytes, stableMillis;
+    private volatile long maxBytes;
+    private final long stableMillis;
     private final int maxCharacters;
     private final List<TextExtractor> extractors;
     private final Map<String, Map<String, Stamp>> snapshots = new HashMap<>();
@@ -30,22 +31,66 @@ public final class IndexingService implements AutoCloseable {
         var t = new Thread(r, "nasquire-indexer"); t.setPriority(Thread.MIN_PRIORITY); t.setDaemon(true); return t;
     });
 
+    private long extractionAttempts;
+    private final IdleHeapReclaimer heapReclaimer = new IdleHeapReclaimer(worker, () -> {
+        // G1 등 다른 GC의 정책에는 개입하지 않는다. 운영자가 명시적으로 끌 수도 있다.
+        if (Boolean.parseBoolean(System.getProperty("nasquire.indexing.idle-gc", "true"))
+                && java.lang.management.ManagementFactory.getGarbageCollectorMXBeans().stream()
+                    .anyMatch(gc -> gc.getName().equals("MarkSweepCompact"))) System.gc();
+    }, 5000, 300000);
+
     public IndexingService(SearchIndex index, long maxBytes, int maxCharacters, long stableMillis, List<TextExtractor> extractors) {
         this.index = index; this.maxBytes = maxBytes; this.maxCharacters = maxCharacters;
         this.stableMillis = stableMillis; this.extractors = List.copyOf(extractors);
     }
 
-    public void start(Supplier<List<Source>> sources, long intervalMillis) {
-        // 예외가 밖으로 나가면 scheduleWithFixedDelay가 이후 실행을 영구 취소하므로 Error(메모리 부족 포함)까지 잡아 상태로 남긴다.
-        worker.scheduleWithFixedDelay(() -> {
-            try { scan(sources.get()); statuses.remove("_system"); }
-            catch (Throwable e) { statuses.put("_system", new Status("error", 0, 0, 1, e instanceof OutOfMemoryError ? "검사 실패: 메모리 부족" : "검사 실패")); }
-        }, 0, intervalMillis, TimeUnit.MILLISECONDS);
+    private Supplier<List<Source>> sources;
+    private ScheduledFuture<?> periodic;
+    private final Set<String> requested = ConcurrentHashMap.newKeySet();
+    public synchronized void start(Supplier<List<Source>> sources, long intervalMillis) {
+        this.sources = sources;
+        reschedule(intervalMillis);
+    }
+    public synchronized void reschedule(long intervalMillis) {
+        if (intervalMillis < 1) throw new IllegalArgumentException("검사 주기 오류");
+        if (periodic != null) periodic.cancel(false);
+        periodic = worker.scheduleWithFixedDelay(() -> safelyScan(null), 0, intervalMillis, TimeUnit.MILLISECONDS);
+    }
+    public void maxBytes(long value) { maxBytes = value; }
+    public void scanNow(String id) {
+        // 실행 중 요청도 최대 다음 한 번으로 합치며 같은 단일 작업자에서 처리한다.
+        if (requested.add(id)) worker.execute(() -> { requested.remove(id); safelyScan(id); });
+    }
+    private void safelyScan(String id) {
+        try {
+            var all = sources.get();
+            if (id == null) scan(all);
+            else scanSelected(all, id);
+            statuses.remove("_system");
+        } catch (Throwable e) {
+            statuses.put("_system", new Status("error", 0, 0, 1, e instanceof OutOfMemoryError ? "검사 실패: 메모리 부족" : "검사 실패"));
+        }
+    }
+    private synchronized void scanSelected(List<Source> all, String id) throws IOException {
+        // 삭제와 재구축 완료 판단에는 전체 소스 목록을 사용한다.
+        scanInternal(all, id);
     }
     public void reindex(String id) { reindex.add(id); }
     public Status status(String id) { return statuses.getOrDefault(id, new Status("waiting", 0, 0, 0, "")); }
 
     public synchronized void scan(List<Source> sources) throws IOException {
+        scanInternal(sources, null);
+    }
+
+    private void scanInternal(List<Source> sources, String selected) throws IOException {
+        long before = extractionAttempts;
+        try { scanCycle(sources, selected); }
+        finally {
+            if (extractionAttempts != before) heapReclaimer.afterExtraction();
+        }
+    }
+
+    private void scanCycle(List<Source> sources, String selected) throws IOException {
         if (index.beginRebuild()) { snapshots.clear(); definitions.clear(); }
         if (!index.indexingAllowed()) return;
         var active = sources.stream().map(Source::id).collect(java.util.stream.Collectors.toSet());
@@ -54,13 +99,14 @@ public final class IndexingService implements AutoCloseable {
         }
         var completed = new HashMap<String, Status>();
         for (Source source : sources) {
+            if (selected != null && !selected.equals(source.id())) continue;
             if (!source.equals(definitions.put(source.id(), source)) || reindex.remove(source.id())) {
                 index.deleteSource(source.id()); snapshots.remove(source.id());
             }
             completed.put(source.id(), scanSource(source));
         }
         synchronized (index) {
-            index.finishRebuild(completed.values().stream().allMatch(s -> s.state().equals("ready") && s.pending() == 0 && s.errors() == 0));
+            index.finishRebuild(completed.size() == sources.size() && completed.values().stream().allMatch(s -> s.state().equals("ready") && s.pending() == 0 && s.errors() == 0));
             index.refresh();
         }
         // 검색자가 새 색인을 읽을 수 있게 된 뒤 완료 상태를 공개한다.
@@ -70,7 +116,9 @@ public final class IndexingService implements AutoCloseable {
     private Status scanSource(Source source) {
         var previous = snapshots.computeIfAbsent(source.id(), k -> new HashMap<>());
         var next = new HashMap<String, Stamp>();
-        int[] counts = {0, 0, 0};
+        int[] counts = {0, 0, 0, 0};
+        var oversized = new ArrayList<String>();
+        long limit = maxBytes;
         var failures = new ArrayList<Failure>();
         statuses.put(source.id(), new Status("scanning", 0, 0, 0, ""));
         try {
@@ -90,7 +138,13 @@ public final class IndexingService implements AutoCloseable {
                         Path real = file.toRealPath();
                         if (!real.startsWith(root) || !Files.isRegularFile(real)) return FileVisitResult.CONTINUE;
                         var attrs = Files.readAttributes(real, BasicFileAttributes.class);
-                        if (attrs.size() > maxBytes) throw new IOException("파일 크기 상한 초과");
+                        if (attrs.size() > limit) {
+                            counts[3]++;
+                            if (oversized.size() == 5) oversized.removeFirst();
+                            oversized.add(Source.normalized(relative).replaceAll("[\\p{Cntrl}\\p{Cf}]", "?"));
+                            statuses.put(source.id(), new Status("scanning", counts[0], counts[1], counts[2], "", failures, counts[3], oversized));
+                            return FileVisitResult.CONTINUE;
+                        }
                         String key = Source.normalized(relative);
                         if (next.containsKey(key)) throw new IOException("정규화 경로 충돌");
                         var old = previous.get(key);
@@ -98,6 +152,7 @@ public final class IndexingService implements AutoCloseable {
                         boolean same = old != null && old.size == attrs.size() && old.mtime == attrs.lastModifiedTime().toMillis();
                         var stamp = new Stamp(attrs.size(), attrs.lastModifiedTime().toMillis(), same ? old.stableSince : now, same && old.indexed);
                         if (!stamp.indexed && now - stamp.stableSince >= stableMillis) {
+                            extractionAttempts++;
                             var chunks = new ArrayList<SearchIndex.Chunk>();
                             int[] offset = {0};
                             TextExtractor.LocatedConsumer sink = (page, location, text) -> {
@@ -114,7 +169,7 @@ public final class IndexingService implements AutoCloseable {
                                     var opened = Files.readAttributes(pinned.path(), BasicFileAttributes.class);
                                     if (!java.util.Objects.equals(opened.fileKey(), identity) || opened.size() != stamp.size
                                             || opened.lastModifiedTime().toMillis() != stamp.mtime) throw new IOException("추출 중 파일 변경");
-                                    if (opened.size() > maxBytes) throw new IOException("파일 크기 상한 초과");
+                                    if (opened.size() > limit) throw new IOException("파일 크기 상한 초과");
                                     extractor.get().extractLocated(real, pinned.path(), sink, maxCharacters);
                                     var done = Files.readAttributes(pinned.path(), BasicFileAttributes.class);
                                     if (done.size() != stamp.size || done.lastModifiedTime().toMillis() != stamp.mtime) throw new IOException("추출 중 파일 변경");
@@ -144,21 +199,27 @@ public final class IndexingService implements AutoCloseable {
                         if (failures.size() == 5) failures.removeFirst();
                         failures.add(new Failure(relativeName, reason));
                     }
-                    statuses.put(source.id(), new Status("scanning", counts[0], counts[1], counts[2], "", failures));
+                    statuses.put(source.id(), new Status("scanning", counts[0], counts[1], counts[2], "", failures, counts[3], oversized));
                     return FileVisitResult.CONTINUE;
                 }
             });
             for (String deleted : previous.keySet()) if (!next.containsKey(deleted)) index.delete(source.id() + ":" + deleted);
             snapshots.put(source.id(), next);
-            return new Status(counts[2] == 0 ? "ready" : "error", counts[0], counts[1], counts[2], counts[2] == 0 ? "" : "일부 파일 추출 실패", failures);
+            return new Status(counts[2] == 0 ? "ready" : "error", counts[0], counts[1], counts[2], counts[2] == 0 ? "" : "일부 파일 추출 실패", failures, counts[3], oversized);
         } catch (IOException | RuntimeException e) {
             return new Status("error", 0, 0, 1, "소스를 읽을 수 없습니다");
         }
     }
 
     public void close() {
-        worker.shutdownNow();
-        try { if (!worker.awaitTermination(30, TimeUnit.SECONDS)) throw new IllegalStateException("색인 작업 종료 시간 초과"); }
-        catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        // 정상 종료에서는 진행 중 Lucene 파일 I/O를 인터럽트하지 않는다.
+        worker.shutdown();
+        heapReclaimer.cancel();
+        try {
+            if (!worker.awaitTermination(30, TimeUnit.SECONDS)) {
+                worker.shutdownNow();
+                if (!worker.awaitTermination(30, TimeUnit.SECONDS)) throw new IllegalStateException("색인 작업 종료 시간 초과");
+            }
+        } catch (InterruptedException e) { worker.shutdownNow(); Thread.currentThread().interrupt(); }
     }
 }

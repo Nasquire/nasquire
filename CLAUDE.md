@@ -1,6 +1,8 @@
 # Nasquire 지침
 > 공개 저장소다. 코드·문서·커밋에 내부 주소·도메인·서버 이름·계정·비밀값·사내 경로를 넣지 않는다. 예시는 `example.com`, `/data`, `/sources/...`처럼 일반 값만 쓴다.
 
+관리자 최초 설정·오프라인 복구 비밀번호는 8자 이상, UTF-8 72바이트 이하이며 영문자(A-Z/a-z)·숫자(0-9)·출력 가능한 ASCII 문장부호를 각각 하나 이상 포함한다. 대문자·소문자를 각각 강제하지 않는다. 로그인·TOTP의 기존 비밀번호 확인과 공유 비밀번호에는 이 새 정책을 적용하지 않는다.
+
 ## 개요
 - 기존 폴더를 읽기 전용으로 색인하는 단일 컨테이너 검색 서비스("Ask your NAS").
 - 일반 소스 원본에는 절대 쓰지 않는다. 선택 업로드 소스(`kind=upload`)만 별도 쓰기 가능 폴더를 사용한다. 모든 소스와 데이터 폴더 중첩 금지, 업로드 소스는 다른 소스와도 중첩 금지.
@@ -17,6 +19,7 @@
 - `scripts/verify-browser.py`: Playwright Chromium 실제 화면·한/영·모바일·테마·axe 스모크. 선택 `VERIFY_FULL=true`는 full 설정 공급자 화면도 검사한다. 도구·임시 데이터·스크린샷은 `build/verification/`에만 둔다.
 - `scripts/verify-oauth-sdk.py`: 공식 Python MCP SDK OAuth·Streamable HTTP와 브라우저 승인·자동 갱신·철회 검증. 재현·한계는 `docs/verification/browser.md`, `docs/verification/oauth.md`. 두 스크립트는 8104 전용이며 다른 bootRun/빌드와 순차 실행한다.
 - `scripts/verify-runtime.py`: 문서 생성·bootRun·curl·RSS·서버 종료를 자동 수행. 결과는 무시되는 `build/verification/`에 생성한다.
+- `scripts/measure-memory.py`: lite bootJar의 자체 생성 큰 PDF 18개·Office 색인 RSS/NMT·공유 cgroup anon/file 비교. `docs/verification/memory.md`의 옵션으로 실행하며 결과·원본은 `build/verification/memory/`에만 둔다. 빌드·다른 런타임 검증과 순차 실행한다.
 - `scripts/fetch-verification-models.py`: 명시적 내장 모델 검증 시 고정 리비전·SHA-256 모델 파일을 무시되는 build 폴더에 준비한다.
 - `docs/embeddings.md`, `docs/verification/vector.md`: 공급자·재색인·모델 출처·아키텍처 중립 구현·실측 제한. arm64는 공식 이미지·지원 없이 직접 빌드만 가능하며 이후 변경은 미검증이다.
 - `docs/ROADMAP.md`, `docs/verification/mvp.md`, `THIRD-PARTY.md`: 진행·실측·의존성 라이선스.
@@ -40,7 +43,7 @@
 - 일반 원본 폴더는 읽기 전용 마운트한다. 소스 밖 파일 링크·디렉터리 링크는 따라가지 않는다. 파일 이름 NFC, 크기/추출 문자 상한을 유지한다.
 - 추출 형식은 TextExtractor, 선택 AI 기능은 Providers 인터페이스로 확장한다. 임베딩은 원격/ONNX 구현을 제공한다. 리랭커·OCR·ML 전용 서버 구현은 full 모듈에만 둔다. Qdrant는 core `VectorStore`/`QdrantVectorStore`(REST, 추가 의존성 없음)이며 기본은 Lucene HNSW다.
 - 임베딩은 기본 off, 설정은 관리자 세션+CSRF, 키는 별도 로컬 키로 AES-GCM 암호화하고 API에서 비공개. 모델·차원이 바뀌면 전체 재색인 전 벡터 검색을 차단한다. 모델 파일은 이미지·저장소에 넣지 않는다. 자동 다운로드는 데이터 폴더 안에서만 허용한다. 내장 모델은 현재 512 MiB 목표를 초과하며 실측 제한을 반드시 명시한다.
-- 메모리: 단일 색인 작업자, Lucene RAM 8 MiB, PDF 쪽 단위·디스크 scratch, 추출 상한, H2 연결 2개, Tomcat 스레드 16개.
+- 메모리: 단일 색인 작업자, Lucene RAM 8 MiB, PDF 쪽 단위·디스크 scratch, 추출 상한, H2 연결 2개, Tomcat 스레드 16개. JDK 25 컴팩트 헤더·SerialGC 여유 힙 10/20%·즉시 수축, lite 힙 192 MiB/full 256 MiB. 실제 추출 뒤 작업자 유휴 5초에 GC를 한 번 요청하며 최소 5분 간격, 변경 없는 검사에는 요청하지 않는다. SerialGC에만 적용하고 `-Dnasquire.indexing.idle-gc=false`로 해제 가능하다.
 - 긴 작업은 ROADMAP 체크리스트로 남기고 끝나기 전 빌드·테스트를 수행한다.
 - `.ai-commit-msg`에 한국어 커밋 메시지를 남긴다. git add/commit/push는 하지 않는다.
 
@@ -59,7 +62,7 @@
 - 시도 제한은 `LoginAttempts.acquire` 표로 확인·진행 중 예약을 원자 처리하고 실패 횟수 리셋·허용 시각 단축을 금지한다. 등록/해제는 `totp-manage:` 키로 분리, 등록도 비밀번호 재확인. 암호문은 `v2:`+용도별 AAD(`totp`/`embedding`), 키가 없거나 바뀌었는데 암호문이 있으면 새 키를 만들지 않고 `KeyUnavailable`(503·복구 안내).
 - 오프라인 복구: `java -jar app/build/libs/app-0.1.0.jar --recover-admin --data=/data` (앱 종료 필요). 웹 컨텍스트 없이 표준 입력 비밀번호를 검증하고 기존 DB 비밀번호 재설정·TOTP/복구 코드 삭제·감사를 트랜잭션 처리한다. 검증 기록은 `docs/verification/totp.md`.
 
-- full 관리 화면은 `frontend/src/Full.tsx`이며 lite에서는 off만 선택한다. 서버 가용성·키 비공개·주소 변경 시 키 폐기 정책을 따른다.
+- 관리 화면은 사이드바 하단 톱니바퀴의 중앙 환경설정 모달(모바일 전체 화면)에서 계정 → 2단계 인증 → 검색 → full 리랭커·OCR → 정보 → 로그아웃을 제공한다. 메뉴는 소스·파일/공유·API 토큰·검색만 유지하며 하단에는 자동/라이트/다크 세그먼트를 둔다. 정보는 버전·빌드·저작권·저장소·원본 라이선스 링크 및 라이선스 탭 모달을 유지한다. 검색에서 검색(임베딩·Qdrant·연결 시험·재색인)과 full 전용 리랭커·OCR(`frontend/src/Full.tsx`)을 제공한다. `/api/full.available`로 full 가용성을 판단하며 lite에서는 리랭커·OCR·내장 임베딩 선택지를 숨기고 정보 화면에만 빌드를 작게 표시한다. 검색과 full은 기존 별도 API·CSRF·검증 흐름으로 저장한다. 서버 가용성·키 비공개·주소 변경 시 키 폐기 정책을 따른다.
 - full 설정은 `/api/full` GET/PUT(관리자 세션+헤더 CSRF). 기본 off, 리랭커 키는 기존 embedding.key를 공유하고 AES-GCM v2 + AAD `reranker`, full.properties 0600. full 암호문이 남으면 공유 키 재생성 금지. 키 복호화 실패·full 미포함 상태의 활성 설정은 시작 거부하며 키 백업 복원/기능 off 뒤 구성 전환이 필요하다.
 - 리랭커는 일반 `/rerank` API만 구현, REST `rerank=true`·MCP `rerank: true` 선택. 소스 권한 적용 후 최대 topN만 전송하고 외부 순위만 수용하며 근거·원래 score 유지. 전체 시간/64 KiB/동시 외부 호출 1개 상한, 실패·혼잡 시 원래 순서.
 - OCR은 full 전용 Tesseract CLI(`/usr/bin/prlimit`, `/usr/bin/tesseract`, kor+eng 데이터 사전 준비). 이미지 프레임/텍스트 없는 PDF 쪽만 처리, `location.type=ocr`·쪽 보존. 임시 파일은 데이터 폴더 ocr-tmp, 소스 쓰기 금지. 쪽당 시간/주소 공간/출력·파일당 쪽·픽셀/문자 제한. 과거 참고용 arm64 Linux VM PNG OCR·lite 컨테이너 실측은 `docs/verification/deploy.md`에 기록. 이미지 전용 PDF 실패는 FullSettings 위임의 원래 이름 누락으로 고정 fd를 image 모드로 처리한 것이 원인이며 이름 보존을 수정했다. 수정 후 arm64 full 컨테이너(1 GiB)에서 이미지 전용 PDF·PNG 한/영 OCR 검색을 확인했다. 실제 OCR 정확도 비교·full 메모리 보장은 미완료이며 이후 arm64 변경은 미검증(2026-10-26 공식 비지원 결정), `docs/verification/full.md` 참조.
@@ -79,3 +82,10 @@
 - OAuth 승인은 최근 10분 내 관리자 인증이 필요하며 pending/nonce는 단일 세션 객체다. 토큰/철회 쿼리는 거부하고, IPv6 /64 제한·정상 토큰 증명 예외·미승인 IP당 20개·감사 종류별 분당 1회·마지막 승인 만료 후 30일 정리를 적용한다. 프록시 설정/신뢰 경계는 `docs/install/oauth.md`를 따른다.
 
 - 추출 실패 WARN은 소스 상대 경로·예외 종류만 기록하며 원문 예외 메시지/스택은 출력하지 않는다. OCR은 `ExtractionFailure`의 안전한 단계·종료 코드·시간 초과·예외 종류를 전달한다. 관리자 전용 소스 상태 `recentFailures`는 현재 검사 최근 최대 5건(메모리 전용)이다.
+
+- 검색 결과는 소스 이름·상대 경로로 표시하고 내부 path는 문서 API 호출에 유지한다. `SearchExcerpt.tsx`는 입력 질의 문자·숫자 토큰의 대소문자 무시 강조(React 텍스트 노드), 공백 축약·360자 주변 발췌·전체 청크 펼치기를 담당한다. REST·MCP 응답 형식은 바꾸지 않는다.
+
+- 계정 변경은 `/api/account` GET, `/api/account/password|username` PUT(관리자 세션+헤더 CSRF). 현재 비밀번호·활성 TOTP의 미사용 인증 앱 코드·`account-change:` 제한을 적용한다. 성공 시 DB `administrator.generation`을 CAS 증가시키고 현재 세션 ID·CSRF를 교체한다. 다른 관리자/코드 대기 세션은 다음 요청에 무효화한다. 사용자명은 최초 설정과 같은 ASCII 3~100자 규칙이다. 감사에는 변경 값을 기록하지 않는다.
+- 토큰 행 삭제는 `DELETE /api/tokens/{id}/record`, 일괄은 `/api/tokens/inactive`. 활성 토큰 삭제 409, 감사 보존·삭제 행위 기록, 다운로드 티켓은 삭제 후에도 현재 토큰 조회 실패로 거부한다.
+
+- 색인 기본 주기 300000ms·stable 2000ms. `IndexingSettings`의 데이터 폴더 `indexing.properties`가 환경 초기값보다 우선한다. `/api/indexing` GET/PUT은 관리자+헤더 CSRF·감사, 화면 범위 주기 1~60분·파일 1~512 MiB. 저장 즉시 같은 단일 작업자 스케줄 재설정. 소스 `/scan`은 변경분 검사 요청을 다음 한 번으로 합친다. 크기 초과는 오류와 분리하고 최근 상대 경로 5개를 관리자 상태에 메모리 보관한다. `/api/supported-extensions`는 빌드 기준(lite 문서, full 이미지 추가)이며 OCR off에서도 full 형식 안내는 유지한다. Office/HWP 8 MiB 별도 상한 유지.

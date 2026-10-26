@@ -46,12 +46,17 @@ public class SecurityConfiguration {
                             return (req.getHeader(token.getHeaderName()) != null || req.getServletPath().equals("/oauth/authorize")) ? delegate.resolveCsrfTokenValue(req, token) : null;
                         }
                     }))
+            .addFilterBefore(new AccountGenerationGuard(storage), CsrfFilter.class)
             .addFilterBefore(new OAuthGuard(oauth, attempts, addresses), CsrfFilter.class)
             .addFilterBefore(new MultipartGuard(maximum), CsrfFilter.class)
             .addFilterBefore(new LoginGuard(attempts, addresses, storage), org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class)
             .addFilterBefore(new BearerFilter(storage, oauth, attempts, addresses, Arrays.stream(allowedOrigins.split(",")).map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toSet())), CsrfFilter.class)
             .formLogin(f -> f.securityContextRepository(new PasswordContextRepository(totp::enabled)).loginProcessingUrl("/api/login")
                     .successHandler((req, res, auth) -> {
+                        if (!Long.valueOf(storage.generation()).equals(req.getAttribute("admin.loginGeneration"))) {
+                            req.getSession().invalidate(); SecurityContextHolder.clearContext(); res.setStatus(401); return;
+                        }
+                        req.getSession().setAttribute("admin.generation", req.getAttribute("admin.loginGeneration"));
                         if (totp.enabled()) {
                             var context = SecurityContextHolder.createEmptyContext();
                             SecurityContextHolder.setContext(context);
@@ -85,6 +90,18 @@ public class SecurityConfiguration {
             super.saveContext(requiresTotp.getAsBoolean() ? SecurityContextHolder.createEmptyContext() : context, request, response);
         }
     }
+    /** 계정 변경 이전의 관리자·TOTP 대기 세션은 다음 요청에서 무효화한다. */
+    static class AccountGenerationGuard extends OncePerRequestFilter {
+        private final Storage storage;
+        AccountGenerationGuard(Storage storage) { this.storage = storage; }
+        protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain) throws IOException, ServletException {
+            var session = req.getSession(false);
+            if (session != null && session.getAttribute("admin.generation") instanceof Long generation && generation != storage.generation()) {
+                session.invalidate(); SecurityContextHolder.clearContext();
+            }
+            chain.doFilter(req, res);
+        }
+    }
     static class MultipartGuard extends OncePerRequestFilter {
         private final long maximum;
         MultipartGuard(long maximum) { this.maximum = maximum + 1048576; }
@@ -110,6 +127,7 @@ public class SecurityConfiguration {
             var ticket = attempts.acquire("", addresses.address(req), req.getParameter("username"), System.currentTimeMillis());
             if (ticket == null) { storage.audit("anonymous", "login-rate-limit", 429); res.setHeader("Retry-After", "900"); res.setStatus(429); return; }
             req.setAttribute(TICKET, ticket);
+            req.setAttribute("admin.loginGeneration", storage.generation());
             try (ticket) { chain.doFilter(req, res); }
         }
         static final String TICKET = "nasquire.loginTicket";

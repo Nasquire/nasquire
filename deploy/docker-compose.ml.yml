@@ -18,6 +18,7 @@ services:
       # - --nasquire.ml.embedding=builtin
       # - --nasquire.ml.reranker=builtin
     environment:
+      JAVA_TOOL_OPTIONS: "--enable-native-access=ALL-UNNAMED -Xms64m -Xmx256m -XX:+UseSerialGC -XX:+UseCompactObjectHeaders -XX:MaxHeapFreeRatio=20 -XX:MinHeapFreeRatio=10 -XX:-ShrinkHeapInSteps -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=48m -Xss512k -XX:MaxDirectMemorySize=32m"
       NASQUIRE_MODE: ml
       NASQUIRE_DATA: /data
       NASQUIRE_ML_TOKEN_FILE: /run/secrets/ml-token

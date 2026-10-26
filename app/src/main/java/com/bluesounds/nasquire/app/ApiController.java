@@ -22,10 +22,26 @@ public class ApiController {
     private final IndexingService indexing;
     private final DocumentService documents;
     private final Path dataFolder;
-    public ApiController(Storage storage, IndexingService indexing, DocumentService documents, Path dataFolder, EmbeddingSettings embeddings, FullSettings full) {
+    public ApiController(Storage storage, IndexingService indexing, DocumentService documents, Path dataFolder, EmbeddingSettings embeddings, FullSettings full, IndexingSettings indexingSettings) {
+        this.indexingSettings = indexingSettings;
         this.full = full;
         this.embeddings = embeddings;
         this.storage = storage; this.indexing = indexing; this.documents = documents; this.dataFolder = dataFolder;
+    }
+    private final IndexingSettings indexingSettings;
+    record IndexingInput(long scanMillis, long maxFileBytes) { }
+    @GetMapping("/indexing") Map<String, Long> indexingSettings() { return indexingSettings.view(); }
+    @PutMapping("/indexing") void indexingSettings(@RequestBody IndexingInput input) throws IOException {
+        indexingSettings.save(input.scanMillis(), input.maxFileBytes(), indexing);
+        storage.audit("admin", "indexing-save", 200);
+    }
+    @GetMapping("/supported-extensions") List<String> supportedExtensions() {
+        var extensions = new ArrayList<>(List.of("txt", "md", "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "hwp", "hwpx"));
+        if (Boolean.TRUE.equals(full.view().get("available"))) extensions.addAll(List.of("png", "jpg", "jpeg", "tif", "tiff", "bmp", "gif"));
+        return List.copyOf(extensions);
+    }
+    @PostMapping("/sources/{id}/scan") void scan(@PathVariable String id) {
+        storage.source(id); indexing.scanNow(id); storage.audit("admin", "source-scan " + id, 200);
     }
     private final FullSettings full;
     @GetMapping("/full") Map<String, Object> full() { return full.view(); }
@@ -86,6 +102,19 @@ public class ApiController {
         storage.addToken(id, input.name, SecurityConfiguration.hash(value), input.expiresAt, scopes);
         storage.audit("admin", "token-create " + id, 200);
         return Map.of("id", id, "value", value, "readOnly", true);
+    }
+    @DeleteMapping("/tokens/inactive") Map<String, Integer> deleteInactiveTokens() {
+        int count = storage.deleteInactiveTokens(null); storage.audit("admin", "token-delete-inactive", 200); return Map.of("deleted", count);
+    }
+    @DeleteMapping("/tokens/{id}/record") void deleteToken(@PathVariable String id) {
+        if (storage.deleteInactiveTokens(id) == 0) {
+            if (storage.tokens().stream().anyMatch(t -> t.id().equals(id))) {
+                storage.audit("admin", "token-delete-active-refused", 409);
+                throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT);
+            }
+            throw new NoSuchElementException("토큰 없음");
+        }
+        storage.audit("admin", "token-delete " + id, 200);
     }
     @DeleteMapping("/tokens/{id}") void revoke(@PathVariable String id) { storage.revoke(id); storage.audit("admin", "token-revoke " + id, 200); }
     @GetMapping("/audit") List<Map<String, Object>> audit() { return storage.audit(); }

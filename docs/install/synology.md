@@ -2,7 +2,7 @@
 
 공식 지원 플랫폼은 Linux amd64(64비트)뿐이다. arm64는 공식 이미지·지원이 없다. 코드는 아키텍처 중립으로 유지하며 arm64에서도 `docker build --target lite .`로 직접 빌드할 수 있다. 과거 arm64 Linux VM의 lite/full 동작 [실측 기록](../verification/deploy.md#arm64-컨테이너-재측정-이름-전달-수정-후-기준-d8e83a5)은 참고용이며 이후 변경은 검증하지 않았다. 32비트 ARM도 공식 지원하지 않는다.
 
-Container Manager를 지원하는 Linux amd64(64비트) 모델이 공식 지원 대상이다. DSM/모델별 지원 여부와 화면 이름을 확인한다. NAS 실기는 미검증이다. [공통 설치·운영](generic-docker.md)을 먼저 적용한다. 프로젝트는 [Synology 공식 설명](https://help.synology.com/developer-guide/resource_acquisition/docker-project.html)처럼 Compose 기반이다.
+Container Manager를 지원하는 Linux amd64(64비트) 모델이 공식 지원 대상이다. DSM/모델별 지원 여부와 화면 이름을 확인한다. Synology x86 NAS 실기에서 큰 PDF 색인 후 메모리 상승이 관찰됐으며, 개선 후 실기 재측정은 남아 있다. [공통 설치·운영](generic-docker.md)을 먼저 적용한다. 프로젝트는 [Synology 공식 설명](https://help.synology.com/developer-guide/resource_acquisition/docker-project.html)처럼 Compose 기반이다.
 
 1. File Station에서 앱 전용 데이터 폴더와 별도 일반 문서 공유를 준비한다. 일반 문서는 읽기 ACL만, `/data` 폴더는 실행 계정에 쓰기 ACL을 준다. UID/GID를 확인해 PUID/PGID로 지정하고 compose의 `user` 매핑을 유지한다. root/관리자 권한 컨테이너로 우회하지 않는다.
 2. `deploy/docker-compose.yml`을 프로젝트 폴더로 복사한다. 배포 이미지를 쓸 때 `build` 항목을 제거한다. Container Manager → 프로젝트 → 생성에서 YAML을 선택한다. `.env` 지원이 다른 버전에서는 `${...}`를 실제 일반 경로/숫자로 바꾸되 비밀값을 YAML에 넣지 않는다. `/data`는 준비한 호스트 폴더, 일반 원본은 `/sources/documents:ro`다. 업로드는 별도 `/uploads:rw` 폴더만 추가하고 UI에서 업로드 종류로 등록한다.
@@ -19,3 +19,7 @@ docker compose --env-file .env -f docker-compose.yml run --rm --no-deps nasquire
 ```
 
 동일 이미지·데이터·UID/GID를 사용한다. 비밀번호는 터미널 입력으로만 전달하며 TOTP/복구 코드가 해제된다. 복구 컨테이너 종료 뒤 프로젝트를 시작한다. 실행 중 컨테이너의 콘솔에서 복구하지 않는다.
+
+색인 변경 검사는 NAS HDD 절전·대용량 폴더 부담을 줄이기 위해 기본 5분(안정화 대기 2초)입니다. 관리자 환경설정 → 색인에서 1~60분·파일 상한 1~512 MiB를 저장하며 `/data/indexing.properties`가 환경 초기값보다 우선합니다. Office/HWP 원본 상한 8 MiB는 별도입니다. 소스의 ‘지금 검사’는 변경분만 처리합니다.
+
+Container Manager 메모리 그래프는 회수 가능한 파일 캐시(page cache)를 포함할 수 있으므로 `memory.stat`의 `anon`·`file`과 앱 RSS를 나눠 확인한다([메모리 측정](../verification/memory.md)).

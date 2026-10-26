@@ -30,7 +30,7 @@ ENV NASQUIRE_DATA=/data \
     DJL_CACHE_DIR=/data/models/.djl-cache \
     MALLOC_ARENA_MAX=2 \
     TOKENIZERS_PARALLELISM=false
-ENV JAVA_TOOL_OPTIONS="--enable-native-access=ALL-UNNAMED -Xms64m -Xmx256m -XX:+UseSerialGC -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=48m -Xss512k -XX:MaxDirectMemorySize=32m"
+ENV JAVA_TOOL_OPTIONS="--enable-native-access=ALL-UNNAMED -Xms64m -Xmx256m -XX:+UseSerialGC -XX:+UseCompactObjectHeaders -XX:MaxHeapFreeRatio=20 -XX:MinHeapFreeRatio=10 -XX:-ShrinkHeapInSteps -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=48m -Xss512k -XX:MaxDirectMemorySize=32m"
 USER nasquire:nasquire
 VOLUME /data
 EXPOSE 8080
@@ -48,4 +48,5 @@ USER nasquire:nasquire
 
 # --target 생략 시에도 lite가 기본이다. 모델 파일은 어느 이미지에도 복사하지 않는다.
 FROM runtime AS lite
+ENV JAVA_TOOL_OPTIONS="--enable-native-access=ALL-UNNAMED -Xms64m -Xmx192m -XX:+UseSerialGC -XX:+UseCompactObjectHeaders -XX:MaxHeapFreeRatio=20 -XX:MinHeapFreeRatio=10 -XX:-ShrinkHeapInSteps -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=48m -Xss512k -XX:MaxDirectMemorySize=32m"
 COPY --from=build-lite /workspace/app/build/libs/app-0.1.0.jar /app/nasquire.jar

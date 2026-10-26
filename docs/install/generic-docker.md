@@ -1,5 +1,7 @@
 # Docker 공통 설치·운영
 
+
+관리자 최초 설정·오프라인 복구 비밀번호는 8자 이상, UTF-8 72바이트 이하이며 영문자(A-Z/a-z)·숫자(0-9)·출력 가능한 ASCII 문장부호를 각각 하나 이상 포함한다. 대문자·소문자를 각각 강제하지 않는다. 로그인·TOTP의 기존 비밀번호 확인과 공유 비밀번호에는 이 새 정책을 적용하지 않는다.
 공식 지원 플랫폼은 Linux amd64(64비트)뿐이다. arm64는 공식 이미지·지원이 없다. 코드는 아키텍처 중립으로 유지하며 arm64에서도 `docker build --target lite .`로 직접 빌드할 수 있다. 과거 arm64 Linux VM의 lite/full 동작 [실측 기록](../verification/deploy.md#arm64-컨테이너-재측정-이름-전달-수정-후-기준-d8e83a5)은 참고용이며 이후 변경은 검증하지 않았다. 32비트 ARM도 공식 지원하지 않는다. 실제 NAS 장비·대규모 부하는 미검증이다. [배포 검증](../verification/deploy.md)의 한계를 확인한다. 이미지 주소는 `ghcr.io/nasquire/nasquire`이며 첫 릴리스 게시 전에는 pull이 실패할 수 있다. 이 단계에서는 이미지를 게시하지 않았다.
 
 ## 이미지와 자원
@@ -120,3 +122,5 @@ push/PR은 lite/full Gradle 빌드와 amd64 Buildx 빌드만 수행한다. `v1.2
 ## MCP OAuth
 
 HTTPS 프록시와 `NASQUIRE_PUBLIC_URL=https://nasquire.example.com`을 설정하고 `NASQUIRE_OAUTH_ENABLED=true`로 켠다. 클라이언트 연결 주소는 `https://nasquire.example.com/mcp`다. 관리자 로그인·TOTP(설정 시) 뒤 허용 소스를 승인한다. OAuth 토큰은 MCP 읽기 전용이며 REST에는 기존 API 토큰을 사용한다. [상세 설정·제한·철회](oauth.md)를 참고한다.
+
+색인 변경 검사는 NAS HDD 절전·대용량 폴더 부담을 줄이기 위해 기본 5분(안정화 대기 2초)입니다. 관리자 환경설정 → 색인에서 1~60분·파일 상한 1~512 MiB를 저장하며 `/data/indexing.properties`가 환경 초기값보다 우선합니다. Office/HWP 원본 상한 8 MiB는 별도입니다. 소스의 ‘지금 검사’는 변경분만 처리합니다.

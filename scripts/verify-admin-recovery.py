@@ -44,7 +44,7 @@ class RecoveryProbe {
         return ['java', '--class-path', str(h2), str(helper), mode, str(data)]
     subprocess.run(probe('seed'), check=True, capture_output=True)
     command = ['java', '-jar', str(jar), '--recover-admin', '--data=' + str(data)]
-    password = secrets.token_urlsafe(24)
+    password = secrets.token_urlsafe(24) + 'a1!'
     # 별도 JVM의 파일 잠금은 실행 중 서버와 같은 H2 배타 접근 조건이다.
     holder = subprocess.Popen(probe('hold'), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:

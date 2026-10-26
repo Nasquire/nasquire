@@ -85,7 +85,7 @@ with tempfile.TemporaryDirectory(prefix='nasquire-smoke-') as folder:
     auth = curl('/api/auth')
     assert not auth['configured'], 'Use a fresh data directory for this verification'
     csrf = auth['csrfToken']
-    password = secrets.token_urlsafe(24)
+    password = secrets.token_urlsafe(24) + 'a1!'
     curl('/api/setup', 'POST', {'username': 'admin', 'password': password}, csrf_enabled=False, expected=403)
     curl('/api/setup', 'POST', {'username': 'admin', 'password': password})
     curl('/api/login', 'POST', form={'username': 'admin', 'password': password})

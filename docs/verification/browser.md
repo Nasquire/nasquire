@@ -59,3 +59,39 @@ Playwright 1.64.1·Chromium 156.0.8078.4·axe-core 4.14.0을 사용했다.
 - 내부 식별자/주소/경로 광역 검사에서 기존 보안 테스트의 합성 RFC1918 예제 1건이 잡혔다. 기준 커밋과 파일 전체가 동일함을 확인하고 이 예제만 제외한 최종 검사에서 일치 0건(`rg` 종료 1, 정상 무일치)이다. 실제 내부 정보는 발견되지 않았다. 커밋 메시지도 검사했다.
 - 상세 명령/테스트 수: `build/verification/followup/build-results.json`, `lite-build.log`, `full-build.log`, `internal-scan-initial.json`, `internal-scan.json`.
 - git add/commit/push·배포·LICENSE/NOTICE 변경은 수행하지 않았다. `.ai-commit-msg`에 한국어 메시지를 준비했다.
+
+## 환경설정 통합·검색 결과 개선 (기준 11ed4c6)
+
+- 임베딩/full 메뉴를 **환경설정 / Settings** 하나로 통합했다. 검색 설정은 기존 `/api/embeddings`, 리랭커·OCR은 기존 `/api/full` 저장 흐름을 사용한다.
+- lite에서는 리랭커·OCR 섹션과 내장 임베딩 선택지가 DOM에 없음을 검사한다. full에서는 원격/내장 리랭커·OCR 입력을 검사한다. 현재 빌드는 정보 화면에서만 작게 표시한다.
+- 실제 샘플 검색·문서 열기로 API용 내부 경로 유지와 표시용 소스 이름·상대 경로를 검사한다. 고정 검색 응답으로 늦은 위치의 영문/한글 다중 토큰·대소문자 무시 강조·360자 발췌·앞뒤 생략·공백 축약·펼치기/접기·일치 없는 질의·HTML 문자열의 텍스트 처리를 검사한다. REST·MCP 응답 형식은 변경하지 않았다.
+- 초기 lite 브라우저 검증 2회는 신규 고정 응답 검증에서 종료 1이었다. 기존 여러 검색 결과가 단일 고정 결과로 교체되기 전에 locator를 검사한 것이 원인이다. 결과 수 대기를 추가했으며 실패 줄 번호만 기록해 인증값 없이 원인을 추적한다. 증거는 `build/verification/browser-settings-attempt-1/`, `browser-settings-attempt-2/`에 보존했다.
+- 새 화면 조합은 7개 메뉴 × 한/영 × 1280/390 × light/dark/auto이며, 별도 발췌·전체 청크 스크린샷과 axe 검사도 포함한다. 외부 모델 추론·실제 OCR/Qdrant 호출·NAS 실기 화면은 이 검증 범위에 포함하지 않는다.
+
+- 최종 결과: `./gradlew build -q`·`./gradlew -Pfull build -q` 각각 종료 0, lite 브라우저 91개/full 93개 화면 각각 종료 0. axe 위반·미실행·콘솔 오류·실패 요청·HTTP 오류 모두 0, 두 서버 종료·8104 반환 확인.
+- `python3 -m py_compile scripts/verify-browser.py`·`git diff --check` 종료 0. 추적 파일·신규 컴포넌트·커밋 메시지의 내부 식별자·주소·경로 grep 무일치(`rg` 종료 1).
+- 아티팩트: `build/verification/settings-results.json`, `settings-build-lite.log`, `settings-build-full.log`, `settings-browser-lite.log`, `settings-browser-full.log`, `settings-internal-scan.json`, `browser/summary.json`, `browser-full/summary.json`, 각 브라우저 폴더의 PNG·bootrun.log.
+
+## 관리 화면 2차 개선 (기준 47e2df5)
+
+사이드바는 소스·파일/공유·API 토큰·검색을 유지하고 하단에는 설정 톱니바퀴와 자동/라이트/다크 세그먼트를 배치했다. 중앙 환경설정은 계정 → 2단계 인증 → 검색 → full 전용 리랭커·OCR → 정보 → 로그아웃 순서다. 라이선스는 별도 중첩 모달에서 기존 정적 파일을 가져오며 원본 링크를 유지한다. 모바일은 전체 화면이다.
+
+계정 변경은 현재 비밀번호, 활성화 시 미사용 TOTP 코드, 별도 시도 제한을 요구한다. 성공하면 영속 세대 번호를 증가시키고 현재 세션 ID·CSRF를 교체한다. 다른 관리자 세션과 TOTP 대기 세션은 다음 요청에서 무효화한다. 사용자명은 최초 설정과 같은 ASCII 영문·숫자·_.- 3~100자 규칙을 유지했다. 폐기·만료 토큰의 행 삭제는 감사 기록을 유지하고 삭제를 기록하며 활성 토큰은 409로 거부한다.
+
+검증 범위:
+
+- 실제 HTTP 회귀: 세션/CSRF 거부, 현재 비밀번호 오류·시도 제한, 비밀번호 정책·확인 불일치·사용자명 경계, ID/CSRF 교체·이전 세션/코드 대기 무효·변경 후 로그인, 활성 TOTP 요구·복구 코드 거부, 활성 토큰 삭제 409·개별/일괄 삭제·감사 보존·삭제 전후 다운로드 티켓 거부.
+- Chromium: 계정 변경 후 재로그인, 토큰 개별/일괄 삭제, 설정·라이선스 모달, Esc/바깥 클릭/닫기, 중첩 닫기·포커스 복귀·Tab 순환, 한/영 × 1280/390 × 자동/라이트/다크, lite/full 공급자 가용성. axe가 없으면 검증을 실패시킨다.
+- 실제 모바일·스크린리더·별도 브라우저·외부 HTTPS는 미검증이며 기존 운영 검증 한계는 유지한다. 다중 관리자(역할 포함)는 후속 단계다.
+
+초기 실패와 수정:
+
+- Gradle 빌드와 테스트를 잘못 병행해 `EOFException` 및 테스트 결과 임시 파일 누락으로 각각 종료 1. 이후 빌드·테스트·서버 검증을 순차 실행했다.
+- 로그인 선택자가 계정 변경 폼의 사용자명까지 선택해 첫 브라우저 실행 종료 1. 로그인 화면으로 범위를 제한하고 토큰 화면 재로드 후 이동을 명시했다.
+- 중첩 라이선스의 Esc가 부모까지 닫아 브라우저 실행 종료 1. cancel 전파를 차단했다. 다음 실행에서 첫 컨트롤의 Shift+Tab 순환 검증이 실패(종료 1)해 명시적 Tab 순환을 보완했다. 중첩 모달을 동시에 해제할 때 스크롤 잠금이 남지 않도록 열린 dialog를 기준으로 CSS에서 잠근다.
+
+- 첫 full 브라우저 실행은 TOTP 상태 조회 전에 비밀번호를 입력해 활성 폼 전환 때 입력이 비워져 종료 1. 해제 버튼 표시(서버 상태 조회 완료)를 기다린 뒤 입력하도록 검증 스크립트를 보완했다.
+
+최종 결과와 명령별 종료 코드는 로컬 `build/verification/admin-ui/report.txt`, 전체 테스트 합계는 같은 폴더의 `tests-full.json`에 기록한다. 화면별 axe·레이아웃·오류 결과와 스크린샷은 `build/verification/browser/`, `build/verification/browser-full/`에 보존한다. 실패 화면/요약은 `build/verification/browser-admin-attempt-1/`부터 `-3/`까지 보존한다. 인증값은 보고와 로그에 기록하지 않는다.
+
+최종 결과: `./gradlew build -q`, `./gradlew -Pfull build -q`, `VERIFY_PORT=8104 python3 scripts/verify-runtime.py`, 브라우저 lite 및 `VERIFY_FULL=true` 모두 종료 0. core 28·app 64·full 21개 테스트 실패·오류·생략 0. lite 93/full 95개 화면 모두 axe 위반·브라우저 오류 0, 서버 종료·8104 반환 확인. 런타임 최대 RSS 280.1 MiB이며 강제 컨테이너 메모리 상한 실측은 아니다. 내부 정보 검사 일치 0건(`rg` 종료 1)·공백 검사 종료 0. 첫 full 브라우저 실패 자료는 `build/verification/browser-full-admin-attempt-1/`에 보존한다.

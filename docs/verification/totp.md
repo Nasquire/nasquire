@@ -1,5 +1,7 @@
 # 관리자 TOTP·오프라인 복구 검증
 
+
+관리자 최초 설정·오프라인 복구 비밀번호는 8자 이상, UTF-8 72바이트 이하이며 영문자(A-Z/a-z)·숫자(0-9)·출력 가능한 ASCII 문장부호를 각각 하나 이상 포함한다. 대문자·소문자를 각각 강제하지 않는다. 로그인·TOTP의 기존 비밀번호 확인과 공유 비밀번호에는 이 새 정책을 적용하지 않는다.
 기준 커밋 `f89692f`, 검증일 2026-10-24. 기본 꺼짐인 관리자 TOTP를 구현했다. 신규 라이브러리는 없고 LICENSE·NOTICE·LICENSE-EXCEPTIONS는 변경하지 않았다. MCP OAuth는 구현하지 않았다.
 
 ## 구현·판단
@@ -79,3 +81,24 @@ HTTP 통합 테스트는 CSRF 없는 등록/코드 승인 거부, 잘못된 코�
 - 검증: `scripts/smoke.py`, 신규 `scripts/verify-admin-recovery.py`.
 - 문서: `README.md`, `CLAUDE.md`, `docs/ROADMAP.md`, 신규 `docs/verification/totp.md`.
 - 커밋 위임 메시지: `.ai-commit-msg` (gitignore 대상). 직접 git add/commit/push하지 않았다.
+
+
+## 관리자 비밀번호 정책 변경 (기준 fe9f792)
+
+- `PasswordPolicy.validate`를 최초 설정과 오프라인 복구에 공통 적용한다. 특수문자는 ASCII `0x21–0x2F`, `0x3A–0x40`, `0x5B–0x60`, `0x7B–0x7E` 문장부호만 인정한다. 공백·제어문자·비ASCII 기호만으로 특수문자 조건을 충족할 수 없다. 기존 비밀번호 확인과 공유 정책은 유지한다.
+- `PasswordPolicyTest` 16개: 7자·필수 문자 누락·공백/탭/DEL/비ASCII 기호 거부, ASCII/한글의 UTF-8 72바이트 허용·초과 거부, 대문자/소문자 한쪽만 포함한 8자 허용, null 거부, 모든 ASCII 문장부호 허용. 최초 설정과 실제 오프라인 명령을 같은 입력으로 검사하며 복구 거부 시 기존 비밀번호·TOTP·복구 코드·감사가 보존되는지 확인한다.
+- `TotpIntegrationTest`: 새 정책 오류 응답의 고정 한·영 문구 확인. 숫자가 없는 이전 계정 해시를 직접 준비해 로그인·TOTP 등록/해제를 확인한다. 테스트용 새 비밀번호 생성은 무작위 문자열에 `a1!`를 붙여 필수 문자를 항상 포함한다. 기존 Java 관리자 예제는 이미 조건을 충족한다. `verify-runtime.py`는 수정한 `smoke.py`를 사용하며, `verify-ml.py`는 관리자 계정을 만들지 않아 변경하지 않았다.
+
+| 명령 | 종료 코드 | 결과 |
+| --- | --- | --- |
+| `./gradlew build -q` | 0 | 최종 lite 빌드 성공. full 전용 OCR 2개는 구성 조건으로 생략 |
+| `./gradlew -Pfull build -q` | 0 | core 28·app 63·full 21개, 실패·오류·생략 0 |
+| `VERIFY_PORT=8104 python3 scripts/verify-runtime.py` | 0 | 48문서·업로드/공유·TOTP 스모크, 최대 RSS 279.7 MiB, 서버 종료·포트 반환 |
+| `python3 scripts/verify-admin-recovery.py` | 0 | 실행 JAR DB 잠금 거부·복구·감사·잘못된 인자 거부 |
+| Python `ast.parse` (`scripts/*.py`) | 0 | 스크립트 구문 검사 |
+| 내부 식별자·경로 `rg` | 1 | 일치 0건 |
+| `git diff --check` | 0 | 공백 오류 없음 |
+
+중간 빌드는 추가한 통합 테스트의 지역 변수명 중복으로 종료 1이었다. 이름 수정 후 위 최종 빌드는 통과했다. 실패 로그를 포함한 로컬 상세 아티팩트는 `build/verification/password-policy/`, 런타임 상세는 `build/verification/measurement.json`·`smoke.txt`·`bootrun.log`에 있다. 샘플 생성 시 Log4j 공급자 경고가 있었으나 생성·스모크는 정상 완료했다.
+
+미수행: 실제 브라우저·OAuth/공식 SDK·ML 전체 검증 스크립트 재실행과 대화형 TTY 확인 입력. 이번에는 프런트엔드 TypeScript/배포 빌드, 기존 Java 통합 테스트, Python 구문 검사와 지정 런타임·실행 JAR 복구를 수행했다. 화면의 제출 전 검사 동작은 실제 브라우저에서 미검증이다. 커밋·배포는 수행하지 않았다.

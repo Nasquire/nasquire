@@ -17,7 +17,7 @@ Install a Java 25 JDK. Gradle downloads Node for the frontend; a separate Node i
 ./gradlew :app:bootRun
 ```
 
-Open `http://localhost:8080`, create the administrator (password: at least 12 characters, at most 72 UTF-8 bytes), and sign in. In **Sources**, register an existing readable folder, wait for two scans, then use **Search playground**. Create a read-only API token in **API tokens**; its value is displayed once. The UI selects Korean or English from the browser language and supports system, light, and dark themes.
+Open `http://localhost:8080`, create the administrator (password: at least 8 characters, including an ASCII letter, digit and printable ASCII punctuation, at most 72 UTF-8 bytes; both letter cases are not required), and sign in. In **Sources**, register an existing readable folder, wait for two scans, then use **Search playground**. Create a read-only API token in **API tokens**; its value is displayed once. The UI selects Korean or English from the browser language and supports system, light, and dark themes.
 
 The app uses `./data` by default. Stop the application before copying its data directory for backup; restore the entire directory together. Sources can always be reindexed. Only one application instance may use a data directory.
 
@@ -55,17 +55,24 @@ docker compose -f deploy/docker-compose.yml up -d
 
 | 구성 | 최소: CPU / 메모리 제한 / 디스크 | 권장: CPU / 메모리 제한 / 디스크 |
 | --- | --- | --- |
-| lite 키워드 검색 | 1코어 / 512 MiB / 이미지 + 데이터 | 2코어 / 1 GiB / 이미지 + 데이터용 SSD·여유 공간 |
+| lite 키워드 검색(힙 192 MiB) | 1코어 / 512 MiB / 이미지 + 데이터 | 2코어 / 1 GiB / 이미지 + 데이터용 SSD·여유 공간 |
 | lite + 원격 임베딩 | 1코어 / 512 MiB / 이미지 + 데이터·벡터 색인 | 2코어 / 1 GiB / 데이터용 SSD·벡터 증가분 여유 |
 | full OCR(내장 모델 off) | 1코어 / 1 GiB / 이미지 + 데이터·OCR 임시 공간 | 2코어 / 2 GiB / 데이터용 SSD·OCR 임시 공간 |
 | full + 내장 임베딩·로컬 리랭커 | 2코어 / 1.5 GiB / 이미지 + 데이터·모델 | 4코어 / 3~4 GiB / 데이터·모델용 SSD |
 | ML 전용 서버(full 이미지) | 2코어 / 2 GiB / 이미지 + 모델·OCR 임시 공간 | 4코어 / 3~4 GiB / 모델·OCR 임시 공간용 SSD |
 
+lite 사양 참고 실측(자체 PDF 18개×360쪽 + Office/HWP 8개, 단독 cgroup 제한 없음):
+
+| 앱 메모리 | 기존 힙 256 MiB | 개선 힙 192 MiB·유휴 수축 |
+| --- | ---: | ---: |
+| 최대 RSS | 426.4 MiB | 410.9 MiB |
+| 색인 후 대기 RSS | 426.4 MiB | 362.4 MiB |
+
 CPU·권장 메모리는 소규모 운영을 위한 시작 기준이며 처리량 보장값은 아닙니다. **최소 지원 기준은 512 MiB**입니다. 참고: arm64 VM 실측에서 lite는 512/384/320 MiB 제한 스모크를 통과했으나, 이는 과거 소규모 시험 기록이며 amd64 메모리 보장값이 아닙니다. 원격 임베딩의 공급자 비용·서버 자원은 별도입니다.
 
 참고: arm64 VM 실측 이미지 크기는 lite 약 638 MB, full 약 899 MB였습니다. 공식 amd64 이미지 크기는 별도 확인이 필요합니다. 디스크는 이미지 크기에 `/data`의 DB·색인·로그·백업 여유와 선택 업로드/휴지통을 더하고, 모델을 쓰면 실제 모델 파일 크기와 다운로드 임시 공간을 더합니다. 색인은 원본 파일 개수/바이트만으로 산정할 수 없고 추출 텍스트 양·벡터 수에 비례합니다. OCR은 작업당 PNG 합계 상한 256 MiB 외에 원본 복사·PDF scratch 공간이 필요합니다.
 
-내장 E5 검색 서버의 기존 최대 RSS는 855.7 MiB이며 로컬 리랭커/ML 서버도 512 MiB를 초과했습니다. ML 두 모델 실측은 1047.8 MiB입니다. full OCR의 1 GiB는 과거 arm64 VM의 소규모 PDF·PNG 성공 기록을 참고한 시작 기준이며 amd64 컨테이너 보장값은 아닙니다. 1.5 GiB/2 GiB도 모델·OCR 동시 부하를 보장하지 않습니다. 문서 수 증가에 따른 메모리 영향·대규모 자료는 미실측입니다.
+내장 E5 검색 서버의 기존 최대 RSS는 855.7 MiB이며 로컬 리랭커/ML 서버도 512 MiB를 초과했습니다. ML 두 모델 실측은 1047.8 MiB입니다. full OCR의 1 GiB는 과거 arm64 VM의 소규모 PDF·PNG 성공 기록을 참고한 시작 기준이며 amd64 컨테이너 보장값은 아닙니다. 1.5 GiB/2 GiB도 모델·OCR 동시 부하를 보장하지 않습니다. 위 lite 실측의 조건·NMT·공유 cgroup 수치는 별도 기록했습니다. 단독 512 MiB cgroup 및 개선 후 NAS 실기 재측정은 남아 있습니다([메모리 측정](docs/verification/memory.md)).
 
 실측 범위와 소규모 디스크 예시는 [배포 검증](docs/verification/deploy.md)을 참고하세요.
 
@@ -74,15 +81,15 @@ CPU·권장 메모리는 소규모 운영을 위한 시작 기준이며 처리�
 Pass Spring Boot arguments to `bootRun` or the executable JAR:
 
 ```sh
-./gradlew :app:bootRun --args='--server.port=8101 --nasquire.data=./data --nasquire.scan-millis=5000'
-java --enable-native-access=ALL-UNNAMED -Xmx256m -XX:+UseSerialGC -jar app/build/libs/app-0.1.0.jar --nasquire.data=./data
+./gradlew :app:bootRun --args='--server.port=8101 --nasquire.data=./data --nasquire.scan-millis=300000'
+java --enable-native-access=ALL-UNNAMED -Xms64m -Xmx192m -XX:+UseSerialGC -XX:+UseCompactObjectHeaders -XX:MaxHeapFreeRatio=20 -XX:MinHeapFreeRatio=10 -XX:-ShrinkHeapInSteps -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=48m -Xss512k -XX:MaxDirectMemorySize=32m -jar app/build/libs/app-0.1.0.jar --nasquire.data=./data
 ```
 
 | Property | Default | Purpose |
 | --- | --- | --- |
 | `nasquire.data` | `./data` (`/data` in Docker) | H2 metadata and Lucene index; environment variable `NASQUIRE_DATA` |
 | `server.port` | `8080` | HTTP port; environment variable `PORT` |
-| `nasquire.scan-millis` | `10000` | Scan interval, at least 100 ms |
+| `nasquire.scan-millis` | `300000` | Initial scan interval; saved administrator settings take priority |
 | `nasquire.stable-millis` | `2000` | Minimum unchanged size/mtime observation period |
 | `nasquire.max-file-bytes` | `33554432` | File-size ceiling (32 MiB) |
 | `nasquire.max-text-characters` | `2000000` | Extracted-character ceiling, 1200–4000000; Office/HWP indexes the prefix at this limit |
@@ -211,7 +218,15 @@ Use HTTPS and restrict initial setup/administrator access to trusted users. Secu
 
 ## 관리자 2단계 인증·오프라인 복구
 
-**보안 / Security** 화면에서 선택적으로 TOTP를 켭니다(기본 꺼짐). 등록에는 현재 비밀번호 재확인이 필요하며, 등록 시 한 번 표시되는 Base32 비밀 또는 `otpauth://` URI를 인증 앱에 입력하고, 10분 안에 코드 한 번을 확인해야 활성화됩니다. QR 생성 의존성은 추가하지 않았습니다. SHA-1·6자리·30초, 서버 시각 기준 ±1단계를 허용하며 이미 사용한 단계 이하의 코드는 거부합니다. 서버와 인증 기기의 시간을 동기화하세요. 비밀은 데이터 폴더의 기존 `embedding.key`를 사용하는 AES-256-GCM으로 DB에 암호화되며 조회 API로 다시 반환하지 않습니다. 데이터 폴더와 키를 함께 보호·백업하세요. 키 파일이 없거나 바뀌었는데 암호문이 남아 있으면 새 키를 만들지 않고 오류를 기록합니다. 이 경우 키를 백업에서 복원하거나 아래 오프라인 복구로 TOTP를 해제한 뒤 임베딩 원격 키를 다시 저장하세요(복구 코드 로그인은 키 없이도 가능합니다).
+**사이드바 하단 톱니바퀴 / Settings**를 누르면 중앙 환경설정 모달이 열립니다(모바일 전체 화면). 계정 → 2단계 인증 → 검색 → full 전용 리랭커·OCR → 정보 순서이며 맨 아래에서 로그아웃합니다. 하단 텍스트 버튼으로 자동·라이트·다크 테마를 전환합니다. 계정에서 현재 비밀번호를 확인하고 관리자 비밀번호나 사용자명(영문·숫자·_.- 3~100자)을 변경합니다. TOTP가 켜져 있으면 사용하지 않은 인증 앱 코드도 필요합니다. 성공하면 세션 ID·CSRF를 교체하고 다른 세션을 무효화합니다. 정보 섹션의 라이선스 보기에서는 원본 링크를 유지하며 AGPL·추가 허가·React 라이선스를 탭으로 읽습니다.
+
+환경설정에서 검색(임베딩 공급자·Lucene/Qdrant 벡터 저장소·연결 시험·재색인 상태), 리랭커, OCR을 관리합니다. 검색 설정과 리랭커·OCR 설정은 각각 저장하며 기존 키 비공개·키 삭제·HTTP 경고·재색인 정책을 유지합니다. lite에서는 원격 임베딩과 키워드 검색만 표시하며 내장 ONNX 선택지·리랭커·OCR은 숨깁니다. 현재 버전과 lite/full 빌드는 정보 섹션에서 확인합니다. API 토큰 화면에서는 폐기·만료 토큰을 개별 또는 일괄 삭제할 수 있습니다. 활성 토큰은 먼저 폐기해야 하며 감사 기록은 유지됩니다.
+
+**검색 시험 / Search playground** 결과는 소스 이름과 상대 경로를 표시합니다. 입력 질의의 문자·숫자 토큰을 대소문자 구분 없이 강조하고, 검색어 주변 최대 360자 발췌와 생략 표시를 제공합니다. 공백과 빈 줄은 축약하며 **더 보기 / Show more**로 전체 청크를 펼칩니다. 강조할 일치가 없는 벡터 검색 결과는 청크 앞부분을 표시합니다.
+
+The sidebar settings gear opens a central dialog (full screen on mobile): Account, Two-step verification, Search, full-only reranker/OCR, About, and Sign out. Auto/Light/Dark buttons stay in the sidebar footer. Account changes require the current password and, when enabled, an unused authenticator code; they rotate the session and CSRF token and invalidate other sessions. About includes license tabs and original file links. Revoked or expired API token records can be deleted individually or together; audit events remain.
+
+**환경설정 → 2단계 인증 / Settings → Two-step verification**에서 선택적으로 TOTP를 켭니다(기본 꺼짐). 등록에는 현재 비밀번호 재확인이 필요하며, 등록 시 한 번 표시되는 Base32 비밀 또는 `otpauth://` URI를 인증 앱에 입력하고, 10분 안에 코드 한 번을 확인해야 활성화됩니다. QR 생성 의존성은 추가하지 않았습니다. SHA-1·6자리·30초, 서버 시각 기준 ±1단계를 허용하며 이미 사용한 단계 이하의 코드는 거부합니다. 서버와 인증 기기의 시간을 동기화하세요. 비밀은 데이터 폴더의 기존 `embedding.key`를 사용하는 AES-256-GCM으로 DB에 암호화되며 조회 API로 다시 반환하지 않습니다. 데이터 폴더와 키를 함께 보호·백업하세요. 키 파일이 없거나 바뀌었는데 암호문이 남아 있으면 새 키를 만들지 않고 오류를 기록합니다. 이 경우 키를 백업에서 복원하거나 아래 오프라인 복구로 TOTP를 해제한 뒤 임베딩 원격 키를 다시 저장하세요(복구 코드 로그인은 키 없이도 가능합니다).
 
 활성화 때만 표시되는 일회용 복구 코드 10개를 별도 안전한 곳에 보관하세요(DB에는 SHA-256만 저장). 비밀번호 로그인 뒤 인증 앱 코드 또는 복구 코드를 입력해야 관리 권한을 받습니다. 대기 세션은 5분 후 만료되며 코드 실패도 기존 IP/계정별 지연·잠금과 감사에 포함됩니다. 같은 대기 세션에서 5회 실패하면 비밀번호 단계부터 다시 시작해야 하며, 코드 단계의 **취소**로도 비밀번호 단계로 돌아갈 수 있습니다. 복구 코드는 대소문자·공백·하이픈을 무시합니다. 등록·해제 중 실패는 로그인과 별도로 제한되어 관리자 로그인을 잠그지 않습니다. 해제에는 **현재 비밀번호와 아직 사용하지 않은 인증 앱 코드**가 모두 필요하며 복구 코드는 해제에 사용할 수 없습니다. 해제하면 남은 복구 코드도 폐기됩니다. 기존에 완료된 다른 관리자 세션은 유지되므로 분실·침해가 의심되면 오프라인 복구를 사용하세요. API Bearer 토큰·MCP 인증은 별도로 유지됩니다.
 
@@ -221,7 +236,7 @@ Use HTTPS and restrict initial setup/administrator access to trusted users. Secu
 java -jar app/build/libs/app-0.1.0.jar --recover-admin --data=/data
 ```
 
-콘솔에서 새 비밀번호(12자 이상, UTF-8 72바이트 이하)를 숨김 입력하고 한 번 더 확인 입력합니다(불일치 시 실패). 표준 입력 줄 끝의 CR(CRLF)은 제거합니다. 콘솔이 없는 환경에서는 보호된 표준 입력으로 한 줄을 전달할 수 있습니다. 비밀번호를 명령 인자·환경변수·셸 기록에 넣지 마세요. 기존 관리자 이름은 유지하고 비밀번호를 재설정하며 TOTP·복구 코드를 해제하고 `admin-recovery` 감사를 남긴 뒤 종료합니다. 기존 데이터 폴더/관리자가 없거나 DB가 잠겼으면 실패합니다. 정상 종료 후 앱을 다시 시작하고 로그인하여 TOTP를 새로 등록하세요. 세션은 메모리에 있으므로 재시작으로 기존 세션이 사라집니다. API 토큰은 유지되므로 침해가 의심되면 별도로 폐기하세요. 오프라인 복구는 초기화나 소스 원본 변경을 하지 않습니다.
+콘솔에서 새 비밀번호(8자 이상, 영문자·숫자·출력 가능한 ASCII 특수문자 포함, UTF-8 72바이트 이하, 대소문자 각각 필수 아님)를 숨김 입력하고 한 번 더 확인 입력합니다(불일치 시 실패). 표준 입력 줄 끝의 CR(CRLF)은 제거합니다. 콘솔이 없는 환경에서는 보호된 표준 입력으로 한 줄을 전달할 수 있습니다. 비밀번호를 명령 인자·환경변수·셸 기록에 넣지 마세요. 기존 관리자 이름은 유지하고 비밀번호를 재설정하며 TOTP·복구 코드를 해제하고 `admin-recovery` 감사를 남긴 뒤 종료합니다. 기존 데이터 폴더/관리자가 없거나 DB가 잠겼으면 실패합니다. 정상 종료 후 앱을 다시 시작하고 로그인하여 TOTP를 새로 등록하세요. 세션은 메모리에 있으므로 재시작으로 기존 세션이 사라집니다. API 토큰은 유지되므로 침해가 의심되면 별도로 폐기하세요. 오프라인 복구는 초기화나 소스 원본 변경을 하지 않습니다.
 
 구현·검증 기록: [TOTP 검증](docs/verification/totp.md).
 
@@ -230,3 +245,9 @@ java -jar app/build/libs/app-0.1.0.jar --recover-admin --data=/data
 기존 API 토큰과 함께 OAuth 인가 코드 + PKCE(S256)를 지원합니다. 기본 off이며 `nasquire.oauth.enabled=true`와 `nasquire.public-url=https://nasquire.example.com`을 설정하세요. HTTPS가 필수이며 루프백 HTTP만 개발용으로 허용합니다. Claude·ChatGPT 등의 원격 MCP 연결 URL에 `https://nasquire.example.com/mcp`를 입력한 뒤 관리자 로그인(TOTP 활성 시 추가 확인)과 소스별 승인을 진행합니다. OAuth 토큰은 읽기 전용 `/mcp` 전용이고 REST에는 기존 API 토큰이 필요합니다. 관리 화면 **API 토큰 → MCP OAuth**에서 승인·클라이언트를 철회할 수 있습니다.
 
 상세 설정·제한·연결 예는 [OAuth 설치 안내](docs/install/oauth.md), 검증 범위는 [OAuth 검증](docs/verification/oauth.md)을 참고하세요.
+
+### 색인 검사 설정
+
+NAS HDD 절전과 대용량 폴더 검사 부담을 줄이기 위해 기본 변경 검사 주기는 5분입니다(안정화 대기 2초 유지). 환경설정 → 색인에서 검사 주기 1~60분과 파일 크기 상한 1~512 MiB(기본 32 MiB)를 저장합니다. 데이터 폴더 `indexing.properties`의 화면 설정이 `nasquire.scan-millis`·`nasquire.max-file-bytes` 환경변수/설정 초기값보다 우선하며 저장 즉시 단일 작업자의 스케줄을 재설정합니다. Office/HWP 원본은 별도 8 MiB 상한을 유지합니다.
+
+소스별 **지금 검사**는 변경분만 검사하며 실행 중 요청은 다음 차례 한 번으로 합칩니다. 새 파일은 안정화 대기 후 다음 검사에서 색인됩니다. 크기 초과는 오류와 별도로 집계하고 관리자에게 최근 상대 경로 최대 5건을 메모리에서만 표시합니다. 상한을 올린 파일은 다음 검사부터 다시 시도합니다. 포함 glob을 비우면 현재 빌드의 지원 형식 전체를 처리합니다(`GET /api/supported-extensions`, 관리자 전용). full의 이미지 형식은 OCR을 켜야 추출됩니다. NAS 시스템 파일·폴더는 자동 제외됩니다.

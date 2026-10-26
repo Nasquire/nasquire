@@ -14,12 +14,14 @@ import hmac
 import json
 import os
 import pathlib
+import re
 import secrets
 import signal
 import socket
 import struct
 import subprocess
 import time
+import traceback
 import urllib.request
 import urllib.parse
 from contextlib import contextmanager
@@ -101,12 +103,18 @@ def totp(secret, step=None):
 
 
 async def nav(page, name):
-    await page.get_by_role('navigation').get_by_role('button', name=name, exact=True).click()
+    if await page.get_by_role('dialog').count():
+        await page.keyboard.press('Escape')
+    if name in ('Settings', 'Security', 'About', '환경설정', '보안', '정보'):
+        await page.get_by_role('button', name='환경설정' if name in ('환경설정', '보안', '정보') else 'Settings', exact=True).click()
+        await expect(page.get_by_role('dialog')).to_be_visible()
+    else:
+        await page.get_by_role('navigation').get_by_role('button', name=name, exact=True).click()
 
 
 async def login(page, password):
-    await page.locator('input[name=username]').fill('admin')
-    await page.locator('input[name=password]').fill(password)
+    await page.locator('main.auth input[name=username]').fill('admin')
+    await page.locator('main.auth input[name=password]').fill(password)
     await page.locator('form button.primary').click()
 
 
@@ -146,6 +154,7 @@ async def main():
         page.on('requestfailed', lambda req: summary['failedRequests'].append({'path':req.url.split('?')[0].replace(BASE, ''),'failure':req.failure}))
         page.on('response', lambda res: summary['httpErrors'].append({'path': res.url.split('?')[0].replace(BASE, ''), 'status': res.status}) if res.status >= 400 else None)
         axe = ROOT / 'build/verification/deps/node_modules/axe-core/axe.min.js'
+        assert axe.exists(), 'axe 검증 도구가 필요합니다'
 
         async def audit(target, label):
             await target.wait_for_timeout(100)
@@ -173,7 +182,7 @@ async def main():
             await page.goto(BASE)
             await expect(page.get_by_role('heading', name='Set up Nasquire')).to_be_visible()
             await audit(page, 'setup-en-desktop')
-            password = secrets.token_urlsafe(24)
+            password = secrets.token_urlsafe(24) + 'a1!'
             await login(page, password)
             await expect(page.get_by_role('navigation')).to_be_visible()
             passed('첫 설정·관리자 로그인')
@@ -181,6 +190,12 @@ async def main():
             upload.mkdir(exist_ok=True)
             await add_source(page, 'Sample documents', ROOT / 'build/samples')
             await add_source(page, 'Uploads', upload, 'upload')
+            await expect(page.get_by_text('All supported formats', exact=True).first).to_be_visible()
+            await expect(page.locator('textarea[name=includes]')).not_to_have_attribute('placeholder', '**/*.pdf')
+            formats = await api(page, '/api/supported-extensions')
+            assert 'hwpx' in formats and ('png' in formats) == (os.environ.get('VERIFY_FULL') == 'true')
+            await page.get_by_role('button', name='Scan now', exact=True).first.click()
+            passed('지원 형식·빈 glob 안내·지금 검사')
             sources = await api(page, '/api/sources')
             upload_id = next(s['id'] for s in sources if s['kind'] == 'upload')
             await page.get_by_role('button', name='Edit', exact=True).first.click()
@@ -198,10 +213,50 @@ async def main():
                     break
                 await asyncio.sleep(.5)
             await expect(page.get_by_role('button', name='Read page').first).to_be_visible()
+            result = page.locator('section.card').filter(has=page.get_by_role('button', name='Read page')).first
+            await expect(result.locator('code')).to_contain_text('Sample documents edited · ')
+            display_path = await result.locator('code').inner_text()
+            assert not any(s['id'] in display_path for s in sources)
+            await expect(result.locator('mark').first).to_have_text(re.compile('ocean', re.I))
+            assert len(await result.locator('.result-text').inner_text()) <= 362
+            if await result.get_by_role('button', name='Show more', exact=True).count():
+                await result.get_by_role('button', name='Show more', exact=True).click()
+                assert len(await result.locator('.result-text').inner_text()) > 360
+                await result.get_by_role('button', name='Show less', exact=True).click()
             await page.get_by_role('button', name='Read page').first.click()
             await expect(page.get_by_role('heading', name='Document text')).to_be_visible()
             await audit(page, 'document-en-desktop')
             passed('검색·문서 보기')
+            # 화면 표시만 고정 응답으로 검증하고 실제 문서 API 검증은 위에서 유지한다.
+            sample_id = next(s['id'] for s in sources if s['kind'] == 'directory')
+            fixture_text = ('prefix ' * 100) + '\n\n  OcEaN 한글 <img src=x onerror=alert(1)> ' + ('suffix ' * 100)
+            async def mock_search(route):
+                await route.fulfill(content_type='application/json', body=json.dumps([{'source': sample_id, 'sourceName': 'Sample documents edited',
+                    'path': sample_id + ':nested/sample.txt', 'page': 1, 'text': fixture_text, 'score': 1.0}]))
+            await page.route('**/api/search?*', mock_search)
+            await page.locator('[name=query]').fill('ocean 한글 .*')
+            await page.get_by_role('button', name='Search', exact=True).click()
+            await expect(page.locator('.result-text')).to_have_count(1)
+            await expect(page.locator('.result-text')).to_contain_text('OcEaN 한글')
+            result = page.locator('section.card').filter(has=page.get_by_role('button', name='Read page')).first
+            await expect(result.locator('code')).to_have_text('Sample documents edited · nested/sample.txt')
+            assert await result.locator('mark').all_text_contents() == ['OcEaN', '한글']
+            excerpt = await result.locator('.result-text').inner_text()
+            assert excerpt.startswith('…') and excerpt.endswith('…') and len(excerpt) <= 362
+            assert not re.search(r'\s{2,}', excerpt)
+            await expect(result.locator('img,script')).to_have_count(0)
+            await result.get_by_role('button', name='Show more', exact=True).click()
+            await expect(result.locator('.result-text')).to_have_text(re.sub(r'\s+', ' ', fixture_text).strip())
+            await audit(page, 'search-expanded-en-desktop')
+            await result.get_by_role('button', name='Show less', exact=True).click()
+            await audit(page, 'search-excerpt-en-desktop')
+            await page.locator('[name=query]').fill('no-match')
+            await page.get_by_role('button', name='Search', exact=True).click()
+            await expect(result.locator('mark')).to_have_count(0)
+            assert len(await result.locator('.result-text').inner_text()) <= 362
+            await page.unroute('**/api/search?*', mock_search)
+            passed('검색 발췌·다중 질의·대소문자·한글 강조·공백 축약·펼치기·XSS 텍스트 처리')
+
             await nav(page, 'Files and shares')
             await page.locator('section.card').first.locator('select').first.select_option(upload_id)
             await page.locator('input[type=file]').set_input_files({'name':'browser-note.md','mimeType':'text/markdown','buffer':b'Browser searchable ocean document'})
@@ -242,12 +297,12 @@ async def main():
                 await notice.get_by_role('button', name='Dismiss').click()
             passed('공유 생성·공개 페이지·HTTP Basic challenge/자동 인증')
             await nav(page, 'Security')
-            await page.get_by_label('Current password', exact=True).fill(password)
+            await page.locator('#security-settings').get_by_label('Current password', exact=True).fill(password)
             await page.get_by_role('button', name='Set up authenticator').click()
-            await expect(page.locator('code').first).to_be_visible()
-            secret = await page.locator('code').first.inner_text()
+            await expect(page.locator('#security-settings code').first).to_be_visible()
+            secret = await page.locator('#security-settings code').first.inner_text()
             enrolled_step = int(time.time() // 30)
-            await page.get_by_label('Authenticator code', exact=True).fill(totp(secret, enrolled_step))
+            await page.locator('#security-settings').get_by_label('Authenticator code', exact=True).fill(totp(secret, enrolled_step))
             await page.get_by_role('button', name='Enable', exact=True).click()
             await expect(page.get_by_role('button', name='Dismiss')).to_be_visible()
             await page.get_by_role('button', name='Dismiss').click()
@@ -268,36 +323,109 @@ async def main():
             await page.get_by_role('button', name='Dismiss').click()
             await page.get_by_role('button', name='Revoke', exact=True).click()
             await expect(page.get_by_text('Revoked', exact=True)).to_be_visible()
-            passed('API 토큰 발급·숨김·철회·OAuth 관리 화면')
-            await nav(page, 'Embeddings')
-            await page.get_by_role('button', name='Save settings', exact=True).click()
+            await page.get_by_role('button', name='Delete', exact=True).click()
+            await expect(page.get_by_text('Revoked', exact=True)).to_have_count(0)
+            for name in ('expired', 'revoked'):
+                token = await api(page, '/api/tokens', 'POST', {'name':name, 'expiresAt':int(time.time()*1000)+1000 if name == 'expired' else int(time.time()*1000)+600000})
+                if name == 'revoked':
+                    await api(page, '/api/tokens/' + token['id'], 'DELETE')
+            await asyncio.sleep(1.2)
+            await page.reload()
+            await nav(page, 'API tokens')
+            await expect(page.get_by_role('button', name='Delete all revoked and expired tokens')).to_be_enabled()
+            await page.get_by_role('button', name='Delete all revoked and expired tokens').click()
+            await expect(page.get_by_role('button', name='Delete all revoked and expired tokens')).to_be_disabled()
+            passed('API 토큰 발급·숨김·철회·개별/일괄 삭제·OAuth 관리 화면')
+            await nav(page, 'Settings')
+            await expect(page.get_by_label('Scan interval (minutes)', exact=True)).to_be_visible()
+            await page.get_by_label('Scan interval (minutes)', exact=True).fill('1')
+            await page.get_by_label('Maximum file size (MiB)', exact=True).fill('32')
+            await page.get_by_role('button', name='Save indexing settings', exact=True).click()
+            assert (await api(page, '/api/indexing'))['scanMillis'] == 60000
+            passed('색인 주기·크기 설정 저장')
+            await page.locator('#embedding-form').get_by_role('button', name='Save settings', exact=True).click()
+            await expect(page.get_by_text('Embeddings off (keyword search)', exact=True)).to_be_visible()
+            assert await page.locator('[name=provider] option[value=builtin]').count() == (1 if os.environ.get('VERIFY_FULL') == 'true' else 0)
             await page.locator('[name=provider]').select_option('remote')
             await expect(page.locator('[name=baseUrl]')).to_be_visible()
             await audit(page, 'embedding-remote-en-desktop')
             await page.locator('[name=provider]').select_option('off')
             passed('임베딩 설정 off 저장·원격 설정 표시')
-            await nav(page, 'Full settings')
-            await page.get_by_role('button', name='Save settings', exact=True).click()
-            await expect(page.get_by_role('status')).to_have_text('Settings saved')
             if os.environ.get('VERIFY_FULL') == 'true':
-                await page.locator('[name=reranker]').select_option('remote')
-                await expect(page.locator('[name=baseUrl]')).to_be_visible()
+                full = page.locator('#full-settings')
+                await full.get_by_role('button', name='Save settings', exact=True).click()
+                await expect(full.get_by_role('status')).to_have_text('Settings saved')
+                await full.locator('[name=reranker]').select_option('remote')
+                await expect(full.locator('[name=baseUrl]')).to_be_visible()
                 await audit(page, 'full-remote-en-desktop')
-                await page.locator('[name=reranker]').select_option('builtin')
-                await expect(page.locator('[name=localModelPath]')).to_be_visible()
+                await full.locator('[name=reranker]').select_option('builtin')
+                await expect(full.locator('[name=localModelPath]')).to_be_visible()
                 await audit(page, 'full-builtin-en-desktop')
-                await page.locator('[name=reranker]').select_option('off')
-                await page.locator('[name=ocr]').select_option('tesseract')
-                await expect(page.locator('[name=ocrMemoryMiB]')).to_be_visible()
-                await page.locator('[name=ocr]').select_option('off')
-            passed('full 설정 off 저장·가용성·공급자 입력')
+                await full.locator('[name=reranker]').select_option('off')
+                await full.locator('[name=ocr]').select_option('tesseract')
+                await expect(full.locator('[name=ocrMemoryMiB]')).to_be_visible()
+                await full.locator('[name=ocr]').select_option('off')
+            else:
+                await expect(page.locator('#full-settings')).to_have_count(0)
+                await expect(page.locator('[name=reranker], [name=ocr]')).to_have_count(0)
+            passed('통합 환경설정 저장·lite/full 가용성·공급자 입력')
             await nav(page, 'About')
+            await expect(page.get_by_text('Build: ' + summary['build'], exact=True)).to_be_visible()
             assert await page.get_by_role('link', name='GitHub').get_attribute('href') == 'https://github.com/Nasquire/nasquire'
             for name in ('GNU AGPL v3.0', 'Additional terms'):
                 link = page.get_by_role('link', name=name)
                 assert (await context.request.get(BASE + await link.get_attribute('href'))).status == 200
-            passed('정보·저장소 href·라이선스 HTTP 링크')
-            names = {'sources':('Sources','소스 관리'), 'files':('Files and shares','파일·공유'), 'embeddings':('Embeddings','임베딩 설정'), 'full':('Full settings','full 설정'), 'security':('Security','보안'), 'tokens':('API tokens','API 토큰'), 'search':('Search playground','검색 시험'), 'about':('About','정보')}
+            await page.get_by_role('button', name='View licenses').click()
+            licenses = page.get_by_role('dialog', name='Licenses', exact=True)
+            for file in ('LICENSE.txt', 'LICENSE-EXCEPTIONS.md', 'react-LICENSE.txt'):
+                await licenses.get_by_role('tab', name=file, exact=True).click()
+                await expect(licenses.get_by_role('tabpanel')).not_to_have_text('Loading…')
+                assert len(await licenses.get_by_role('tabpanel').inner_text()) > 100
+            await audit(page, 'licenses-en-desktop')
+            await page.keyboard.press('Escape')
+            await expect(page.get_by_role('button', name='View licenses')).to_be_focused()
+            await page.keyboard.press('Escape')
+            await expect(page.get_by_role('button', name='Settings', exact=True)).to_be_focused()
+            await page.get_by_role('button', name='Settings', exact=True).click()
+            # 모달의 처음·마지막 컨트롤 사이 Tab 순환과 배경 클릭 닫기를 확인한다.
+            await page.get_by_role('dialog').get_by_role('button', name='Close', exact=True).focus()
+            await page.keyboard.press('Shift+Tab')
+            await expect(page.get_by_role('button', name='Sign out', exact=True)).to_be_focused()
+            await page.keyboard.press('Tab')
+            await expect(page.get_by_role('dialog').get_by_role('button', name='Close', exact=True)).to_be_focused()
+            await page.mouse.click(5, 5)
+            await expect(page.get_by_role('dialog')).to_have_count(0)
+            passed('정보·라이선스 탭 fetch·중첩 모달·Esc·바깥 클릭·포커스 가둠/복귀')
+            # 계정 폼은 TOTP를 해제한 뒤 새 비밀번호·사용자명으로 로그인까지 확인한다.
+            await nav(page, 'Security')
+            security = page.locator('#security-settings')
+            await expect(security.get_by_role('button', name='Disable two-step verification')).to_be_visible()
+            await security.get_by_label('Current password', exact=True).fill(password)
+            await security.locator('[name=code]').fill(totp(secret, int(time.time() // 30) + 1))
+            await security.get_by_role('button', name='Disable two-step verification').click()
+            await expect(security.get_by_role('button', name='Set up authenticator')).to_be_visible()
+            await page.keyboard.press('Escape')
+            await nav(page, 'Settings')
+            changed_password = secrets.token_urlsafe(24) + 'b2!'
+            form = page.locator('#account-password')
+            await form.locator('[name=currentPassword]').fill(password)
+            await form.locator('[name=newPassword]').fill(changed_password)
+            await form.locator('[name=confirmation]').fill(changed_password)
+            await form.get_by_role('button', name='Change password', exact=True).click()
+            await expect(page.locator('#account-settings [role=status]')).to_contain_text('Account updated')
+            form = page.locator('#account-username')
+            await form.locator('[name=currentPassword]').fill(changed_password)
+            await form.locator('[name=username]').fill('updated-admin')
+            await form.get_by_role('button', name='Change username', exact=True).click()
+            await expect(page.locator('#account-settings')).to_contain_text('Username: updated-admin')
+            await audit(page, 'account-updated-en-desktop')
+            await page.get_by_role('button', name='Sign out', exact=True).click()
+            await page.locator('main.auth input[name=username]').fill('updated-admin')
+            await page.locator('main.auth input[name=password]').fill(changed_password)
+            await page.locator('form button.primary').click()
+            await expect(page.get_by_role('navigation')).to_be_visible()
+            passed('계정 비밀번호·사용자명 변경·갱신 세션 CSRF·변경 계정 로그인')
+            names = {'sources':('Sources','소스 관리'), 'files':('Files and shares','파일·공유'), 'settings':('Settings','환경설정'), 'security':('Security','보안'), 'tokens':('API tokens','API 토큰'), 'search':('Search playground','검색 시험'), 'about':('About','정보')}
             # 언어는 제품의 기존 navigator.language 정책에 맞춰 새 브라우저 컨텍스트로 전환한다.
             state = await context.storage_state()
             for locale, lang_index in [('en-US',0), ('ko-KR',1)]:
@@ -307,17 +435,21 @@ async def main():
                 for width in (1280,390):
                     await screen.set_viewport_size({'width':width,'height':900})
                     for theme in ('light','dark','auto'):
-                        await screen.get_by_role('combobox', name=('Theme' if lang_index == 0 else '테마'), exact=True).select_option(theme)
+                        if await screen.get_by_role('dialog').count():
+                            await screen.keyboard.press('Escape')
+                        await screen.get_by_role('group', name=('Theme' if lang_index == 0 else '테마'), exact=True).get_by_role('button', name=({'auto':('Auto','자동'),'light':('Light','라이트'),'dark':('Dark','다크')}[theme][lang_index]), exact=True).click()
                         await screen.emulate_media(color_scheme='dark' if theme == 'auto' else theme)
                         for key, labels in names.items():
                             await nav(screen, labels[lang_index])
                             if key == 'files':
                                 await screen.locator('section.card').first.locator('select').first.select_option(upload_id)
-                            if key == 'embeddings':
+                            if key == 'settings':
                                 await screen.locator('[name=provider]').select_option('remote')
-                            if key == 'full' and os.environ.get('VERIFY_FULL') == 'true':
+                            if key == 'settings' and os.environ.get('VERIFY_FULL') == 'true':
                                 await screen.locator('[name=reranker]').select_option('remote')
                             await audit(screen, f'{key}-{locale}-{width}-{theme}')
+                    if await screen.get_by_role('dialog').count():
+                        await screen.keyboard.press('Escape')
                     # 연속 Tab이 실제 활성 컨트롤로 이동하는지 확인한다.
                     await screen.locator('body').click(position={'x':1,'y':1})
                     focused = []
@@ -332,6 +464,7 @@ async def main():
             summary['exitCode'] = 0
         except Exception as error:
             summary['failureType'] = type(error).__name__
+            summary['failureLines'] = [frame.lineno for frame in traceback.extract_tb(error.__traceback__) if frame.filename == __file__]
             summary['lastCheck'] = summary['checks'][-1] if summary['checks'] else None
             await page.screenshot(path=str(OUT / 'failure.png'), full_page=True, mask=[page.locator('input,code,pre,[role=status]')])
             raise

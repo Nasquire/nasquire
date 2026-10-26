@@ -42,7 +42,7 @@ async def main():
     def passed(name):
         summary['checks'].append(name)
         print('PASS ' + name, flush=True)
-    password = secrets.token_urlsafe(24)
+    password = secrets.token_urlsafe(24) + 'a1!'
     async with async_playwright() as pw:
         browser = await pw.chromium.launch()
         context = await browser.new_context(locale='en-US', viewport={'width':1280,'height':900})

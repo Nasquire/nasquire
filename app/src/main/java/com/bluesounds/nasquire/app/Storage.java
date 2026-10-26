@@ -20,6 +20,7 @@ public class Storage {
         db.execute("CREATE TABLE IF NOT EXISTS administrator (id INT PRIMARY KEY CHECK(id=1), username VARCHAR(100) NOT NULL, password_hash VARCHAR(100) NOT NULL)");
         db.execute("ALTER TABLE administrator ADD COLUMN IF NOT EXISTS totp_secret VARCHAR(512)");
         db.execute("ALTER TABLE administrator ADD COLUMN IF NOT EXISTS totp_step BIGINT DEFAULT -1 NOT NULL");
+        db.execute("ALTER TABLE administrator ADD COLUMN IF NOT EXISTS generation BIGINT DEFAULT 0 NOT NULL");
         db.execute("CREATE TABLE IF NOT EXISTS recovery_codes (code_hash VARCHAR(64) PRIMARY KEY)");
         db.execute("CREATE TABLE IF NOT EXISTS sources (id VARCHAR(36) PRIMARY KEY, name VARCHAR(200) NOT NULL, root VARCHAR(4096) NOT NULL, includes CLOB NOT NULL, excludes CLOB NOT NULL)");
         db.execute("ALTER TABLE sources ADD COLUMN IF NOT EXISTS kind VARCHAR(20) DEFAULT 'directory' NOT NULL");
@@ -29,9 +30,9 @@ public class Storage {
     public boolean configured() { return db.queryForObject("SELECT COUNT(*) FROM administrator", Integer.class) > 0; }
     public synchronized void setup(String username, String password) {
         if (configured()) throw new IllegalStateException("이미 설정되었습니다");
-        if (username == null || !username.matches("[A-Za-z0-9_.-]{3,100}") || password == null
-                || password.length() < 12 || password.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 72)
-            throw new IllegalArgumentException("사용자명 3~100자, 비밀번호 12자 이상/UTF-8 72바이트 이하가 필요합니다");
+        if (username == null || !username.matches("[A-Za-z0-9_.-]{3,100}"))
+            throw new IllegalArgumentException("사용자명은 영문·숫자·_.- 3~100자 / Username must contain 3–100 ASCII letters, digits or _.-");
+        PasswordPolicy.validate(password);
         db.update("INSERT INTO administrator(id,username,password_hash) VALUES (1,?,?)", username, passwords.encode(password));
     }
     public org.springframework.security.core.userdetails.UserDetails user(String username) {
@@ -40,6 +41,14 @@ public class Storage {
                         .password(rs.getString("password_hash")).roles("ADMIN").build(), username);
         if (users.isEmpty()) throw new org.springframework.security.core.userdetails.UsernameNotFoundException("인증 실패");
         return users.getFirst();
+    }
+    long generation() { return configured() ? db.queryForObject("SELECT generation FROM administrator WHERE id=1", Long.class) : 0; }
+    boolean changeAccount(long generation, String username, String passwordHash) {
+        return db.update("UPDATE administrator SET username=?,password_hash=?,generation=generation+1 WHERE id=1 AND generation=?", username, passwordHash, generation) == 1;
+    }
+    int deleteInactiveTokens(String id) {
+        return id == null ? db.update("DELETE FROM tokens WHERE revoked=TRUE OR expires_at<=?", System.currentTimeMillis())
+                : db.update("DELETE FROM tokens WHERE id=? AND (revoked=TRUE OR expires_at<=?)", id, System.currentTimeMillis());
     }
     public List<Source> sources() {
         return db.query("SELECT * FROM sources ORDER BY name", (rs, row) -> new Source(rs.getString("id"), rs.getString("name"),

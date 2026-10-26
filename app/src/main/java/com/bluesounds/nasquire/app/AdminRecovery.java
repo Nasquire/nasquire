@@ -26,10 +26,10 @@ final class AdminRecovery {
                 }
             } finally { if (confirm != null) Arrays.fill(confirm, '\0'); }
         } else password = readLine(System.in);
-        if (password == null) throw new IllegalArgumentException("비밀번호 필요");
+        if (password == null) throw new IllegalArgumentException(PasswordPolicy.MESSAGE);
         try {
             String text = new String(password);
-            if (text.length() < 12 || text.getBytes(StandardCharsets.UTF_8).length > 72) throw new IllegalArgumentException("비밀번호 12자 이상/UTF-8 72바이트 이하 필요");
+            PasswordPolicy.validate(text);
             recover(data, text);
         } finally { Arrays.fill(password, '\0'); }
         System.out.println("관리자 비밀번호를 재설정하고 TOTP와 복구 코드를 해제했습니다.");
@@ -38,11 +38,11 @@ final class AdminRecovery {
     static char[] readLine(InputStream in) throws IOException {
         ByteArrayOutputStream line = new ByteArrayOutputStream(); int value;
         while ((value = in.read()) != -1 && value != '\n') {
-            if (line.size() >= 73) throw new IllegalArgumentException("비밀번호 상한 초과"); line.write(value);
+            if (line.size() >= 73) throw new IllegalArgumentException(PasswordPolicy.MESSAGE); line.write(value);
         }
         byte[] bytes = line.toByteArray();
         int length = bytes.length > 0 && bytes[bytes.length - 1] == '\r' ? bytes.length - 1 : bytes.length;
-        if (length > 72) throw new IllegalArgumentException("비밀번호 상한 초과");
+        if (length > 72) throw new IllegalArgumentException(PasswordPolicy.MESSAGE);
         char[] result = new String(bytes, 0, length, StandardCharsets.UTF_8).toCharArray();
         Arrays.fill(bytes, (byte)0); return result;
     }

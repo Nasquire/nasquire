@@ -144,3 +144,17 @@ Apple Silicon 호스트의 arm64 Linux VM(Colima vz, cgroup v2)에서 운영자�
 | lite | 512 MiB | `scripts/smoke.py` 전 단계 통과, 헬스 체크 약 9초 | 300 MiB | 0 |
 
 OCR 시험 문서는 Pillow로 만든 텍스트 레이어 없는 단일 쪽 이미지 PDF와 같은 내용의 PNG 두 개뿐이다. 실제 스캔 문서의 정확도·속도, 큰 문서·많은 쪽 OCR의 메모리는 여전히 미실측이다.
+
+
+## lite 색인 후 메모리 축소 (2026-10-26, 기준 4b38f8c)
+
+Synology x86 NAS 실기의 색인 후 메모리 유지 피드백을 바탕으로 Linux amd64/JDK 25에서 비교했다. Dockerfile·compose·bootRun에 컴팩트 헤더와 SerialGC 여유 힙 10/20%·한 번에 수축을 적용하고, lite 힙을 256→192 MiB로 낮췄다. full/ML은 256 MiB를 유지한다. 실제 추출 후 유휴 5초·최소 5분 간격으로 앱이 GC를 한 번 요청한다.
+
+| 자체 생성 부하 | 최대 RSS 전→후 | 색인 후 대기 RSS 전→후 |
+| --- | ---: | ---: |
+| PDF 18개×360쪽 + Office/HWP 8개 | 426.4→410.9 MiB | 426.4→362.4 MiB |
+| 개선본: 600쪽 PDF 18개 + Office/HWP 8개 + 8 MiB 직전 DOCX/XLSX | 414.8 MiB | 336.8 MiB |
+
+추가 부하는 28개 모두 성공·오류/OOM 0이다. NMT 힙 committed는 동일 부하에서 148.2→82.8 MiB로 줄었다. cgroup memory.current·anon/file도 수집했으나 이 환경은 다른 작업과 공유되고 제한이 없어 **단독 512 MiB 컨테이너 검증은 아니다**. Container Manager 그래프는 회수 가능한 파일 캐시를 포함할 수 있다. 개선 후 NAS 실기·이미지 실행·full 모델/OCR 부하는 미검증이다. 재현·후보·초기 실패·원시 아티팩트는 [메모리 검증](memory.md)을 따른다.
+
+최종 `./gradlew build -q`, `./gradlew -Pfull build -q`, `VERIFY_PORT=8104 python3 scripts/verify-runtime.py` 모두 종료 0. full 기준 core 31·app 65·full 21건 실패/오류/생략 0이며, 48문서 런타임 최대 RSS는 266.7 MiB다. JVM 구성 검사 종료 0·내부 정보 grep 무일치(종료 1), 서버·포트 정리 완료. 로컬 요약: `build/verification/memory/summary.json`.
