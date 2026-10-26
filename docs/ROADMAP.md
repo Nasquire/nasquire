@@ -14,11 +14,12 @@
 - [x] 3.5단계: 업로드·공유 — 선택 기능 "업로드 소스"(기본 끔, 별도 쓰기 가능 폴더만 쓰고 일반 소스는 계속 읽기 전용, 웹 업로드·폴더·휴지통), 외부 공유 링크(파일 또는 폴더 하나, 무작위 토큰 `/s/{token}`, 만료·비밀번호·다운로드 횟수 제한·철회·감사 로그, 실경로 범위 검사·심볼릭 링크 탈출 차단·속도 제한, 범위 밖 목록·검색·MCP 노출 없음).
 - [ ] 3.6단계: 임베드용 core 라이브러리 — 앱 의존 없는 공개 API 정리, Maven 패키지 배포(`nasquire-core`), 버전 정책(SemVer), 사용 예제. 확장 지점(인증·저장 위치·원본 열기 주소)을 설정·인터페이스로.
 - [x] 4단계: full 모듈 기본 구현 — 원격/로컬 리랭커·격리된 Tesseract 처리 경로·Qdrant·ML 전용 모드 및 보안 잔여 수정.
-- [ ] 4단계 후속 구현·실측 — 실제 OCR 정확도/속도/RSS 비교·실제 Qdrant 서버·arm64·NAS/NFS/SMB·cgroup 검증은 미실측. PaddleOCR·원격 OCR 클라이언트·full 설정 UI는 미구현. 내장 모델의 512 MiB 초과는 유지한다.
-- [x] 5a단계: 배포 구성 — amd64·arm64 대상 `lite`·`full` Dockerfile, 태그 전용 GHCR CI, NAS 설치 안내·Unraid 템플릿. 실제 이미지 빌드/기동·cgroup·arm64 검증은 환경 부재로 미완료이며 `verification/deploy.md`에 구분한다.
+- [ ] 4단계 후속 구현·실측 — 실제 OCR 정확도/속도/RSS 비교·실제 Qdrant 서버·arm64·NAS/NFS/SMB·cgroup 검증은 미실측. PaddleOCR·원격 OCR 클라이언트·full 설정 UI는 미구현. 내장 모델의 512 MiB 초과는 유지한다. arm64 검증은 비지원 결정(2026-10-26)으로 보류.
+- [x] 5a단계: 배포 구성 — amd64 공식 `lite`·`full` 이미지와 아키텍처 중립 Dockerfile, 태그 전용 GHCR CI, NAS 설치 안내·Unraid 템플릿. amd64 빌드·JAR cgroup 및 과거 arm64 VM 실측 범위는 `verification/deploy.md`에 구분한다. 추가 arm64 검증은 비지원 결정(2026-10-26)으로 보류한다.
 - [x] 5b단계: MCP OAuth — 내장 인가 서버·DCR·S256·소스 승인·회전/철회 구현. [검증](verification/oauth.md).
 
 ## 결정
+- 공식 이미지·지원 범위는 Linux amd64(64비트)만으로 축소한다(2026-10-26). arm64 실기·NAS 검증은 비지원 결정(2026-10-26)으로 보류한다. 코드는 아키텍처 중립으로 유지하며 과거 arm64 Linux VM 실측은 참고 기록으로 보존한다. NAS/NFS/SMB의 amd64 검증은 별도 미완료다.
 - Spring Boot + React, Gradle 멀티 모듈. 자바 유지 여부는 1단계 RSS 실측으로 판단.
 - 라이선스 AGPL-3.0 + 비상업 추가 허가·출처 표시(2026-10-24).
 - 관리 화면 디자인은 Bluesounds 공통 디자인(어두운 남색 계열, 시그니처 아이콘).
@@ -85,7 +86,7 @@
 - [x] THIRD-PARTY·운영 설정·모델 출처·SHA-256·native amd64/arm64 포함 여부 문서화. LICENSE·LICENSE-EXCEPTIONS.md·NOTICE 유지.
 - [x] 가짜 원격 HTTP 공급자로 별도 curl·MCP 혼합 검색 및 RSS 실측: 286212 KiB(279.5 MiB), 서버 종료·포트 반환 확인.
 - [ ] **내장 모델을 켠 512 MiB 목표 달성: 미완료.** 최종 실측 876256 KiB(855.7 MiB). 초기 861.3 MiB, ONNX 설정 조정 860.5 MiB, 할당자/토크나이저 병렬 조정 후 855.7 MiB로 목표 초과. 작은 배치·직렬 추론만으로는 해결되지 않았다. 더 작은 다국어 모델 또는 네이티브 토크나이저/모델 로드 메모리 개선이 필요하다. 512 MiB compose에서 내장 모델을 켜지 않는다.
-- [ ] 내장 모델의 Docker cgroup·arm64 네이티브 추론 실측. lite 컨테이너와 업로드 arm64 네이티브·headless 브라우저 검증은 후속 절에서 확인했으며 내장 ONNX 모델 arm64 실행을 의미하지 않는다.
+- [ ] 내장 모델의 Docker cgroup·arm64 네이티브 추론 실측. lite 컨테이너와 업로드 arm64 네이티브·headless 브라우저 검증은 후속 절에서 확인했으며 내장 ONNX 모델 arm64 실행을 의미하지 않는다. arm64 검증은 비지원 결정(2026-10-26)으로 보류.
 
 ### 판단한 것
 
@@ -103,7 +104,7 @@
 - [x] HMAC 다운로드 주소, 기본 300초·공개 기준 URL 설정, 소스/glob/실경로 검사·NOFOLLOW 디렉터리 핸들, 안전한 파일 이름·감사 로그.
 - [x] REST/MCP 다운로드·위조·만료·범위 밖·발급 후 링크 교체·원본 일치·비밀값 감사 로그 미기록 회귀 테스트.
 - [x] 최종 `./gradlew build -q` 종료 코드 0. core 11개·app 통합 1개 테스트 통과. `VERIFY_PORT=8121 python3 scripts/verify-runtime.py` 종료 코드 0: 48파일·8개 새 형식 검색/근거·REST/MCP 다운로드 curl·키워드 최대 RSS 275.1 MiB(281656 KiB)·서버 종료/포트 반환. 상세: [형식·다운로드 검증](verification/formats-download.md).
-- [ ] 실제 대용량 문서·512 MiB cgroup·다중 클라이언트·arm64 검증(환경/자료 미준비).
+- [ ] 실제 대용량 문서·512 MiB cgroup·다중 클라이언트·arm64 검증(환경/자료 미준비). arm64 검증은 비지원 결정(2026-10-26)으로 보류.
 
 ### 판단한 것
 
@@ -146,7 +147,7 @@
 ### 남은 일·위험
 
 - [ ] Docker 실제 512 MiB cgroup·파일 캐시 포함 메모리·동시 대용량 업로드·디스크 고갈 부하(환경/부하 자료 미준비).
-- [ ] arm64 실기·실제 NAS/NFS/SMB·다른 파일시스템에 놓인 업로드 폴더에서 네이티브 호출 검증. 이번 검증은 Linux amd64 로컬 파일시스템이다.
+- [ ] arm64 실기·실제 NAS/NFS/SMB·다른 파일시스템에 놓인 업로드 폴더에서 네이티브 호출 검증. 이번 검증은 Linux amd64 로컬 파일시스템이다. arm64 검증은 비지원 결정(2026-10-26)으로 보류.
 - [x] 실제 Chromium 한/영·모바일·접근성·HTTP Basic challenge/자동 인증·공유 다운로드 검증. OS 네이티브 인증 창 시각 검증은 headless 한계로 남는다. [브라우저 검증](verification/browser.md).
 - [ ] 프로세스 강제 종료/정전 중 파일 이동과 H2 메타데이터의 일관성 복구 자동화. 24시간 지난 숨김 임시 파일은 시작 시 정리하며 미완료 휴지통 메타데이터는 운영자 점검이 필요하다. 원본 삭제 대신 휴지통을 사용하며 메타데이터를 먼저 기록한다.
 - [ ] 외부 프로세스가 업로드 폴더를 동시에 재배치하는 공격에 대한 스트레스/퍼징. 앱 전용 폴더 권한을 유지하고 일반 소스는 읽기 전용 마운트한다.
@@ -194,7 +195,7 @@
 - [x] 로컬 ONNX 다국어 cross-encoder·AGPL 호환 모델 선정/고정 리비전/SHA-256·데이터 폴더 다운로드·실측. 아래 나머지 구현 절 참고.
 - [x] Qdrant 저장소와 REST 클라이언트, 암호화 키·컬렉션 모델/차원 메타·불일치 검색 차단/재색인·소스 범위 필터·가짜 HTTP 통합 테스트. 아래 나머지 구현 절 참고.
 - [x] ML 전용 HTTP 서버·Bearer 필수·소스/관리 화면 차단·기존 원격 프로토콜 호환·요청 크기/동시성 상한. 아래 나머지 구현 절 참고.
-- [ ] full 설정 UI, full OCR 실행 파일/언어 데이터 배포, 별도 lite/full 이미지·산출물 명명(5단계), arm64·Docker/cgroup·외부 실제 서비스/대규모 부하 검증.
+- [ ] full 설정 UI, full OCR 실행 파일/언어 데이터 배포, 별도 lite/full 이미지·산출물 명명(5단계), arm64·Docker/cgroup·외부 실제 서비스/대규모 부하 검증. arm64 검증은 비지원 결정(2026-10-26)으로 보류.
 
 - [x] 최종 `./gradlew build -q`·`./gradlew -Pfull build -q` 종료 0, core 11개·app 15개·full 4개 테스트 통과. lite 실제 실행 검증 2회·기준 비교 1회 종료 0, 각 서버 종료/포트 정리. 기본 JAR에서 full/ONNX/DJL 제외 확인.
 - [x] lite RSS 원인 분석(0d2ff95 당시 미확정 → 나머지 구현 절에서 분석): 기준 282.8 MiB, 당시 309.9/309.8 MiB. 원인은 의존성이 아닌 Serial GC 구세대 점유 시점 차이로 확인. 실제 cgroup 검증은 미완료.
@@ -211,7 +212,7 @@
 - [x] lite RSS 증가 원인 조사: 의존성 유입 없음, NMT 커밋 합계 동일, 차이는 RssAnon의 Serial GC 구세대 점유(조기 승격) 시점 차이. 코드 변경으로 되돌리지 않음(근거 숫자는 full 검증 문서).
 - [x] 가짜 HTTP Qdrant(필터 무시 모드 포함)·가짜 공급자 ML 서버로 단위/통합 테스트, 실제 모델 ML 서버 실측 스크립트 `scripts/verify-ml.py`.
 - [ ] PaddleOCR ONNX 구현·실제 OCR 정확도/속도/RSS 비교: 미완료(Tesseract 유지 근거는 full 검증 문서).
-- [ ] 실제 Qdrant 서버·인증/TLS·대규모 컬렉션 검증, 원격 OCR 클라이언트(검색 서버→ML 서버 OCR), full 설정 UI, ML 서버 컨테이너 이미지·arm64·cgroup 검증: 미완료.
+- [ ] 실제 Qdrant 서버·인증/TLS·대규모 컬렉션 검증, 원격 OCR 클라이언트(검색 서버→ML 서버 OCR), full 설정 UI, ML 서버 컨테이너 이미지·arm64·cgroup 검증: 미완료. arm64 검증은 비지원 결정(2026-10-26)으로 보류.
 - [ ] 로컬 리랭커·내장 임베딩·ML 서버는 512 MiB 목표를 초과한다(리랭커 단독 약 615~632 MiB). 메모리 축소 미완료.
 
 ## 4단계 보안 교차 검토 반영 (2026-10-24, 기준 4de7837)
@@ -244,7 +245,7 @@
 - [x] S3 중단 무시 공급자·저장소는 마지막 활성 작업 exit()에서 폐기, 실제 close는 잠금 밖으로 이동. synchronized 공급자 회귀 테스트.
 - [x] S4 setsid 그룹으로 고아 손자까지 종료·확인 후 슬롯 반환/정리, 부모 PNG 합계·열린 fd 재검사, 직접 작업자 실행의 작업 폴더 형식·소유자·0700 검사.
 - [x] 최종 lite/full 빌드 종료 0(core 27·app 20·full 18, 65개 테스트 실패·생략 0), 8101 lite 런타임·8102 ML 실측 각각 종료 0·서버/포트 정리. 상세 결과는 [full 검증](verification/full.md)의 "최종 재확인 반영" 절에 기록한다.
-- 기존 4단계 전체 미완료 항목(실제 OCR·Qdrant·arm64·cgroup·PaddleOCR·full UI)은 그대로 유지한다.
+- 기존 4단계 전체 미완료 항목(실제 OCR·Qdrant·arm64·cgroup·PaddleOCR·full UI)은 그대로 유지한다. arm64 검증은 비지원 결정(2026-10-26)으로 보류.
 
 ## 4단계 최종 확인 (2026-10-24, 기준 cd23e83)
 
@@ -252,18 +253,18 @@
 - [x] OCR 자식 회수 시 `/proc` 열거·stat 읽기·파싱 실패는 종료 미확인으로 처리한다. 확인 전에는 슬롯과 작업 폴더를 보유한다. 확실히 사라진 pid와 좀비만 종료로 보며 오류 경로 회귀 테스트 추가.
 - [x] app 간헐 실패 자연 재현(키워드 1건 기대·0건 실제)·원인 수정: 공유 제외 정책 검사를 전용 소스로 격리하고 제외 상태를 직접 색인해 원래 결과 보존 확인. 수정 후 `./gradlew :app:cleanTest :app:test -q` 10회 모두 종료 0(app 25개씩).
 - [x] 최종 `./gradlew build -q`·`./gradlew -Pfull build -q`·`VERIFY_PORT=8101 python3 scripts/verify-runtime.py` 각각 종료 0. core 27·app 25·full 19개 테스트 결과 실패·오류·생략 0. lite 최대 RSS 281.9 MiB, 서버·bootRun 종료/포트 반환 확인. [full 최종 확인](verification/full.md#최종-확인-기준-cd23e83)에 실패 근거와 최종 결과 기록.
-- [ ] 실제 Qdrant·내장 모델 arm64·NAS/NFS/SMB·악성 코퍼스·전체 full cgroup 부하 검증. 후속 운영자 arm64 PNG OCR·lite 512 MiB cgroup은 통과했다. PDF OCR 이름 누락은 아래 후속 수정에 반영했으며 컨테이너 재측정·실제 OCR 품질 비교는 미완료다. PaddleOCR·원격 OCR 클라이언트는 미구현이다. full UI는 아래 후속 검증에서 추가했다.
+- [ ] 실제 Qdrant·내장 모델 arm64·NAS/NFS/SMB·악성 코퍼스·전체 full cgroup 부하 검증. 후속 운영자 arm64 PNG OCR·lite 512 MiB cgroup은 통과했다. PDF OCR 이름 누락은 아래 후속 수정에 반영했으며 컨테이너 재측정·실제 OCR 품질 비교는 미완료다. PaddleOCR·원격 OCR 클라이언트는 미구현이다. full UI는 아래 후속 검증에서 추가했다. arm64 검증은 비지원 결정(2026-10-26)으로 보류.
 - 수용한 한계: NAS/NFS 일반 파일 I/O가 반환하지 않으면 복사·추출은 시간 제한을 보장하지 못한다. 일반 텍스트 추출도 같은 한계다. 운영자는 soft/intr 마운트·타임아웃 설정을 권장하며 실제 동작은 사용하는 클라이언트/파일시스템에서 확인해야 한다.
 
 ## 5a단계 배포 이미지·CI·NAS 설치 안내 (2026-10-24)
 
 - [x] 다단계 lite/full JAR·Temurin 25 glibc JRE, 비루트 PUID/PGID, native access, /data·읽기 전용 소스, 헬스체크·OCI 소스/AGPL 라벨. full은 Tesseract kor/eng·prlimit/setsid·PDF 렌더 글꼴 포함, 모델 파일 제외.
-- [x] push/PR의 lite/full Gradle·멀티 아키텍처 Buildx 빌드. `v*` 태그 전용 GHCR `lite`/`full`/버전별 태그/`latest=lite`, 게시 job만 packages:write, 액션 SHA 고정·SBOM/프로비넌스.
+- [x] push/PR의 lite/full Gradle·amd64 Buildx 빌드. `v*` 태그 전용 GHCR `lite`/`full`/버전별 태그/`latest=lite`, 게시 job만 packages:write, 액션 SHA 고정·SBOM/프로비넌스.
 - [x] lite 기본 compose·full override·ML 독립 예시. 메모리 제한·:ro 소스·선택 업로드 쓰기 볼륨·HTTPS 공개 URL·신뢰 프록시 경계.
 - [x] Docker 공통·Synology·Unraid·TrueNAS 설치 문서와 XML 템플릿. UID/GID·메모리 실측 한계·HTTPS/민감 로그 제외·백업·Qdrant 세대 재색인·오프라인 관리자 복구.
 - [x] 운영자 실측: amd64 Kaniko lite/full 이미지 빌드 성공(`ce94b82`, no-push), lite bootJar 512 MiB cgroup v2 스모크 전 단계 PASS(memory.peak 344 MiB·OOM 0). [측정 범위](verification/deploy.md#운영자-추가-실측-기록-2026-10-25).
 - [x] 운영자 arm64 lite 이미지 실제 기동·약 9초 healthy·컨테이너 512/384/320 MiB 제한 스모크 PASS(peak 320/294/294 MiB·OOM 0). amd64는 JAR cgroup·이미지 빌드만 확인.
-- [ ] NAS 실기·대규모 문서·전체 full 부하·GHCR 게시·Actions 실실행. arm64 full PNG OCR은 성공했으며 이미지 전용 PDF OCR 이름 누락은 후속 수정했다. 수정 후 컨테이너 실측은 운영자가 수행한다. 게시·서버 접속은 수행하지 않는다.
+- [ ] NAS 실기·대규모 문서·전체 full 부하·GHCR 게시·Actions 실실행. arm64 full PNG OCR은 성공했으며 이미지 전용 PDF OCR 이름 누락은 후속 수정했다. 과거 수정 후 arm64 VM 실측은 [배포 검증](verification/deploy.md#arm64-컨테이너-재측정-이름-전달-수정-후-기준-d8e83a5)에 기록했다. 게시·서버 접속은 수행하지 않는다. arm64 검증은 비지원 결정(2026-10-26)으로 보류.
 - [x] 5b MCP OAuth — 아래 5b 구현·검증 절 참조.
 
 ## 5b단계 MCP OAuth (2026-10-24, 기준 b724657)
@@ -299,7 +300,7 @@
 - [x] 추출 WARN·자식 종료 코드/시간 초과/예외 종류 진단, 관리자 세션 전용 상태 API 최근 실패 최대 5건. 원문·절대 경로·자식 stderr 노출 없음.
 - [x] JPEG 이미지 전용 PDF의 자식 렌더→PNG→가짜 Tesseract→한/영 검색·쪽 근거 회귀 테스트 추가. Docker 기본 JVM 환경·실행 JAR 경로도 별도 검증.
 - [x] **운영자 arm64 full 이미지 전용 PDF 실패 원인 확정·코드 수정.** FullSettings 위임이 원래 이름을 버려 확장자 없는 고정 fd를 image 모드로 넘겼다(`stage=render exit=2`·지원하지 않는 이미지). 원래 이름을 OCR 공급자와 off 시 PDF 폴백에 전달하도록 수정했다.
-- [ ] 수정본 컨테이너 재배포·실제 Tesseract PDF OCR 재측정은 운영자가 후속 수행한다. Docker·arm64 실행기·실제 Tesseract가 없는 로컬에서는 가짜 OCR 공급자와 실제 격리 자식 JVM으로 검증하며 보안 격리는 유지한다.
+- [ ] 수정본의 과거 arm64 VM 재배포·실제 Tesseract PDF OCR 재측정은 [배포 검증](verification/deploy.md#arm64-컨테이너-재측정-이름-전달-수정-후-기준-d8e83a5)에 기록했다. 추가 컨테이너 검증은 미완료다. Docker·arm64 실행기·실제 Tesseract가 없는 로컬에서는 가짜 OCR 공급자와 실제 격리 자식 JVM으로 검증하며 보안 격리는 유지한다. arm64 검증은 비지원 결정(2026-10-26)으로 보류.
 
 - [x] 이번 최종 lite/full 빌드 각각 종료 0(core 28·app 44·full 21), 실행 JAR·Docker 기본 JVM 옵션의 PDF 회귀 2건 종료 0. 48문서 스모크 종료 0·8104 반환, 내부 정보 검사 무일치·공백 검사 통과.
 
@@ -308,4 +309,11 @@
 - [x] FullSettings의 이름·내용 분리 오버로드 추가. supports는 원래 이름 기준, 기존 extract/단일 경로 호출도 같은 위임 경로를 사용한다. core·app·full의 다른 추출기/위임을 점검했으며 같은 누락은 없다.
 - [x] 확장자 없는 내용 + `scan.pdf`, PNG·기존 extract, OCR off PDF 폴백, FullSettings→IndexingService→SecureFiles 고정 fd→검색 OCR 근거 회귀 테스트 추가.
 - [x] 기준 코드에서 신규 회귀 3건 실패(종료 1), 수정 후 lite/full 빌드 각각 종료 0. 최종 core 28·app 47·full 21개 실패/오류/생략 0, 내부 정보 검사 일치 0건(`rg` 종료 1). 상세는 [full 검증](verification/full.md#pdf-ocr-원래-이름-보존-수정-기준-b0bdf4e).
-- [ ] 수정 후 arm64 컨테이너 재측정은 운영자가 수행한다. 실제 OCR 정확도·full 메모리 보장은 미완료다.
+- [ ] 수정 후 과거 arm64 VM 재측정은 [배포 검증](verification/deploy.md#arm64-컨테이너-재측정-이름-전달-수정-후-기준-d8e83a5)에 기록했다. 추가 arm64 컨테이너 검증은 미완료다. 실제 OCR 정확도·full 메모리 보장은 미완료다. arm64 검증은 비지원 결정(2026-10-26)으로 보류.
+
+## 공식 지원 플랫폼 축소 (2026-10-26)
+
+- [x] 이미지 build/publish를 linux/amd64로 제한하고 QEMU 제거, 액션 SHA 고정 유지.
+- [x] README 한·영 안내·설치 문서·Unraid 템플릿·배포 검증·프로젝트 지침에 공식 범위 및 arm64 직접 빌드·과거 실측 한계 반영.
+- [x] SecureFiles의 amd64/arm64 FFM 구현과 ONNX 네이티브 의존성 유지.
+- [x] `./gradlew build -q` 종료 0. Python YAML 로드·amd64 전용/SHA/권한·XML/링크 검사 종료 0, 내부 정보 grep 무일치(종료 1). 상세 로컬 아티팩트: `build/verification/amd64-support/`. full 빌드·실제 이미지 실행·Actions 원격 검증은 생략했다.

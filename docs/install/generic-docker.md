@@ -1,6 +1,6 @@
 # Docker 공통 설치·운영
 
-64비트 Linux amd64/arm64용 구성이다. 32비트 ARM은 미지원이다. arm64 컨테이너 실행·이미지 빌드는 운영자가 검증했으며 실제 NAS 장비·대규모 부하는 미검증이다. [배포 검증](../verification/deploy.md)의 한계를 확인한다. 이미지 주소는 `ghcr.io/nasquire/nasquire`이며 첫 릴리스 게시 전에는 pull이 실패할 수 있다. 이 단계에서는 이미지를 게시하지 않았다.
+공식 지원 플랫폼은 Linux amd64(64비트)뿐이다. arm64는 공식 이미지·지원이 없다. 코드는 아키텍처 중립으로 유지하며 arm64에서도 `docker build --target lite .`로 직접 빌드할 수 있다. 과거 arm64 Linux VM의 lite/full 동작 [실측 기록](../verification/deploy.md#arm64-컨테이너-재측정-이름-전달-수정-후-기준-d8e83a5)은 참고용이며 이후 변경은 검증하지 않았다. 32비트 ARM도 공식 지원하지 않는다. 실제 NAS 장비·대규모 부하는 미검증이다. [배포 검증](../verification/deploy.md)의 한계를 확인한다. 이미지 주소는 `ghcr.io/nasquire/nasquire`이며 첫 릴리스 게시 전에는 pull이 실패할 수 있다. 이 단계에서는 이미지를 게시하지 않았다.
 
 ## 이미지와 자원
 
@@ -12,11 +12,11 @@
 | full + 내장 임베딩·로컬 리랭커 | 2코어 / 1.5 GiB / 이미지 + 데이터·모델 | 4코어 / 3~4 GiB / 데이터·모델용 SSD |
 | ML 전용 서버(full 이미지) | 2코어 / 2 GiB / 이미지 + 모델·OCR 임시 공간 | 4코어 / 3~4 GiB / 모델·OCR 임시 공간용 SSD |
 
-CPU·권장 메모리는 소규모 운영을 위한 시작 기준이며 처리량 보장값은 아닙니다. lite는 arm64 컨테이너 512/384/320 MiB 제한에서 스모크를 통과했지만, **최소 지원 기준은 512 MiB**입니다. 384/320 MiB는 소규모 시험 결과로 보장하지 않습니다. 원격 임베딩의 공급자 비용·서버 자원은 별도입니다.
+CPU·권장 메모리는 소규모 운영을 위한 시작 기준이며 처리량 보장값은 아닙니다. **최소 지원 기준은 512 MiB**입니다. 참고: arm64 VM 실측에서 lite는 512/384/320 MiB 제한 스모크를 통과했으나, 이는 과거 소규모 시험 기록이며 amd64 메모리 보장값이 아닙니다. 원격 임베딩의 공급자 비용·서버 자원은 별도입니다.
 
-arm64 이미지 크기는 lite 약 638 MB, full 약 899 MB(운영자 측정)입니다. 디스크는 이미지 크기에 `/data`의 DB·색인·로그·백업 여유와 선택 업로드/휴지통을 더하고, 모델을 쓰면 실제 모델 파일 크기와 다운로드 임시 공간을 더합니다. 색인은 원본 파일 개수/바이트만으로 산정할 수 없고 추출 텍스트 양·벡터 수에 비례합니다. OCR은 작업당 PNG 합계 상한 256 MiB 외에 원본 복사·PDF scratch 공간이 필요합니다.
+참고: arm64 VM 실측 이미지 크기는 lite 약 638 MB, full 약 899 MB였습니다. 공식 amd64 이미지 크기는 별도 확인이 필요합니다. 디스크는 이미지 크기에 `/data`의 DB·색인·로그·백업 여유와 선택 업로드/휴지통을 더하고, 모델을 쓰면 실제 모델 파일 크기와 다운로드 임시 공간을 더합니다. 색인은 원본 파일 개수/바이트만으로 산정할 수 없고 추출 텍스트 양·벡터 수에 비례합니다. OCR은 작업당 PNG 합계 상한 256 MiB 외에 원본 복사·PDF scratch 공간이 필요합니다.
 
-내장 E5 검색 서버의 기존 최대 RSS는 855.7 MiB이며 로컬 리랭커/ML 서버도 512 MiB를 초과했습니다. ML 두 모델 실측은 1047.8 MiB입니다. full OCR의 1 GiB는 PNG 1건 성공을 근거로 한 시작 기준이며 **PDF OCR 실패는 아직 해결 확인 전**입니다. 1.5 GiB/2 GiB도 모델·OCR 동시 부하를 보장하지 않습니다. 문서 수 증가에 따른 메모리 영향·대규모 자료는 미실측입니다.
+내장 E5 검색 서버의 기존 최대 RSS는 855.7 MiB이며 로컬 리랭커/ML 서버도 512 MiB를 초과했습니다. ML 두 모델 실측은 1047.8 MiB입니다. full OCR의 1 GiB는 과거 arm64 VM의 소규모 PDF·PNG 성공 기록을 참고한 시작 기준이며 amd64 컨테이너 보장값은 아닙니다. 1.5 GiB/2 GiB도 모델·OCR 동시 부하를 보장하지 않습니다. 문서 수 증가에 따른 메모리 영향·대규모 자료는 미실측입니다.
 
 태그는 `lite`/`latest`/`<버전>-lite`, `full`/`<버전>-full`이며 ML도 full을 사용합니다. 모델은 이미지에 없고 자동 다운로드는 기본 off입니다. [모델 설정](../embeddings.md)·[full 실측](../verification/full.md)·[소규모 디스크 예시 및 측정 범위](../verification/deploy.md)를 확인하세요.
 
@@ -115,7 +115,7 @@ docker compose -f deploy/docker-compose.ml.yml up -d
 
 ## CI·이미지 생성
 
-push/PR은 lite/full Gradle 빌드와 amd64/arm64 Buildx 빌드만 수행한다. `v1.2.3` 같은 `v*` 태그만 `:lite`, `:full`, `:1.2.3-lite`, `:1.2.3-full`, `:latest`(lite)를 GHCR에 게시한다. 게시 job에만 `packages:write`를 부여하며 액션은 커밋 SHA로 고정한다. SBOM/프로비넌스는 [Docker 공식 방식](https://docs.docker.com/build/ci/github-actions/attestations/)으로 켠다. PR 빌드는 레지스트리에 출력하지 않아 게시된 증명도 없다. 이 작업에서는 워크플로를 실제 실행하거나 이미지 로그인·게시를 하지 않았다.
+push/PR은 lite/full Gradle 빌드와 amd64 Buildx 빌드만 수행한다. `v1.2.3` 같은 `v*` 태그만 `:lite`, `:full`, `:1.2.3-lite`, `:1.2.3-full`, `:latest`(lite)를 GHCR에 게시한다. 게시 job에만 `packages:write`를 부여하며 액션은 커밋 SHA로 고정한다. SBOM/프로비넌스는 [Docker 공식 방식](https://docs.docker.com/build/ci/github-actions/attestations/)으로 켠다. PR 빌드는 레지스트리에 출력하지 않아 게시된 증명도 없다. 이 작업에서는 워크플로를 실제 실행하거나 이미지 로그인·게시를 하지 않았다.
 
 ## MCP OAuth
 

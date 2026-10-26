@@ -8,6 +8,8 @@ The search service supports PDF (page-level text), UTF-8 and detected-encoding t
 
 ## Quick start
 
+Official images and support cover **Linux amd64 (64-bit)** only. ARM, including arm64 and 32-bit ARM, has no official image or support. The code remains architecture-neutral; arm64 users can build locally with `docker build --target lite .`. Historical [lite/full measurements on an arm64 Linux VM](docs/verification/deploy.md#arm64-컨테이너-재측정-이름-전달-수정-후-기준-d8e83a5) are provided for reference; subsequent changes have not been verified on arm64.
+
 Install a Java 25 JDK. Gradle downloads Node for the frontend; a separate Node installation is unnecessary. The first build requires Internet access.
 
 ```sh
@@ -27,7 +29,9 @@ full 이미지에는 Tesseract 실행 파일과 kor+eng 데이터가 포함됩�
 
 ## Docker 빠른 시작
 
-Linux amd64/arm64용 이미지는 `ghcr.io/nasquire/nasquire:lite`(기본·`:latest`)와 `:full`입니다. 첫 릴리스 게시 전에는 pull이 실패할 수 있으며 이번 단계에서는 게시하지 않았습니다. arm64 컨테이너 실행·헬스체크·lite 메모리 제한 실측은 [배포 검증](docs/verification/deploy.md)에 기록했습니다. 실제 NAS·대규모 부하·Actions는 미검증입니다.
+공식 Linux amd64(64비트) 이미지는 `ghcr.io/nasquire/nasquire:lite`(기본·`:latest`)와 `:full`입니다. 첫 릴리스 게시 전에는 pull이 실패할 수 있으며 이번 단계에서는 게시하지 않았습니다.
+
+arm64는 공식 이미지·지원이 없습니다. 코드는 아키텍처 중립으로 유지하며 `docker build --target lite .`로 직접 빌드할 수 있습니다. 과거 arm64 Linux VM의 lite/full 동작 [실측 기록](docs/verification/deploy.md#arm64-컨테이너-재측정-이름-전달-수정-후-기준-d8e83a5)은 참고용이며 이후 변경은 검증하지 않았습니다. 32비트 ARM도 공식 지원하지 않습니다. 실제 NAS·대규모 부하·Actions는 미검증입니다.
 
 데이터 폴더를 실행 UID/GID가 쓸 수 있게 먼저 준비하고 HTTPS 프록시를 구성하세요. 일반 문서는 읽기 전용으로 연결합니다.
 
@@ -47,7 +51,7 @@ docker compose -f deploy/docker-compose.yml up -d
 
 ## 최소·권장 사양
 
-64비트 Linux amd64·arm64를 지원 대상으로 합니다. 32비트 ARM은 지원하지 않습니다. 아래 메모리는 컨테이너 제한이며 호스트 OS·다른 서비스의 여유 메모리는 별도로 확보하세요.
+공식 지원 플랫폼은 Linux amd64(64비트)입니다. ARM 전반은 공식 미지원입니다. 아래 메모리는 컨테이너 제한이며 호스트 OS·다른 서비스의 여유 메모리는 별도로 확보하세요.
 
 | 구성 | 최소: CPU / 메모리 제한 / 디스크 | 권장: CPU / 메모리 제한 / 디스크 |
 | --- | --- | --- |
@@ -57,11 +61,11 @@ docker compose -f deploy/docker-compose.yml up -d
 | full + 내장 임베딩·로컬 리랭커 | 2코어 / 1.5 GiB / 이미지 + 데이터·모델 | 4코어 / 3~4 GiB / 데이터·모델용 SSD |
 | ML 전용 서버(full 이미지) | 2코어 / 2 GiB / 이미지 + 모델·OCR 임시 공간 | 4코어 / 3~4 GiB / 모델·OCR 임시 공간용 SSD |
 
-CPU·권장 메모리는 소규모 운영을 위한 시작 기준이며 처리량 보장값은 아닙니다. lite는 arm64 컨테이너 512/384/320 MiB 제한에서 스모크를 통과했지만, **최소 지원 기준은 512 MiB**입니다. 384/320 MiB는 소규모 시험 결과로 보장하지 않습니다. 원격 임베딩의 공급자 비용·서버 자원은 별도입니다.
+CPU·권장 메모리는 소규모 운영을 위한 시작 기준이며 처리량 보장값은 아닙니다. **최소 지원 기준은 512 MiB**입니다. 참고: arm64 VM 실측에서 lite는 512/384/320 MiB 제한 스모크를 통과했으나, 이는 과거 소규모 시험 기록이며 amd64 메모리 보장값이 아닙니다. 원격 임베딩의 공급자 비용·서버 자원은 별도입니다.
 
-arm64 이미지 크기는 lite 약 638 MB, full 약 899 MB(운영자 측정)입니다. 디스크는 이미지 크기에 `/data`의 DB·색인·로그·백업 여유와 선택 업로드/휴지통을 더하고, 모델을 쓰면 실제 모델 파일 크기와 다운로드 임시 공간을 더합니다. 색인은 원본 파일 개수/바이트만으로 산정할 수 없고 추출 텍스트 양·벡터 수에 비례합니다. OCR은 작업당 PNG 합계 상한 256 MiB 외에 원본 복사·PDF scratch 공간이 필요합니다.
+참고: arm64 VM 실측 이미지 크기는 lite 약 638 MB, full 약 899 MB였습니다. 공식 amd64 이미지 크기는 별도 확인이 필요합니다. 디스크는 이미지 크기에 `/data`의 DB·색인·로그·백업 여유와 선택 업로드/휴지통을 더하고, 모델을 쓰면 실제 모델 파일 크기와 다운로드 임시 공간을 더합니다. 색인은 원본 파일 개수/바이트만으로 산정할 수 없고 추출 텍스트 양·벡터 수에 비례합니다. OCR은 작업당 PNG 합계 상한 256 MiB 외에 원본 복사·PDF scratch 공간이 필요합니다.
 
-내장 E5 검색 서버의 기존 최대 RSS는 855.7 MiB이며 로컬 리랭커/ML 서버도 512 MiB를 초과했습니다. ML 두 모델 실측은 1047.8 MiB입니다. full OCR의 1 GiB는 PNG 1건 성공을 근거로 한 시작 기준이며 **PDF OCR 실패는 아직 해결 확인 전**입니다. 1.5 GiB/2 GiB도 모델·OCR 동시 부하를 보장하지 않습니다. 문서 수 증가에 따른 메모리 영향·대규모 자료는 미실측입니다.
+내장 E5 검색 서버의 기존 최대 RSS는 855.7 MiB이며 로컬 리랭커/ML 서버도 512 MiB를 초과했습니다. ML 두 모델 실측은 1047.8 MiB입니다. full OCR의 1 GiB는 과거 arm64 VM의 소규모 PDF·PNG 성공 기록을 참고한 시작 기준이며 amd64 컨테이너 보장값은 아닙니다. 1.5 GiB/2 GiB도 모델·OCR 동시 부하를 보장하지 않습니다. 문서 수 증가에 따른 메모리 영향·대규모 자료는 미실측입니다.
 
 실측 범위와 소규모 디스크 예시는 [배포 검증](docs/verification/deploy.md)을 참고하세요.
 
@@ -93,7 +97,7 @@ java --enable-native-access=ALL-UNNAMED -Xmx256m -XX:+UseSerialGC -jar app/build
 
 Include/exclude globs use paths relative to the source, one per line in the UI. An empty include list includes all supported formats. `**/*.pdf` includes root-level PDFs too. Default exclusions always apply: `@eaDir`, `#recycle`, `#snapshot`, `.DS_Store`, `Thumbs.db`, `~$*`, `.~*`, backup `*~`, and `.tmp`, `.temp`, `.part`, `.swp`, `.swo`, `.crdownload` files. Directory symlinks are skipped; file symlinks are read only when their resolved target stays inside the source. Returned relative names use NFC normalization. Source and data directories must not overlap.
 
-One low-priority worker scans and indexes sequentially. Size/mtime changes and deletions are reflected on later scans. Changes preserving both values require **Reindex**. Failed extraction is reported in source status and retried. A restart rebuilds source indexes after stability checks. Text is split into 1200-character chunks without overlap; PDF page numbers start at 1. The `location` field records PDF `page`, PowerPoint `slide`, Excel `sheet`/`rowFrom`/`rowTo`, and Word/HWP `paragraph`/optional `heading`. Existing `page` is a compatibility field (extraction order for new formats); use `location` for citations. Paragraph locations do not imply printed pages. Scanned PDFs require full OCR; the reported arm64 image-only PDF failure remains under investigation. Search returns chunk text without HTML highlighting.
+One low-priority worker scans and indexes sequentially. Size/mtime changes and deletions are reflected on later scans. Changes preserving both values require **Reindex**. Failed extraction is reported in source status and retried. A restart rebuilds source indexes after stability checks. Text is split into 1200-character chunks without overlap; PDF page numbers start at 1. The `location` field records PDF `page`, PowerPoint `slide`, Excel `sheet`/`rowFrom`/`rowTo`, and Word/HWP `paragraph`/optional `heading`. Existing `page` is a compatibility field (extraction order for new formats); use `location` for citations. Paragraph locations do not imply printed pages. Scanned PDFs require full OCR; historical arm64 VM tests confirmed the image-only PDF fix, but subsequent changes have not been verified on arm64. Search returns chunk text without HTML highlighting.
 
 Office/HWP parsing additionally caps originals at 8 MiB, ZIP entries at 1024, inflated entries at 8 MiB and total inflated bytes at 16 MiB, with a minimum 1% compression ratio. XML depth is capped at 64 and nodes at 100000 per entry; HWP total expanded streams are capped at 2 MiB. Files exceeding these limits, encrypted or corrupt files, and documents with over 4096 nonempty extraction units are reported as errors. XLSX shared strings/styles and XLS SST remain in bounded memory. Formula values come from saved results; formulas are never executed. These conservative limits trade large-document coverage for the 512 MiB runtime goal.
 
@@ -129,7 +133,7 @@ Download links expire after five minutes by default and are invalidated by serve
 
 **파일·공유 / Files and shares**에서 업로드 폴더 탐색·업로드·폴더 생성·소스 안 이동·이름 변경·휴지통·복원을 수행합니다. 덮어쓰기는 명시적으로 선택해야 합니다. 파일 이름은 NFC이며 금지 문자·예약 이름·240 UTF-8 바이트 상한을 검사합니다. 심볼릭 링크는 거부합니다. `.nasquire-*` 임시 파일·휴지통은 색인·공유에서 제외합니다. 파일 업로드 후 다음 색인 작업을 즉시 예약합니다. 멀티파트는 데이터 폴더의 임시 파일로 받고, 64 KiB 버퍼로 업로드 폴더 안 임시 파일에 복사한 후 원자적으로 이동합니다. 업로드 상한과 기존 색인 상한은 독립적이므로 업로드에 성공한 큰 파일도 색인에서 제외되거나 오류가 될 수 있습니다.
 
-안전한 폴더 생성·덮어쓰기 없는 원자적 이동은 Java 25 FFM과 Linux libc `openat`/`mkdirat`/`renameat2`를 사용합니다. Linux amd64/arm64와 SecureDirectoryStream 지원 파일시스템이 필요합니다. 미지원 시 실패하며 경로 기반의 불안전한 쓰기로 대체하지 않습니다. bootRun·컨테이너에는 native access 옵션이 포함되어 있습니다. arm64 실기와 실제 NAS 파일시스템은 아직 검증하지 않았습니다.
+안전한 폴더 생성·덮어쓰기 없는 원자적 이동은 Java 25 FFM과 Linux libc `openat`/`mkdirat`/`renameat2`를 사용합니다. Linux amd64/arm64와 SecureDirectoryStream 지원 파일시스템이 필요합니다. 미지원 시 실패하며 경로 기반의 불안전한 쓰기로 대체하지 않습니다. bootRun·컨테이너에는 native access 옵션이 포함되어 있습니다. arm64 네이티브 구현은 직접 빌드 사용자를 위해 유지하지만 공식 지원하지 않습니다. 실제 NAS 파일시스템은 미검증입니다.
 
 공유는 일반 소스와 업로드 소스에서 파일 하나 또는 폴더 하나를 선택합니다. 경로는 소스 기준 상대경로이며 빈 경로는 소스 루트입니다. 만료 기본값은 7일(최대 365일), 비밀번호는 선택(8자 이상·UTF-8 72바이트 이하), 다운로드 상한은 선택(1–1000000)입니다. 256비트 무작위 `/s/{token}` 주소는 생성할 때 한 번만 표시하며 DB에는 SHA-256만 저장합니다. 비밀번호는 BCrypt 비용 12로 저장합니다. 비밀번호 링크는 브라우저의 HTTP Basic 인증 창을 사용합니다(사용자명은 비워 두고 비밀번호만 입력). HTTPS로 제공하세요.
 

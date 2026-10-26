@@ -2,9 +2,13 @@
 
 검증일: 2026-10-24, 작업 기준 `3b10669`. 배포 파일·CI·설치 안내의 구현과 아래 대체 검증은 완료했다. 당시에는 실제 이미지 빌드/기동·메모리 제한을 검증하지 못했다. 이후 운영자 실측은 아래 2026-10-25 절을 따른다.
 
+## 공식 지원 범위 (2026-10-26)
+
+공식 지원 플랫폼은 Linux amd64(64비트)뿐이다. arm64는 공식 이미지·지원이 없다. 코드는 아키텍처 중립으로 유지하며 arm64에서도 `docker build --target lite .`로 직접 빌드할 수 있다. 과거 arm64 Linux VM의 lite/full 동작 [실측 기록](deploy.md#arm64-컨테이너-재측정-이름-전달-수정-후-기준-d8e83a5)은 참고용이며 이후 변경은 검증하지 않았다. 32비트 ARM도 공식 지원하지 않는다. 공식 이미지 빌드·게시 대상은 `linux/amd64`이며 QEMU 설정은 제거했다. 아래 arm64 실측·실패 이력은 과거 기록으로 보존하며 공식 지원이나 현재 변경본 검증을 뜻하지 않는다.
+
 ## 변경과 정적 검토
 
-- Temurin 25 JDK 빌드 단계는 `$BUILDPLATFORM`에서 lite/full JAR를 따로 생성하고, glibc 기반 `25-jre-noble` 런타임은 대상 플랫폼에서 구성한다. Buildx 대상은 `linux/amd64,linux/arm64`다. 기본 마지막 타깃은 lite이며 full은 `-Pfull`로 빌드한다. 각 단계에서 런타임 JAR만 가져온다. 모델·캐시·비밀 환경 파일은 빌드 컨텍스트에서도 제외한다.
+- Temurin 25 JDK 빌드 단계에서 lite/full JAR를 따로 생성하고(BuildKit 없는 구형 빌더 호환을 위해 `--platform=$BUILDPLATFORM`·`COPY --chmod`를 쓰지 않으며 Gradle은 `sh ./gradlew`로 실행), glibc 기반 `25-jre-noble` 런타임은 대상 플랫폼에서 구성한다. 현재 공식 Buildx 대상은 `linux/amd64`다(2026-10-26 변경). 기본 마지막 타깃은 lite이며 full은 `-Pfull`로 빌드한다. 각 단계에서 런타임 JAR만 가져온다. 모델·캐시·비밀 환경 파일은 빌드 컨텍스트에서도 제외한다.
 - 두 이미지 모두 비루트 사용자, PUID/PGID 빌드 인자·compose 숫자 사용자 매핑, native access, `/data`, OCI 소스 URL·AGPL 라벨을 제공한다. 일반 소스의 읽기 전용 마운트와 `/data` 쓰기는 compose에서 설정한다. 호스트 폴더 권한은 운영자가 준비하며 환경변수만으로 공개 이미지 사용자 변경/소유권 수정은 하지 않는다.
 - full은 `tesseract-ocr`, `tesseract-ocr-kor`, `tesseract-ocr-eng`, `util-linux`(`prlimit`, `setsid`), fontconfig/DejaVu 글꼴을 설치하도록 작성했다. OCR 자식은 같은 실행 JAR/JRE와 쓰기 가능한 `/data/ocr-tmp`를 사용하며 Linux `/proc` 접근이 필요하다. 실제 이미지 안의 실행 파일·언어 목록 확인은 미수행이다.
 - 검색 헬스체크는 `/` 200, ML은 `/v1/models` 무인증 401을 확인한다. ML은 모델 준비 뒤 리스너를 열지만 이 검사는 추론 품질을 보장하지 않는다. ML 명령 인자와 함께 `NASQUIRE_MODE=ml`을 설정한다. 기본 포트는 8080이며 포트를 바꾸면 헬스체크용 `PORT`도 맞춘다.
@@ -86,7 +90,7 @@ arm64 이미지 크기는 lite 638 MB, full 899 MB였다. amd64 lite/full은 Kan
 
 코드상 렌더 작업자는 부모 환경을 이미 비우고 별도 `-Xmx192m`·주소 공간 2048 MiB로 실행한다. `ocrMemoryMiB=512`는 Tesseract의 주소 공간 제한이다. 한 쪽 렌더링의 기존 파일 단위 시간 상한은 15+10=25초이므로 관찰 시간은 렌더 시간 초과와 부합하지만 **원인 확정 근거는 아니다**. Dockerfile 기본 옵션은 변경하지 않았다. 이번 변경은 자식 종료 코드·시간 초과·예외 종류만 안전한 진단으로 남기고, 색인 WARN에는 소스 상대 경로만 기록한다. stderr·원문·예외 메시지·스택은 노출하지 않는다. 관리자 세션 전용 소스 상태 API에 최근 실패 최대 5건의 상대 경로와 안전한 사유를 추가했다. 실패 목록은 메모리에만 있으며 다음 검사/재시작 때 갱신된다.
 
-Linux amd64에서 PDFBox 생성 JPEG PDF 및 운영자 방식으로 Pillow 12.1.1·Noto Sans CJK 44pt로 생성한 1400×500 L → RGB PDF(`full/src/test/resources/scan-pillow.pdf`) → 격리 자식 JVM → PNG → 가짜 Tesseract → 한/영 검색·OCR 쪽 근거 경로를 검증했다. 실행 JAR와 Dockerfile 기본 `JAVA_TOOL_OPTIONS`에서도 검사한다. 실제 Tesseract 정확도 검증이 아니다. 당시 Docker·arm64 실행기·Tesseract가 없어 운영자 실패를 재현하지 못했다. 이후 원래 이름 누락을 확정·수정했으며 아래 후속 수정 절을 따른다. 수정 후 arm64 재측정은 운영자가 수행한다. 주소 공간·힙·시간·환경 초기화·0700 작업 폴더·자손 회수 제한은 유지했다.
+Linux amd64에서 PDFBox 생성 JPEG PDF 및 운영자 방식으로 Pillow 12.1.1·Noto Sans CJK 44pt로 생성한 1400×500 L → RGB PDF(`full/src/test/resources/scan-pillow.pdf`) → 격리 자식 JVM → PNG → 가짜 Tesseract → 한/영 검색·OCR 쪽 근거 경로를 검증했다. 실행 JAR와 Dockerfile 기본 `JAVA_TOOL_OPTIONS`에서도 검사한다. 실제 Tesseract 정확도 검증이 아니다. 당시 Docker·arm64 실행기·Tesseract가 없어 운영자 실패를 재현하지 못했다. 이후 원래 이름 누락을 확정·수정했으며 아래 후속 수정 절을 따른다. 당시 후속 arm64 재측정 결과는 아래 d8e83a5 절에 기록했다. 주소 공간·힙·시간·환경 초기화·0700 작업 폴더·자손 회수 제한은 유지했다.
 
 재현 명령(빌드와 순차 실행):
 
@@ -116,7 +120,7 @@ VERIFY_PORT=8104 python3 scripts/verify-runtime.py
 | 내부 정보 패턴 `rg` | 1 | 일치 0건(무일치 종료 코드) |
 | `git diff --check` | 0 | 공백 오류 없음 |
 
-전체 빌드 테스트는 core 28·app 44·full 21개, 실패/오류/생략 모두 0이었다. 이후 실행 JAR 회귀 2건도 실패/오류/생략 0이다. 필수 빌드 실패는 없었다. 당시 운영자 arm64 실패를 로컬에서 재현하지 못했다. 이후 원인 확정·코드 수정은 아래 후속 절에 반영했으며 수정 후 컨테이너 재측정은 미완료다.
+전체 빌드 테스트는 core 28·app 44·full 21개, 실패/오류/생략 모두 0이었다. 이후 실행 JAR 회귀 2건도 실패/오류/생략 0이다. 필수 빌드 실패는 없었다. 당시 운영자 arm64 실패를 로컬에서 재현하지 못했다. 이후 원인 확정·코드 수정은 아래 후속 절에 반영했으며 당시 미완료였던 arm64 컨테이너 재측정은 아래 d8e83a5 절에 기록했다.
 
 ### PDF OCR 이름 보존 후속 수정 (기준 b0bdf4e)
 
@@ -124,7 +128,7 @@ VERIFY_PORT=8104 python3 scripts/verify-runtime.py
 
 위임은 OCR 공급자와 OCR off 시 PDF 폴백 모두 원래 이름을 사용하고 내용은 고정 fd에서 읽도록 수정했다. 다른 운영 추출기/래퍼도 점검했다. 회귀 테스트는 FullSettings와 실제 IndexingService 경로를 거쳐 격리 자식 PDF 렌더링·가짜 OCR 공급자·한/영 검색의 `location.type=ocr`와 쪽 1을 확인한다. 기존 주소 공간·힙·시간·환경 초기화·0700 폴더·자손 회수 제한은 유지했다. 상세 결과는 [full 검증](full.md#pdf-ocr-원래-이름-보존-수정-기준-b0bdf4e)에 기록한다.
 
-수정 후 arm64 컨테이너·실제 Tesseract PDF OCR 재측정은 운영자가 후속 수행한다. 로컬 테스트는 실제 OCR 정확도·속도·RSS 및 full cgroup 메모리 보장의 근거가 아니다.
+수정 후 arm64 컨테이너·실제 Tesseract PDF OCR 재측정은 아래 d8e83a5 절에 기록했다. 로컬 테스트는 실제 OCR 정확도·속도·RSS 및 full cgroup 메모리 보장의 근거가 아니다.
 
 
 이번 수정 검증은 `./gradlew build -q`·`./gradlew -Pfull build -q` 각각 종료 0이며 최종 core 28·app 47·full 21개 실패/오류/생략 0이다. 기준 FullSettings로 새 회귀를 실행하면 3건 실패·종료 1로 증상을 재현한다. 내부 정보 검사 일치 0건(`rg` 종료 1), 공백 검사 종료 0이다. 아티팩트는 `build/verification/ocr-name/`에 보존했다. 개발 서버·컨테이너는 시작하지 않았다.

@@ -1,6 +1,8 @@
 # TrueNAS SCALE 커스텀 앱
 
-Docker 기반 Apps를 제공하는 SCALE 릴리스가 대상이다. 구형 Kubernetes 기반 Apps와 CORE의 jail 설치 안내가 아니다. [공식 Custom Apps 안내](https://apps.truenas.com/managing-apps/installing-custom-apps/)와 [공통 설치·운영](generic-docker.md)을 따른다. NAS 실기·arm64 실행은 미검증이다.
+공식 지원 플랫폼은 Linux amd64(64비트)뿐이다. arm64는 공식 이미지·지원이 없다. 코드는 아키텍처 중립으로 유지하며 arm64에서도 `docker build --target lite .`로 직접 빌드할 수 있다. 과거 arm64 Linux VM의 lite/full 동작 [실측 기록](../verification/deploy.md#arm64-컨테이너-재측정-이름-전달-수정-후-기준-d8e83a5)은 참고용이며 이후 변경은 검증하지 않았다. 32비트 ARM도 공식 지원하지 않는다.
+
+Docker 기반 Apps를 제공하는 SCALE 릴리스가 대상이다. 구형 Kubernetes 기반 Apps와 CORE의 jail 설치 안내가 아니다. [공식 Custom Apps 안내](https://apps.truenas.com/managing-apps/installing-custom-apps/)와 [공통 설치·운영](generic-docker.md)을 따른다. NAS 실기는 미검증이다.
 
 1. 앱 풀에 데이터 dataset(`/mnt/tank/apps/nasquire` 예시)을 만들고 실행 UID/GID에 쓰기 ACL을 준다. 일반 문서 dataset은 읽기/탐색 ACL만 준다. 앱 전용 업로드 dataset은 데이터·일반 문서와 별도 경로로 준비한다. 기존 문서 ACL을 일괄 변경하지 않는다.
 2. Apps → Discover Apps → Custom App에서 `ghcr.io/nasquire/nasquire:lite`를 지정하거나, 지원 화면의 Install via YAML에서 `deploy/docker-compose.yml`을 붙여 넣는다. YAML은 로컬 `build`를 제거하고 `${...}`를 실제 경로/숫자로 치환한다. UI 이름은 릴리스별로 다를 수 있다. User/Group ID를 PUID/PGID에 맞춰 지정하거나 YAML의 `user: "UID:GID"`를 사용한다. 환경변수만으로 공개 이미지의 사용자는 바뀌지 않는다. root/Privileged는 불필요하다.

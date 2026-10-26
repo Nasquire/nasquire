@@ -7,7 +7,7 @@
   <Privileged>false</Privileged>
   <Support>https://github.com/Nasquire/nasquire</Support>
   <Project>https://github.com/Nasquire/nasquire</Project>
-  <Overview>기존 폴더를 읽기 전용으로 색인하는 검색 서비스. HTTPS 프록시가 필요합니다. PUID/PGID와 --user를 함께 맞추세요.</Overview>
+  <Overview>기존 폴더를 읽기 전용으로 색인하는 검색 서비스. 공식 지원은 Linux amd64(64비트)뿐이며 ARM 전반은 공식 이미지·지원이 없습니다. 코드는 아키텍처 중립이며 arm64는 docker build --target lite . 로 직접 빌드할 수 있습니다. 과거 arm64 Linux VM의 lite/full 실측은 https://github.com/Nasquire/nasquire/blob/main/docs/verification/deploy.md 를 참고하세요. 이후 arm64 변경은 검증하지 않았습니다. HTTPS 프록시가 필요합니다. PUID/PGID와 --user를 함께 맞추세요.</Overview>
   <Category>Tools:</Category>
   <WebUI>https://nas.example.com</WebUI>
   <ExtraParams>--user=99:100 --memory=512m --memory-swap=512m --cpus=2 --pids-limit=100 --read-only --tmpfs /tmp:size=64m,mode=1777 --cap-drop=ALL --security-opt=no-new-privileges:true -p 127.0.0.1:8080:8080</ExtraParams>

@@ -1,14 +1,15 @@
 # syntax=docker/dockerfile:1
-# 빌드 호스트에서 만든 Java/프런트엔드 산출물은 두 런타임 아키텍처에서 공유한다.
-FROM --platform=$BUILDPLATFORM eclipse-temurin:25-jdk-noble AS build-base
+# BuildKit 없는 구형 빌더(Synology Container Manager 등)에서도 빌드되도록 BuildKit 전용 문법을 쓰지 않는다.
+FROM eclipse-temurin:25-jdk-noble AS build-base
 WORKDIR /workspace
 COPY . .
 
 FROM build-base AS build-lite
-RUN ./gradlew :app:bootJar :app:verifyLiteClasspath --no-daemon -q
+# zip 압축 해제로 실행 권한이 빠져도 동작하도록 sh로 실행한다.
+RUN sh ./gradlew :app:bootJar :app:verifyLiteClasspath --no-daemon -q
 
 FROM build-base AS build-full
-RUN ./gradlew -Pfull :app:bootJar --no-daemon -q
+RUN sh ./gradlew -Pfull :app:bootJar --no-daemon -q
 
 FROM eclipse-temurin:25-jre-noble AS runtime
 ARG PUID=1000
@@ -23,7 +24,8 @@ RUN test "$PUID" -gt 0 && test "$PGID" -gt 0 \
     && useradd --non-unique --uid "$PUID" --gid "$PGID" --no-create-home nasquire \
     && mkdir -p /data /app && chown "$PUID:$PGID" /data
 WORKDIR /data
-COPY --chmod=755 deploy/healthcheck.sh /app/healthcheck.sh
+COPY deploy/healthcheck.sh /app/healthcheck.sh
+RUN chmod 755 /app/healthcheck.sh
 ENV NASQUIRE_DATA=/data \
     DJL_CACHE_DIR=/data/models/.djl-cache \
     MALLOC_ARENA_MAX=2 \

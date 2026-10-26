@@ -1,6 +1,8 @@
 # Unraid Docker
 
-[Unraid 공식 컨테이너 관리 안내](https://docs.unraid.net/go/docker-management/)와 [공통 설치·운영](generic-docker.md)을 함께 따른다. NAS 실기와 arm64는 미검증이며 Unraid 호스트/버전의 지원 아키텍처를 먼저 확인한다. Community Applications 등록은 수행하지 않았다.
+공식 지원 플랫폼은 Linux amd64(64비트)뿐이다. arm64는 공식 이미지·지원이 없다. 코드는 아키텍처 중립으로 유지하며 arm64에서도 `docker build --target lite .`로 직접 빌드할 수 있다. 과거 arm64 Linux VM의 lite/full 동작 [실측 기록](../verification/deploy.md#arm64-컨테이너-재측정-이름-전달-수정-후-기준-d8e83a5)은 참고용이며 이후 변경은 검증하지 않았다. 32비트 ARM도 공식 지원하지 않는다.
+
+[Unraid 공식 컨테이너 관리 안내](https://docs.unraid.net/go/docker-management/)와 [공통 설치·운영](generic-docker.md)을 함께 따른다. NAS 실기는 미검증이며 Unraid 호스트/버전이 Linux amd64(64비트)인지 확인한다. Community Applications 등록은 수행하지 않았다.
 
 1. `deploy/unraid/nasquire.xml`은 수동 템플릿이다. NAS 관리자가 [공식 사용자 템플릿 경로](https://docs.unraid.net/community-applications/)인 `/boot/config/plugins/dockerMan/templates-user/`에 `my-nasquire.xml`로 두고 Docker → Add Container → 사용자 템플릿에서 선택한다.
 2. 템플릿 기본 데이터 폴더 `/mnt/user/appdata/nasquire`를 준비하고 실제 실행 계정 UID/GID에 쓰기 권한을 준다. 기본 `--user=99:100`은 예시다. **PUID/PGID 환경값과 Extra Parameters의 `--user=UID:GID`를 함께** 맞춘다. 공개 이미지가 환경값만으로 사용자를 변경하지는 않는다. root/Privileged는 사용하지 않는다.
