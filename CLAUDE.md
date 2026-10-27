@@ -23,6 +23,7 @@
 - `scripts/fetch-verification-models.py`: 명시적 내장 모델 검증 시 고정 리비전·SHA-256 모델 파일을 무시되는 build 폴더에 준비한다.
 - `docs/embeddings.md`, `docs/verification/vector.md`: 공급자·재색인·모델 출처·아키텍처 중립 구현·실측 제한. arm64는 공식 이미지·지원 없이 직접 빌드만 가능하며 이후 변경은 미검증이다.
 - `docs/ROADMAP.md`, `docs/verification/mvp.md`, `THIRD-PARTY.md`: 진행·실측·의존성 라이선스.
+- `CONTRIBUTING.md`·`SECURITY.md`: 한/영 기여·보안 정책. 외부 코드·문서·번역은 받거나 반영하지 않으며 이슈는 버그·기능 아이디어만 받는다. `.github/ISSUE_TEMPLATE/`과 PR 안내를 유지한다. `close-external-prs.yml`은 OWNER/MEMBER/COLLABORATOR 외 PR을 안내 후 닫는다. `pull_request_target`에서 PR 코드를 체크아웃·실행하지 않고 `pull-requests: write`만 부여하며 액션 SHA를 고정한다.
 
 ## 명령
 - 빌드·테스트(기본 lite): `./gradlew build -q` (`:app:verifyLiteClasspath`가 full/ONNX/DJL 유입 검사)

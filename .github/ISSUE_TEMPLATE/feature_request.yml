@@ -1,0 +1,30 @@
+name: 기능 제안 / Feature request
+description: 문제와 원하는 동작을 제안하세요. / Describe a need and desired behavior.
+body:
+- type: markdown
+  attributes:
+    value: 외부 코드·문서·번역 첨부는 반영하지 않습니다. / External code, documentation and translation submissions are not
+      incorporated. 보안 취약점은 Security → Advisories → Report a vulnerability로 비공개 보고하세요. / Report vulnerabilities
+      privately through Security → Advisories → Report a vulnerability.
+- type: textarea
+  id: problem
+  attributes:
+    label: 해결할 문제 / Problem
+    description: 어떤 상황에서 필요한가요? / What situation needs improvement?
+  validations:
+    required: true
+- type: textarea
+  id: proposal
+  attributes:
+    label: 원하는 동작 / Desired behavior
+    description: 코드·문서·번역 구현물 대신 아이디어만 설명하세요. / Describe ideas without code, documentation or translation
+      implementations.
+  validations:
+    required: true
+- type: textarea
+  id: alternatives
+  attributes:
+    label: 대안 / Alternatives
+    description: 고려한 대안과 제약, 없으면 없음 / Alternatives and constraints, or none
+  validations:
+    required: true

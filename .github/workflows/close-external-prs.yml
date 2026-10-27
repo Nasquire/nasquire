@@ -1,0 +1,28 @@
+name: Close external pull requests
+on:
+  pull_request_target:
+    types: [opened, reopened]
+permissions:
+  pull-requests: write
+jobs:
+  close:
+    if: ${{ !contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) }}
+    runs-on: ubuntu-latest
+    steps:
+      # PR 코드를 체크아웃하거나 실행하지 않는다. 이벤트의 작성자 association만 판별한다.
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (['OWNER', 'MEMBER', 'COLLABORATOR'].includes(pr.author_association)) return;
+            const policy = `https://github.com/${context.repo.owner}/${context.repo.repo}/blob/HEAD/CONTRIBUTING.md`;
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: pr.number,
+              body: `외부 PR·패치·코드·문서·번역 기여는 받지 않으며 반영하지 않습니다. 버그 보고·기능 제안은 구현물 없이 이슈로 보내 주세요. 메인테이너가 직접 구현합니다.\n\nExternal code, documentation and translation contributions are neither accepted nor incorporated. Please submit bug reports and feature ideas through issues without implementations; the maintainer implements changes independently.\n\n[기여 정책 / Contribution policy](${policy})`
+            });
+            await github.rest.pulls.update({
+              ...context.repo,
+              pull_number: pr.number,
+              state: 'closed'
+            });

@@ -31,7 +31,7 @@ full 이미지에는 Tesseract 실행 파일과 kor+eng 데이터가 포함됩�
 
 공식 Linux amd64(64비트) 이미지는 `ghcr.io/nasquire/nasquire:lite`(기본·`:latest`)와 `:full`입니다. 첫 릴리스 게시 전에는 pull이 실패할 수 있으며 이번 단계에서는 게시하지 않았습니다.
 
-arm64는 공식 이미지·지원이 없습니다. 코드는 아키텍처 중립으로 유지하며 `docker build --target lite .`로 직접 빌드할 수 있습니다. 과거 arm64 Linux VM의 lite/full 동작 [실측 기록](docs/verification/deploy.md#arm64-컨테이너-재측정-이름-전달-수정-후-기준-d8e83a5)은 참고용이며 이후 변경은 검증하지 않았습니다. 32비트 ARM도 공식 지원하지 않습니다. 실제 NAS·대규모 부하·Actions는 미검증입니다.
+arm64는 공식 이미지·지원이 없습니다. 코드는 아키텍처 중립으로 유지하며 `docker build --target lite .`로 직접 빌드할 수 있습니다. 과거 arm64 Linux VM의 lite/full 동작 [실측 기록](docs/verification/deploy.md#arm64-컨테이너-재측정-이름-전달-수정-후-기준-d8e83a5)은 참고용이며 이후 변경은 검증하지 않았습니다. 32비트 ARM도 공식 지원하지 않습니다. 실제 NAS·대규모 부하는 미검증입니다. CI·이미지 빌드는 공개 저장소에서 실행 성공했습니다([기준 cd6244b](https://github.com/Nasquire/nasquire/commit/cd6244b)). GHCR 게시는 미실시입니다.
 
 데이터 폴더를 실행 UID/GID가 쓸 수 있게 먼저 준비하고 HTTPS 프록시를 구성하세요. 일반 문서는 읽기 전용으로 연결합니다.
 
@@ -251,3 +251,15 @@ java -jar app/build/libs/app-0.1.0.jar --recover-admin --data=/data
 NAS HDD 절전과 대용량 폴더 검사 부담을 줄이기 위해 기본 변경 검사 주기는 5분입니다(안정화 대기 2초 유지). 환경설정 → 색인에서 검사 주기 1~60분과 파일 크기 상한 1~512 MiB(기본 32 MiB)를 저장합니다. 데이터 폴더 `indexing.properties`의 화면 설정이 `nasquire.scan-millis`·`nasquire.max-file-bytes` 환경변수/설정 초기값보다 우선하며 저장 즉시 단일 작업자의 스케줄을 재설정합니다. Office/HWP 원본은 별도 8 MiB 상한을 유지합니다.
 
 소스별 **지금 검사**는 변경분만 검사하며 실행 중 요청은 다음 차례 한 번으로 합칩니다. 새 파일은 안정화 대기 후 다음 검사에서 색인됩니다. 크기 초과는 오류와 별도로 집계하고 관리자에게 최근 상대 경로 최대 5건을 메모리에서만 표시합니다. 상한을 올린 파일은 다음 검사부터 다시 시도합니다. 포함 glob을 비우면 현재 빌드의 지원 형식 전체를 처리합니다(`GET /api/supported-extensions`, 관리자 전용). full의 이미지 형식은 OCR을 켜야 추출됩니다. NAS 시스템 파일·폴더는 자동 제외됩니다.
+
+## 사용자별 접근 범위 / Per-user access scope
+
+컨테이너는 단일 UID로 마운트한 폴더를 읽으며 NAS 계정별 공유 폴더 권한(ACL)을 컨테이너 안에서 적용하지 않습니다. 호스트에서는 실행 UID의 파일 권한이 적용됩니다. 범위를 분리하려면 폴더를 마운트 지점별로 나누어 별도 소스로 등록하고, API 토큰·OAuth 승인의 소스 범위로 접근을 관리하세요. NAS 계정 연동(OIDC 등)과 다중 사용자·역할은 후속 과제입니다.
+
+The container reads mounted folders as a single UID; it does not apply each NAS account's shared-folder ACL inside the container. Host file permissions apply to that UID. Separate folders into mount points and sources, then control access through source scopes on API tokens and OAuth approvals. NAS account integration (such as OIDC), multiple users and roles remain future work.
+
+## 기여 / Contributing
+
+버그 보고·기능 제안은 이슈로 환영합니다. 외부 PR·패치 및 이슈에 첨부된 코드·문서·번역은 받지 않으며 반영하지 않습니다. 제안은 아이디어로만 참고하고 메인테이너가 직접 구현합니다. [기여 정책](CONTRIBUTING.md)과 비공개 취약점 보고를 위한 [보안 정책](SECURITY.md)을 확인하세요.
+
+Bug reports and feature ideas are welcome through issues. External PRs, patches, and code, documentation or translations attached to issues are neither accepted nor incorporated. Suggestions are ideas only; the maintainer implements changes independently. See [Contributing](CONTRIBUTING.md) and the [Security policy](SECURITY.md) for private vulnerability reporting.

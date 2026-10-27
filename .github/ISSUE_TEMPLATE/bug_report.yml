@@ -1,0 +1,63 @@
+name: 버그 보고 / Bug report
+description: 재현 가능한 문제를 설명하세요. / Describe a reproducible problem.
+body:
+- type: markdown
+  attributes:
+    value: 외부 코드·문서·번역 첨부는 반영하지 않습니다. / External code, documentation and translation submissions are not
+      incorporated. 보안 취약점은 Security → Advisories → Report a vulnerability로 비공개 보고하세요. / Report vulnerabilities
+      privately through Security → Advisories → Report a vulnerability.
+- type: input
+  id: version
+  attributes:
+    label: 버전 / Version
+    description: 릴리스 버전 또는 커밋 / Release version or commit
+  validations:
+    required: true
+- type: dropdown
+  id: build
+  attributes:
+    label: 빌드 / Build
+    description: 사용 중인 빌드 / Build flavor
+    options:
+    - lite
+    - full
+  validations:
+    required: true
+- type: input
+  id: installation
+  attributes:
+    label: 설치 방식 / Installation
+    description: Docker, NAS 설치 방식 또는 JAR, OS / Docker, NAS installation method or JAR, OS
+  validations:
+    required: true
+- type: textarea
+  id: steps
+  attributes:
+    label: 재현 절차 / Reproduction steps
+    description: 구현 코드·패치 없이 단계별로 설명 / Describe steps without implementation code or patches
+  validations:
+    required: true
+- type: textarea
+  id: expected
+  attributes:
+    label: 기대 동작 / Expected behavior
+    description: 예상한 결과 / What should happen
+  validations:
+    required: true
+- type: textarea
+  id: actual
+  attributes:
+    label: 실제 동작 / Actual behavior
+    description: 실제로 발생한 결과 / What happened
+  validations:
+    required: true
+- type: textarea
+  id: logs
+  attributes:
+    label: 로그 / Logs
+    description: 토큰·비밀번호·키·쿠키·공유/다운로드 주소·개인정보·문서 원문을 제거하세요. 코드·패치는 첨부하지 마세요. / Remove tokens, passwords,
+      keys, cookies, share/download URLs, personal information and private document text. Do not attach
+      code or patches.
+    render: text
+  validations:
+    required: false

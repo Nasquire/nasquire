@@ -50,6 +50,10 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d
 
 `/data` 외 루트는 읽기 전용, 임시 폴더 `/tmp`만 제한된 tmpfs다. 큰 PDF에서 scratch 용량 부족은 색인 오류가 될 수 있다. 소스는 UI에서 `/sources/documents`로 등록한다. 업로드 마운트는 기본 compose의 주석을 해제하고 `UPLOAD_DIR`을 설정한다. 처음에는 외부 접근을 막고 신뢰하는 경로에서 HTTPS로 관리자 계정을 만든다.
 
+## 사용자별 접근 범위
+
+컨테이너는 단일 UID로 마운트한 폴더를 읽으며 NAS 계정별 공유 폴더 권한(ACL)을 컨테이너 안에서 적용하지 않는다. 호스트에서는 실행 UID의 파일 권한이 적용된다. 접근 범위를 분리하려면 폴더를 마운트 지점별로 나누어 별도 소스로 등록하고 API 토큰·OAuth 승인의 소스 범위를 지정한다. 컨테이너에 마운트한 범위와 토큰·승인에 허용한 소스 범위를 함께 확인한다. NAS 계정 연동(OIDC 등)과 다중 사용자·역할은 후속 과제다.
+
 ## HTTPS·프록시·로그
 
 공유 비밀번호는 HTTP Basic이며 관리자 로그인은 쿠키를 사용한다. **HTTPS 리버스 프록시가 필수**다. `PUBLIC_URL=https://nas.example.com`, `SERVER_SERVLET_SESSION_COOKIE_SECURE=true`를 유지한다. 앱 포트는 기본 호스트 루프백에만 공개한다. 별도 컨테이너 프록시라면 전용 Docker 네트워크로 연결하고 포트 공개를 제거하거나 방화벽으로 프록시만 허용한다. 앱에 직접 접근할 수 있는 외부 경로를 열지 않는다.
@@ -117,7 +121,7 @@ docker compose -f deploy/docker-compose.ml.yml up -d
 
 ## CI·이미지 생성
 
-push/PR은 lite/full Gradle 빌드와 amd64 Buildx 빌드만 수행한다. `v1.2.3` 같은 `v*` 태그만 `:lite`, `:full`, `:1.2.3-lite`, `:1.2.3-full`, `:latest`(lite)를 GHCR에 게시한다. 게시 job에만 `packages:write`를 부여하며 액션은 커밋 SHA로 고정한다. SBOM/프로비넌스는 [Docker 공식 방식](https://docs.docker.com/build/ci/github-actions/attestations/)으로 켠다. PR 빌드는 레지스트리에 출력하지 않아 게시된 증명도 없다. 이 작업에서는 워크플로를 실제 실행하거나 이미지 로그인·게시를 하지 않았다.
+push/PR은 lite/full Gradle 빌드와 amd64 Buildx 빌드만 수행한다. `v1.2.3` 같은 `v*` 태그만 `:lite`, `:full`, `:1.2.3-lite`, `:1.2.3-full`, `:latest`(lite)를 GHCR에 게시한다. 게시 job에만 `packages:write`를 부여하며 액션은 커밋 SHA로 고정한다. SBOM/프로비넌스는 [Docker 공식 방식](https://docs.docker.com/build/ci/github-actions/attestations/)으로 켠다. PR 빌드는 레지스트리에 출력하지 않아 게시된 증명도 없다. CI·이미지 빌드는 공개 저장소에서 실행 성공했다([기준 cd6244b](https://github.com/Nasquire/nasquire/commit/cd6244b)). GHCR 게시는 미실시다.
 
 ## MCP OAuth
 
