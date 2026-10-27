@@ -64,8 +64,10 @@ class OAuthIntegrationTest {
         Files.createDirectories(TEMP.resolve("other")); Files.writeString(TEMP.resolve("other/private.md"), "confidential private ocean");
         createSource(source, "source"); createSource(other, "other");
         long deadline = System.currentTimeMillis() + 10000;
-        while (documents.search(null, "ocean", null, 10).size() < 2 && System.currentTimeMillis() < deadline) Thread.sleep(50);
-        assertEquals(2, documents.search(null, "ocean", null, 10).size());
+        try (var ignored = new AccountTestContext("admin")) {
+            while (documents.search(null, "ocean", null, 10).size() < 2 && System.currentTimeMillis() < deadline) Thread.sleep(50);
+            assertEquals(2, documents.search(null, "ocean", null, 10).size());
+        }
     }
     void createSource(String id, String name) {
         storage.save(new Source(id, name, TEMP.resolve(name), List.of(), List.of(), "directory"));
@@ -254,7 +256,7 @@ class OAuthIntegrationTest {
         String id = register(), verifier = OAuthService.random(), secret = Totp.secret();
         var browser = HttpClient.newBuilder().cookieHandler(new CookieManager(null, CookiePolicy.ACCEPT_ALL)).build();
         try {
-            totp.enable(secrets.encrypt(EmbeddingSettings.TOTP, secret), Totp.code(secret, System.currentTimeMillis() / 30000 - 1));
+            try (var ignored = new AccountTestContext("admin")) { totp.enable(secrets.encrypt(EmbeddingSettings.TOTP, secret), Totp.code(secret, System.currentTimeMillis() / 30000 - 1)); }
             String browserCsrf = json(request(browser, "/api/auth", "GET", null, false, false, null), 200).get("csrfToken").asText();
             var login = HttpRequest.newBuilder(URI.create(url("/api/login"))).header("Content-Type", "application/x-www-form-urlencoded").header("X-CSRF-TOKEN", browserCsrf)
                     .POST(HttpRequest.BodyPublishers.ofString(form(Map.of("username", "admin", "password", "example-password-123")))).build();
@@ -321,7 +323,7 @@ class OAuthIntegrationTest {
         assertEquals(source + ":notes.md", downloads.verify(parse(URI.create(ticket).getRawQuery()).get("ticket")));
         assertEquals(200, request(anonymous, downloadPath, "GET", null, false, false, null).statusCode());
         for (String path : List.of("/api/search?query=ocean", "/api/sources", "/api/download?path=" + enc(source + ":notes.md"))) assertEquals(401, request(client, path, "GET", null, false, false, access).statusCode());
-        String apiValue = OAuthService.random(), tokenId = UUID.randomUUID().toString(); storage.addToken(tokenId, "Example API", SecurityConfiguration.hash(apiValue), System.currentTimeMillis() + 600000, List.of(source));
+        String apiValue = OAuthService.random(), tokenId = UUID.randomUUID().toString(); try (var ignored = new AccountTestContext("admin")) { storage.addToken(tokenId, "Example API", SecurityConfiguration.hash(apiValue), System.currentTimeMillis() + 600000, List.of(source)); }
         assertEquals(200, request(anonymous, "/api/search?query=ocean", "GET", null, false, false, apiValue).statusCode()); assertEquals(200, mcpResponse(apiValue, "tools/list", Map.of()).statusCode());
         assertEquals(401, request(client, "/mcp", "POST", Map.of(), false, true, null).statusCode());
         db.update("UPDATE oauth_grants SET audience=?", "https://other.example.com/mcp"); assertEquals(401, mcpResponse(access, "tools/list", Map.of()).statusCode());
@@ -415,33 +417,35 @@ class OAuthIntegrationTest {
         assertEquals(1, db.queryForObject("SELECT COUNT(*) FROM audit WHERE action='oauth-register-evict'", Integer.class));
     }
     @Test void recentAuthenticationAndAtomicPendingAreRequiredAtConsent() {
-        var controller = new OAuthController(oauth, storage, new ClientAddresses(""));
-        var request = new org.springframework.mock.web.MockHttpServletRequest();
-        var response = new org.springframework.mock.web.MockHttpServletResponse();
-        var csrfToken = new org.springframework.security.web.csrf.DefaultCsrfToken("X-CSRF-TOKEN", "_csrf", "test-csrf");
-        var admin = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken("admin", null,
-                List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ADMIN")));
-        String id = oauth.register(Map.of("redirect_uris", List.of(REDIRECT))).get("client_id").toString();
-        authorization(id, OAuthService.random()).forEach(request::addParameter);
-        request.getSession().setAttribute("admin.authenticatedAt", System.currentTimeMillis() - 600001);
-        assertTrue(controller.authorize(request, response, admin, csrfToken).contains("id=\"login\""));
-        request.getSession().setAttribute("admin.authenticatedAt", System.currentTimeMillis());
-        controller.authorize(request, response, admin, csrfToken);
-        var pending = (OAuthController.Pending)request.getSession().getAttribute("oauth.pending");
-        assertNotNull(pending); assertNull(request.getSession().getAttribute("oauth.nonce"));
-        controller.authorize(request, response, admin, csrfToken);
-        var replacement = (OAuthController.Pending)request.getSession().getAttribute("oauth.pending");
-        assertNotEquals(pending.nonce(), replacement.nonce());
-        request.setParameter("nonce", pending.nonce()); request.setParameter("decision", "approve"); request.setParameter("sources", source);
-        assertEquals(400, assertThrows(OAuthService.Error.class, () -> controller.consent(request, response, admin, csrfToken)).status);
-        request.setParameter("nonce", replacement.nonce());
-        request.getSession().setAttribute("admin.authenticatedAt", System.currentTimeMillis() - 600001);
-        assertEquals(401, assertThrows(OAuthService.Error.class, () -> controller.consent(request, response, admin, csrfToken)).status);
-        assertEquals(0, db.queryForObject("SELECT COUNT(*) FROM oauth_grants", Integer.class));
-        request.getSession().setAttribute("admin.authenticatedAt", System.currentTimeMillis());
-        controller.consent(request, response, admin, csrfToken);
-        assertEquals(302, response.getStatus()); assertNull(request.getSession().getAttribute("oauth.pending"));
-        assertEquals(400, assertThrows(OAuthService.Error.class, () -> controller.consent(request, response, admin, csrfToken)).status);
+        try (var ignored = new AccountTestContext("admin")) {
+            var controller = new OAuthController(oauth, storage, new ClientAddresses(""));
+            var request = new org.springframework.mock.web.MockHttpServletRequest();
+            var response = new org.springframework.mock.web.MockHttpServletResponse();
+            var csrfToken = new org.springframework.security.web.csrf.DefaultCsrfToken("X-CSRF-TOKEN", "_csrf", "test-csrf");
+            var admin = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken("admin", null,
+                    List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ADMIN")));
+            String id = oauth.register(Map.of("redirect_uris", List.of(REDIRECT))).get("client_id").toString();
+            authorization(id, OAuthService.random()).forEach(request::addParameter);
+            request.getSession().setAttribute("admin.authenticatedAt", System.currentTimeMillis() - 600001);
+            assertTrue(controller.authorize(request, response, admin, csrfToken).contains("id=\"login\""));
+            request.getSession().setAttribute("admin.authenticatedAt", System.currentTimeMillis());
+            controller.authorize(request, response, admin, csrfToken);
+            var pending = (OAuthController.Pending)request.getSession().getAttribute("oauth.pending");
+            assertNotNull(pending); assertNull(request.getSession().getAttribute("oauth.nonce"));
+            controller.authorize(request, response, admin, csrfToken);
+            var replacement = (OAuthController.Pending)request.getSession().getAttribute("oauth.pending");
+            assertNotEquals(pending.nonce(), replacement.nonce());
+            request.setParameter("nonce", pending.nonce()); request.setParameter("decision", "approve"); request.setParameter("sources", source);
+            assertEquals(400, assertThrows(OAuthService.Error.class, () -> controller.consent(request, response, admin, csrfToken)).status);
+            request.setParameter("nonce", replacement.nonce());
+            request.getSession().setAttribute("admin.authenticatedAt", System.currentTimeMillis() - 600001);
+            assertEquals(401, assertThrows(OAuthService.Error.class, () -> controller.consent(request, response, admin, csrfToken)).status);
+            assertEquals(0, db.queryForObject("SELECT COUNT(*) FROM oauth_grants", Integer.class));
+            request.getSession().setAttribute("admin.authenticatedAt", System.currentTimeMillis());
+            controller.consent(request, response, admin, csrfToken);
+            assertEquals(302, response.getStatus()); assertNull(request.getSession().getAttribute("oauth.pending"));
+            assertEquals(400, assertThrows(OAuthService.Error.class, () -> controller.consent(request, response, admin, csrfToken)).status);
+        }
     }
 
 }

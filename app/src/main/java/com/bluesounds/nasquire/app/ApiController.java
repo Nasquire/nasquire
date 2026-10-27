@@ -57,13 +57,18 @@ public class ApiController {
     @PostMapping("/embeddings/test") Map<String, Object> testEmbedding() { return embeddings.test(); }
     @PostMapping("/embeddings/reindex") void reindexEmbeddings() { embeddings.reindex(); for (var source : storage.sources()) indexing.scanNow(source.id()); }
     @GetMapping("/auth") Map<String, Object> auth(CsrfToken csrf, Authentication authentication, HttpServletRequest request) {
-        return Map.of("totpRequired", TotpController.pending(request) != null, "configured", storage.configured(), "authenticated", authentication != null && authentication.getAuthorities().stream().anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN")),
-                "csrfToken", csrf.getToken(), "csrfHeader", csrf.getHeaderName());
+        boolean authenticated = authentication != null && authentication.isAuthenticated() && authentication.getAuthorities().stream().anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN") || a.getAuthority().equals("ROLE_USER"));
+        return Map.of("totpRequired", TotpController.pending(request) != null, "configured", storage.configured(), "authenticated", authenticated,
+                "role", authenticated && storage.admin() ? "ADMIN" : "USER", "csrfToken", csrf.getToken(), "csrfHeader", csrf.getHeaderName());
     }
-    @PostMapping("/setup") void setup(@RequestBody Setup input) { storage.setup(input.username, input.password); storage.audit("admin", "setup", 200); }
+    @PostMapping("/setup") void setup(@RequestBody Setup input) { storage.setup(input.username, input.password); storage.audit("user:1", "setup", 200); }
     @GetMapping("/sources") List<Map<String, Object>> sources() {
         return storage.sources().stream().map(s -> Map.<String, Object>of("id", s.id(), "name", s.name(), "path", s.root().toString(),
                 "kind", s.kind(), "includes", s.includes(), "excludes", s.excludes(), "status", indexing.status(s.id()))).toList();
+    }
+    @GetMapping("/allowed-sources") List<Map<String, Object>> allowedSources() {
+        return storage.sources().stream().filter(s -> storage.allowed(storage.currentId()).contains(s.id()))
+                .map(s -> Map.<String,Object>of("id", s.id(), "name", s.name())).toList();
     }
     @PostMapping("/sources") Source create(@RequestBody SourceInput input) throws IOException { return save(UUID.randomUUID().toString(), input); }
     @PutMapping("/sources/{id}") Source update(@PathVariable String id, @RequestBody SourceInput input) throws IOException { storage.source(id); return save(id, input); }
@@ -95,7 +100,11 @@ public class ApiController {
         if (input.name == null || input.name.isBlank() || input.name.length() > 200 || input.expiresAt == null || input.expiresAt <= Instant.now().toEpochMilli()) throw new IllegalArgumentException("토큰 이름과 미래 만료 시간이 필요합니다");
         var scopes = input.sources == null ? List.<String>of() : input.sources;
         if (scopes.size() > 100) throw new IllegalArgumentException("소스 범위 상한 초과");
-        for (var id : scopes) storage.source(id);
+        for (var id : scopes) {
+            storage.source(id);
+            if (!storage.allowed(storage.currentId()).contains(id)) throw new org.springframework.security.access.AccessDeniedException("소스 접근 불가");
+        }
+        // 빈 토큰 범위는 기존 호환성을 위해 소유자의 현재 전체 허용 범위를 뜻한다.
         var bytes = new byte[32]; new SecureRandom().nextBytes(bytes);
         String value = "nsq_" + Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
         String id = UUID.randomUUID().toString();

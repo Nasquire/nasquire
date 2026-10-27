@@ -11,9 +11,9 @@ class SecurityBoundaryTest {
         var context = org.springframework.security.core.context.SecurityContextHolder.createEmptyContext();
         context.setAuthentication(new org.springframework.security.authentication.UsernamePasswordAuthenticationToken("admin", null,
                 java.util.List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ADMIN"))));
-        new SecurityConfiguration.PasswordContextRepository(() -> true).saveContext(context, request, response);
+        new SecurityConfiguration.PasswordContextRepository(ctx -> true).saveContext(context, request, response);
         assertNull(request.getSession().getAttribute("SPRING_SECURITY_CONTEXT"));
-        new SecurityConfiguration.PasswordContextRepository(() -> false).saveContext(context, request, response);
+        new SecurityConfiguration.PasswordContextRepository(ctx -> false).saveContext(context, request, response);
         assertNotNull(request.getSession().getAttribute("SPRING_SECURITY_CONTEXT"));
     }
     @Test void totpPendingSessionExpiresWithoutCreatingAnotherSession() {

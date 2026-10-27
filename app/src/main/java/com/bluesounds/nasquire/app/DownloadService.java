@@ -41,7 +41,8 @@ public class DownloadService {
                 || uri.getRawQuery() != null || uri.getFragment() != null) throw new IllegalArgumentException("공개 주소 오류");
     }
     public Map<String, Object> issue(Storage.Identity identity, String path, String requestBase) throws IOException {
-        String actor = identity == null ? "admin" : identity.tokenId();
+        if (identity == null) identity = storage.sessionIdentity();
+        String actor = identity.tokenId();
         try {
             String source = sourceId(path);
             documents.scope(identity, source);
@@ -60,6 +61,7 @@ public class DownloadService {
                     "notice", publicUrl.isBlank() ? "상대 주소입니다. MCP 클라이언트는 nasquire.public-url 설정을 권장합니다." : "");
         } catch (IOException | RuntimeException e) { storage.audit(actor, "download-issue", 403); throw e; }
     }
+    String actor(String ticket) { synchronized (tickets) { var value = tickets.get(ticket); return value == null || value.tokenId == null ? "download-link" : value.tokenId; } }
     String verify(String ticket) {
         try {
             if (ticket == null || !ticket.matches("[A-Za-z0-9_-]{22}")) throw new IllegalArgumentException();

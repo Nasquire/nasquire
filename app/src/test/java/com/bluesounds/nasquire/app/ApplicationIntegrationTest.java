@@ -97,7 +97,7 @@ class ApplicationIntegrationTest {
         verifyUploadsShares(token, id, source, other);
         verifyRemoteEmbedding(token, id);
         verifyQdrant(token, id, otherId);
-        storage.addToken("expired", "expired", SecurityConfiguration.hash("expired-test-value"), System.currentTimeMillis() - 1, List.of(id));
+        try (var ignored = new AccountTestContext("admin")) { storage.addToken("expired", "expired", SecurityConfiguration.hash("expired-test-value"), System.currentTimeMillis() - 1, List.of(id)); }
         assertEquals(401, call("/api/search?query=ocean", "GET", null, "expired-test-value", false).statusCode());
         assertEquals(200, call("/api/tokens/" + tokenId, "DELETE", null, null, true).statusCode());
         assertEquals(401, call("/mcp", "POST", Map.of("jsonrpc", "2.0", "id", 5, "method", "tools/list"), token, false).statusCode());
@@ -257,7 +257,7 @@ class ApplicationIntegrationTest {
                 .header("Content-Type", "multipart/form-data; boundary=" + boundary).POST(HttpRequest.BodyPublishers.ofString("x".repeat(1100000))).build();
         assertEquals(413, client.send(tooLarge, HttpResponse.BodyHandlers.ofString()).statusCode());
         String id = UUID.randomUUID().toString(), secret = "review-token";
-        storage.addToken(id, "review", SecurityConfiguration.hash(secret), System.currentTimeMillis() + 60000, List.of(sourceId));
+        try (var ignored = new AccountTestContext("admin")) { storage.addToken(id, "review", SecurityConfiguration.hash(secret), System.currentTimeMillis() + 60000, List.of(sourceId)); }
         var identity = storage.authenticate(SecurityConfiguration.hash(secret));
         String path = sourceId + ":notes.md";
         String url = downloads.issue(identity, path, "https://attacker.example.com").get("url").toString();
@@ -272,7 +272,7 @@ class ApplicationIntegrationTest {
         db.update("UPDATE tokens SET expires_at=0 WHERE id=?", id);
         assertThrows(org.springframework.security.access.AccessDeniedException.class, () -> downloads.verify(ticket));
         db.update("UPDATE tokens SET expires_at=? WHERE id=?", System.currentTimeMillis() + 60000, id);
-        storage.revoke(id);
+        try (var ignored = new AccountTestContext("admin")) { storage.revoke(id); }
         assertThrows(org.springframework.security.access.AccessDeniedException.class, () -> downloads.verify(ticket));
         assertThrows(IllegalArgumentException.class, () -> new DownloadService(storage, documents, "", 3601, java.time.Clock.systemUTC()));
         var restarted = new DownloadService(storage, documents, "", 300, java.time.Clock.systemUTC());

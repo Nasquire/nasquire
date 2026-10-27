@@ -60,12 +60,12 @@ class OAuthController {
     ResponseEntity<Void> revoke(HttpServletRequest request) {
         var p = parameters(request); oauth.revoke(p.get("client_id"), p.get("token")); return ResponseEntity.ok().cacheControl(CacheControl.noStore()).build();
     }
-    private static boolean admin(Authentication auth) { return auth != null && auth.getAuthorities().stream().anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN")); }
+    private static boolean admin(Authentication auth) { return auth != null && auth.getAuthorities().stream().anyMatch(a -> (a.getAuthority().equals("ROLE_ADMIN") || a.getAuthority().equals("ROLE_USER"))); }
     @GetMapping(value = "/oauth/authorize", produces = MediaType.TEXT_HTML_VALUE)
     String authorize(HttpServletRequest request, HttpServletResponse response, Authentication auth, CsrfToken csrf) {
         var a = oauth.validate(parameters(request));
         secure(response, a.redirect());
-        if (!admin(auth) || !recent(request)) return page("Administrator login / 관리자 로그인", """
+        if (!admin(auth) || !recent(request)) return page("Account login / 계정 로그인", """
                 <p>Sign in to approve this MCP client / MCP 클라이언트 승인을 위해 로그인하세요.</p>
                 <form id="login"><label>Username / 사용자명 <input name="username" autocomplete="username" required></label>
                 <label>Password / 비밀번호 <input name="password" type="password" autocomplete="current-password" required></label><button>Sign in / 로그인</button></form>
@@ -86,7 +86,7 @@ class OAuthController {
         StringBuilder body = new StringBuilder("<p>Client / 클라이언트: <strong>" + esc(oauth.client(a.client()).get("NAME").toString()) + "</strong></p><p>Self-registered, unverified client / 자가 등록된 확인되지 않은 클라이언트</p><p>Redirect URI / 이동 주소: " + esc(a.redirect()) + "</p><p>Scope / 요청 범위: mcp:read (Read only / 읽기 전용)</p><form method=\"post\" action=\"/oauth/authorize\">");
         body.append(hidden(csrf.getParameterName(), csrf.getToken())).append(hidden("nonce", nonce));
         if (!error.isEmpty()) body.append("<p role=\"alert\">").append(esc(error)).append("</p>");
-        var sources = storage.sources();
+        var sources = storage.sources().stream().filter(s -> storage.allowed(storage.currentId()).contains(s.id())).toList();
         for (var s : sources) body.append("<label><input type=\"checkbox\" name=\"sources\" value=\"").append(esc(s.id())).append("\">").append(esc(s.name())).append("</label>");
         if (sources.isEmpty()) body.append("<p>No sources available. Add a source first / 소스를 먼저 등록하세요.</p>");
         else body.append("<button name=\"decision\" value=\"approve\">Allow / 승인</button>");

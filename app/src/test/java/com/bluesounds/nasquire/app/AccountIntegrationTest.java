@@ -61,13 +61,13 @@ class AccountIntegrationTest {
         assertEquals(403, call("/api/account/password", "PUT", change(password, "changed-password-123"), null, false).statusCode());
         assertEquals(401, call("/api/account/password", "PUT", change("wrong", "changed-password-123"), null, true).statusCode());
         assertEquals(429, call("/api/account/password", "PUT", change(password, "changed-password-123"), null, true).statusCode());
-        attempts.reset("account-change:", "127.0.0.1", "administrator");
+        attempts.reset("account-change:", "127.0.0.1", username);
         long base = System.currentTimeMillis() - 20000;
         for (long at : new long[]{base, base+1000, base+3000, base+7000, base+15000}) {
-            try (var ticket = attempts.acquire("account-change:", "127.0.0.1", "administrator", at)) { assertNotNull(ticket); attempts.failed(ticket, at); }
+            try (var ticket = attempts.acquire("account-change:", "127.0.0.1", username, at)) { assertNotNull(ticket); attempts.failed(ticket, at); }
         }
         assertEquals(429, call("/api/account/username", "PUT", Map.of("currentPassword", password, "username", "renamed"), null, true).statusCode());
-        attempts.reset("account-change:", "127.0.0.1", "administrator");
+        attempts.reset("account-change:", "127.0.0.1", username);
         for (String invalid : List.of("short1!", "abcdefgh1", "abcdefgh!", "12345678!", "a1!" + "가".repeat(24))) {
             assertEquals(400, call("/api/account/password", "PUT", change(password, invalid), null, true).statusCode());
         }
@@ -98,11 +98,11 @@ class AccountIntegrationTest {
         String secret = enrollment.get("secret").asText(); long step = System.currentTimeMillis()/30000;
         var recovery = json(call("/api/totp/enable", "POST", Map.of("code", Totp.code(secret, step)), null, true), 200).get("recoveryCodes").get(0).asText();
         assertEquals(401, call("/api/account/username", "PUT", Map.of("currentPassword", password, "username", "finaladmin"), null, true).statusCode());
-        attempts.reset("account-change:", "127.0.0.1", "administrator");
+        attempts.reset("account-change:", "127.0.0.1", username);
         assertEquals(401, call("/api/account/password", "PUT", change(password, "final-password-123"), null, true).statusCode());
-        attempts.reset("account-change:", "127.0.0.1", "administrator");
+        attempts.reset("account-change:", "127.0.0.1", username);
         assertEquals(401, call("/api/account/username", "PUT", Map.of("currentPassword", password, "username", "finaladmin", "code", recovery), null, true).statusCode());
-        attempts.reset("account-change:", "127.0.0.1", "administrator");
+        attempts.reset("account-change:", "127.0.0.1", username);
         state = mapper.readTree(other.send(HttpRequest.newBuilder(URI.create(origin+"/api/auth")).GET().build(), HttpResponse.BodyHandlers.ofString()).body());
         assertEquals(202, other.send(HttpRequest.newBuilder(URI.create(origin+"/api/login")).header("X-CSRF-TOKEN", state.get("csrfToken").asText()).header("Content-Type", "application/x-www-form-urlencoded").POST(HttpRequest.BodyPublishers.ofString("username=renamed&password="+password)).build(), HttpResponse.BodyHandlers.ofString()).statusCode());
         assertEquals(200, call("/api/account/username", "PUT", Map.of("currentPassword", password, "username", "finaladmin", "code", Totp.code(secret, step+1)), null, true).statusCode()); auth();
@@ -123,12 +123,14 @@ class AccountIntegrationTest {
         assertEquals(403, call(url, "GET", null, null, false).statusCode());
         assertEquals(401, call("/api/search?query=test", "GET", null, value, false).statusCode());
         assertNull(storage.identity(id)); assertTrue(storage.audit().stream().anyMatch(a -> a.get("ACTION").equals("token-delete " + id)));
-        for (String name : List.of("expired", "revoked", "active")) {
-            storage.addToken(name, name, SecurityConfiguration.hash(name), System.currentTimeMillis()+(name.equals("expired") ? -1000 : 600000), List.of());
+        try (var ignored = new AccountTestContext("finaladmin")) {
+            for (String name : List.of("expired", "revoked", "active")) {
+                storage.addToken(name, name, SecurityConfiguration.hash(name), System.currentTimeMillis()+(name.equals("expired") ? -1000 : 600000), List.of());
+            }
+            storage.revoke("revoked");
+            assertEquals(2, json(call("/api/tokens/inactive", "DELETE", null, null, true), 200).get("deleted").asInt());
+            assertEquals(List.of("active"), storage.tokens().stream().map(Storage.Token::id).toList());
         }
-        storage.revoke("revoked");
-        assertEquals(2, json(call("/api/tokens/inactive", "DELETE", null, null, true), 200).get("deleted").asInt());
-        assertEquals(List.of("active"), storage.tokens().stream().map(Storage.Token::id).toList());
         assertTrue(storage.audit().stream().noneMatch(a -> a.toString().contains(value) || a.toString().contains(SecurityConfiguration.hash(value)) || a.toString().contains(password)));
     }
 }

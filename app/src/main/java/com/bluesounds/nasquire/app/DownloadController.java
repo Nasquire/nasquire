@@ -33,6 +33,6 @@ public class DownloadController {
                 input.transferTo(response.getOutputStream());
             }
         } catch (IOException | RuntimeException e) { status = 403; throw e; }
-        finally { storage.audit("download-link", "download-receive", status); }
+        finally { storage.audit(downloads.actor(ticket), "download-receive", status); }
     }
 }

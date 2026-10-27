@@ -24,6 +24,7 @@ Nasquire's own license is in [LICENSE](LICENSE) and [LICENSE-EXCEPTIONS.md](LICE
 | Optional multilingual-e5-small model/tokenizer | pinned revision, external files only | MIT upstream model, Apache-2.0 tokenizer implementation; [provenance, SHA-256 and native architectures](docs/embeddings.md) |
 | Optional local reranker cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 (full only) | pinned commit `1427fd652930e4ba29e8149678df786c240d8825`, `onnx/model_qint8_arm64.onnx` + `tokenizer.json`, external files only | Apache-2.0 per the model card; trained on mMARCO (MS MARCO translations) whose dataset terms are separate — operators should review them before commercial use; [provenance and SHA-256](docs/verification/full.md) |
 | Optional Qdrant server (not bundled) | operator-provided, REST API only; no client library dependency | Apache-2.0, [Qdrant](https://github.com/qdrant/qdrant/blob/master/LICENSE) |
+| Nimbus JOSE + JWT | 10.9.1 | Apache-2.0, [Nimbus](https://connect2id.com/products/nimbus-jose-jwt) |
 | H2 | 2.4.240 | MPL-2.0 option of MPL-2.0 / EPL-1.0, [H2 license](https://www.h2database.com/html/license.html) |
 | HikariCP | 7.0.2 | Apache-2.0, [HikariCP](https://github.com/brettwooldridge/HikariCP) |
 | Apache Tomcat / Log4j | 11.0.27 / 2.25.5 | Apache-2.0, [Tomcat](https://tomcat.apache.org/), [Log4j](https://logging.apache.org/log4j/2.x/) |

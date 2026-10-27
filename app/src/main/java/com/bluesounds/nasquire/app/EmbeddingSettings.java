@@ -171,11 +171,17 @@ public final class EmbeddingSettings {
         var stored = new Properties(); try (var in = Files.newInputStream(full)) { stored.load(in); }
         return stored.containsKey("encryptedKey");
     }
+    private boolean oidcCiphertext() throws Exception {
+        Path path = folder.resolve("oidc.properties");
+        if (!Files.exists(path)) return false;
+        var stored = new Properties(); try (var in = Files.newInputStream(path)) { stored.load(in); }
+        return stored.containsKey("encryptedSecret");
+    }
     private byte[] key(boolean create, String purpose) throws Exception {
         Path path = folder.resolve("embedding.key");
         if (!Files.exists(path)) {
             // 임베딩 저장은 기존 임베딩 암호문을 통째로 바꾸므로 그 암호문만 있으면 새 키를 허용한다.
-            if (!create || storedSecrets.getAsBoolean() || fullCiphertext() || (!purpose.equals(EMBEDDING) && !purpose.equals(QDRANT) && embeddingCiphertext()))
+            if (!create || storedSecrets.getAsBoolean() || fullCiphertext() || oidcCiphertext() || (!purpose.equals(EMBEDDING) && !purpose.equals(QDRANT) && embeddingCiphertext()))
                 throw new KeyUnavailable("암호화 키 파일(embedding.key)이 없지만 기존 암호문이 있습니다. " + RECOVERY_HINT);
             byte[] bytes = new byte[32]; new SecureRandom().nextBytes(bytes);
             try { Files.createFile(path, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------"))); }

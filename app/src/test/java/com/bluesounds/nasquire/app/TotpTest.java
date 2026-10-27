@@ -107,7 +107,7 @@ class TotpTest {
             var db = new JdbcTemplate(new SingleConnectionDataSource(connection, true)); var storage = new Storage(db);
             storage.setup("admin", "old-password-123");
             db.update("UPDATE administrator SET totp_secret='encrypted-placeholder',totp_step=123");
-            db.update("INSERT INTO recovery_codes VALUES (?)", SecurityConfiguration.hash("recovery"));
+            db.update("INSERT INTO recovery_codes(code_hash) VALUES (?)", SecurityConfiguration.hash("recovery"));
         }
         var previous = System.in;
         try {

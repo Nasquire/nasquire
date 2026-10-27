@@ -19,6 +19,8 @@ public class ApiErrors {
     ResponseEntity<Map<String, String>> missing(Exception e) { return ResponseEntity.status(404).body(Map.of("error", "항목 없음 / Not found")); }
     @ExceptionHandler(EmbeddingSettings.KeyUnavailable.class)
     ResponseEntity<Map<String, String>> keyUnavailable(Exception e) { return ResponseEntity.status(503).body(Map.of("error", "암호화 키 파일 누락·불일치. 키를 복원하거나 오프라인 복구 후 다시 저장하세요 / Encryption key missing or changed. Restore it or recover offline, then save again")); }
+    @ExceptionHandler(org.springframework.dao.DuplicateKeyException.class)
+    ResponseEntity<Map<String, String>> duplicate() { return ResponseEntity.status(409).body(Map.of("error", "이미 사용 중 / Already in use")); }
     @ExceptionHandler(IllegalStateException.class)
     ResponseEntity<Map<String, String>> conflict(Exception e) { return ResponseEntity.status(409).body(Map.of("error", "현재 상태에서 처리 불가 / Conflict")); }
 }

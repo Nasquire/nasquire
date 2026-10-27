@@ -422,6 +422,21 @@ async def main():
             await expect(page.get_by_role('button', name='Delete all revoked and expired tokens')).to_be_disabled()
             passed('API 토큰 발급·숨김·철회·개별/일괄 삭제·OAuth 관리 화면')
             await nav(page, 'Settings')
+            await expect(page.get_by_role('heading', name='External sign in', exact=True)).to_be_visible()
+            await expect(page.locator('#oidc-settings')).to_contain_text('HTTPS')
+            await expect(page.get_by_role('button', name='Delete client secret', exact=True)).to_be_disabled()
+            await page.get_by_role('button', name='Save external sign in', exact=True).click()
+            await expect(page.locator('#oidc-settings [role=status]')).to_have_text('Done')
+            # 브라우저 버튼은 저장 설정으로 활성화하되 discovery/실제 IdP 접속은 하지 않는다.
+            await api(page, '/api/oidc', 'PUT', {'issuer':'https://idp.example.com','clientId':'example-client','clientSecret':'example-secret','enabled':'true'})
+            oidc_context = await browser.new_context(locale='en-US')
+            oidc_page = await oidc_context.new_page()
+            await oidc_page.goto(BASE)
+            await expect(oidc_page.get_by_role('link', name='OpenID Connect', exact=True)).to_have_attribute('href', '/oidc/login')
+            await audit(oidc_page, 'oidc-login-en-desktop')
+            await oidc_context.close()
+            await api(page, '/api/oidc/secret', 'DELETE')
+            passed('외부 로그인 관리자 설정·비밀 삭제·로그인 버튼 (IdP 접속 없음)')
             await expect(page.get_by_label('Scan interval (minutes)', exact=True)).to_be_visible()
             await page.get_by_label('Scan interval (minutes)', exact=True).fill('1')
             await page.get_by_label('Maximum file size (MiB)', exact=True).fill('32')
@@ -518,7 +533,7 @@ async def main():
             await page.locator('form button.primary').click()
             await expect(page.get_by_role('navigation')).to_be_visible()
             passed('계정 비밀번호·사용자명 변경·갱신 세션 CSRF·변경 계정 로그인')
-            names = {'sources':('Sources','소스 관리'), 'files':('Files and shares','파일·공유'), 'settings':('Settings','환경설정'), 'security':('Security','보안'), 'tokens':('API tokens','API 토큰'), 'search':('Search playground','검색 시험'), 'about':('About','정보')}
+            names = {'users':('Users','사용자'), 'sources':('Sources','소스 관리'), 'files':('Files and shares','파일·공유'), 'settings':('Settings','환경설정'), 'security':('Security','보안'), 'tokens':('API tokens','API 토큰'), 'search':('Search playground','검색 시험'), 'about':('About','정보')}
             # 언어는 제품의 기존 navigator.language 정책에 맞춰 새 브라우저 컨텍스트로 전환한다.
             state = await context.storage_state()
             for locale, lang_index in [('en-US',0), ('ko-KR',1)]:
@@ -537,6 +552,7 @@ async def main():
                             if key == 'files':
                                 await screen.locator('section.card').first.locator('select').first.select_option(upload_id)
                             if key == 'settings':
+                                await expect(screen.get_by_role('heading', name=('External sign in','외부 로그인')[lang_index], exact=True)).to_be_visible()
                                 await screen.locator('[name=provider]').select_option('remote')
                             if key == 'settings' and os.environ.get('VERIFY_FULL') == 'true':
                                 await screen.locator('[name=reranker]').select_option('remote')
@@ -553,6 +569,42 @@ async def main():
                     summary.setdefault('keyboard', []).append({'locale':locale,'width':width,'steps':len(focused)})
                 await localized.close()
             passed('한/영 × 1280/390 × 라이트/다크/자동 · 전체 화면·axe·Tab')
+            # ADMIN 관리 화면과 USER의 제한된 메뉴·계정·토큰을 두 언어로 검증한다.
+            await nav(page, 'Users')
+            await audit(page, 'users-admin-en')
+            reader_password = 'reader-password-123'
+            created = await api(page, '/api/users', 'POST', {'username':'reader','password':reader_password,'role':'USER'})
+            for locale, index in [('en-US',0), ('ko-KR',1)]:
+                user_context = await browser.new_context(locale=locale)
+                user_page = await user_context.new_page()
+                user_page.on('pageerror', lambda error: summary['consoleErrors'].append(type(error).__name__))
+                user_page.on('console', lambda msg: summary['consoleErrors'].append('console.error') if msg.type == 'error' else None)
+                user_page.on('requestfailed', lambda req: summary['failedRequests'].append({'path':req.url.split('?')[0].replace(BASE, ''),'failure':req.failure}))
+                user_page.on('response', lambda res: summary['httpErrors'].append({'path':res.url.split('?')[0].replace(BASE, ''),'status':res.status}) if res.status >= 400 else None)
+                await user_page.goto(BASE)
+                await user_page.locator('main.auth input[name=username]').fill('reader')
+                await user_page.locator('main.auth input[name=password]').fill(reader_password)
+                await user_page.locator('form button.primary').click()
+                await expect(user_page.get_by_role('navigation')).to_be_visible()
+                await expect(user_page.get_by_role('navigation').get_by_role('button')).to_have_count(2)
+                for width in (1280,390):
+                    await user_page.set_viewport_size({'width':width,'height':900})
+                    await nav(user_page, ('Search playground','검색 시험')[index])
+                    await audit(user_page, f'user-search-{locale}-{width}')
+                    await nav(user_page, ('API tokens','API 토큰')[index])
+                    await expect(user_page.locator('[name=sources] option')).to_have_count(0)
+                    await audit(user_page, f'user-tokens-{locale}-{width}')
+                    await nav(user_page, ('Settings','환경설정')[index])
+                    await expect(user_page.locator('#account-settings')).to_be_visible()
+                    await expect(user_page.locator('#embedding-form')).to_have_count(0)
+                    await expect(user_page.locator('#oidc-settings')).to_have_count(0)
+                    await expect(user_page.locator('[name=scanMinutes]')).to_have_count(0)
+                    await expect(user_page.get_by_role('heading', name=('About','정보')[index], exact=True)).to_be_visible()
+                    await audit(user_page, f'user-settings-{locale}-{width}')
+                    await user_page.keyboard.press('Escape')
+                await user_context.close()
+            await api(page, '/api/users/' + str(created['id']), 'DELETE')
+            passed('ADMIN 사용자 관리·USER 한/영 데스크톱/모바일 메뉴·검색·내 토큰·환경설정')
             assert not summary['consoleErrors'] and not summary['failedRequests'] and not summary['httpErrors'], '브라우저 오류 수집 결과 확인'
             summary['exitCode'] = 0
         except Exception as error:

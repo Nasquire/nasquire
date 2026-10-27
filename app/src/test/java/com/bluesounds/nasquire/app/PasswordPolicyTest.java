@@ -42,7 +42,7 @@ class PasswordPolicyTest {
             }
             storage.setup("admin", "original1!");
             db.update("UPDATE administrator SET totp_secret='preserved',totp_step=123");
-            db.update("INSERT INTO recovery_codes VALUES ('preserved')");
+            db.update("INSERT INTO recovery_codes(code_hash) VALUES ('preserved')");
         }
         var previous = System.in;
         try {

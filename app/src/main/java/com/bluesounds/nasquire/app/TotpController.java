@@ -18,13 +18,15 @@ class TotpController {
     record Pending(String username, long created, java.util.concurrent.atomic.AtomicInteger failures) implements java.io.Serializable { }
     record Enrollment(String encrypted, long created) { }
     record Input(String code, String password) { }
+    private final OidcAccounts oidcAccounts;
     private final TotpService totp;
     private final EmbeddingSettings secrets;
     private final Storage storage;
     private final LoginAttempts attempts;
     private final ClientAddresses addresses;
     private final BCryptPasswordEncoder passwords;
-    TotpController(TotpService totp, EmbeddingSettings secrets, Storage storage, LoginAttempts attempts, ClientAddresses addresses, BCryptPasswordEncoder passwords) {
+    TotpController(TotpService totp, EmbeddingSettings secrets, Storage storage, LoginAttempts attempts, ClientAddresses addresses, BCryptPasswordEncoder passwords, OidcAccounts oidcAccounts) {
+        this.oidcAccounts = oidcAccounts;
         this.totp = totp; this.secrets = secrets; this.storage = storage; this.attempts = attempts; this.addresses = addresses; this.passwords = passwords;
     }
     static Pending pending(HttpServletRequest request) {
@@ -32,7 +34,7 @@ class TotpController {
         if (session == null) return null;
         var value = (Pending)session.getAttribute("totp.pending");
         if (value != null && System.currentTimeMillis() - value.created < 300000 && value.failures.get() < LoginAttempts.LIMIT) return value;
-        session.removeAttribute("totp.pending"); return null;
+        session.removeAttribute("totp.pending"); session.removeAttribute("oidc.deferred"); return null;
     }
     /** 확인과 시도 예약을 원자적으로 수행한다. 거부되면 429를 쓰고 null. */
     private LoginAttempts.Ticket acquire(String prefix, HttpServletRequest request, HttpServletResponse response, String username, String actor) {
@@ -89,12 +91,25 @@ class TotpController {
         try (var ticket = acquire("", request, response, pending.username, "anonymous")) {
             if (ticket == null) return;
             boolean recovery = TotpService.recoveryCode(input.code) != null;
-            if (!totp.verify(input.code, true)) {
+            var session = request.getSession(false);
+            var account = session.getAttribute("account.id") instanceof Integer id ? storage.account(id) : null;
+            if (account == null || !account.active() || !account.username().equals(pending.username)
+                    || !Long.valueOf(account.generation()).equals(session.getAttribute("admin.generation"))) { response.setStatus(401); return; }
+            if (!totp.verify(account.id(), input.code, true)) {
                 failed(ticket, response, "anonymous", "login-totp");
                 if (pending.failures.incrementAndGet() >= LoginAttempts.LIMIT) {
-                    request.getSession().removeAttribute("totp.pending"); storage.audit("anonymous", "login-totp-pending-cleared", 401);
+                    request.getSession().removeAttribute("totp.pending"); request.getSession().removeAttribute("oidc.deferred"); storage.audit("anonymous", "login-totp-pending-cleared", 401);
                 }
                 return;
+            }
+            if (session.getAttribute("oidc.deferred") instanceof OidcAccounts.Deferred deferred) {
+                try {
+                    account = oidcAccounts.complete(deferred);
+                    session.setAttribute("admin.generation", account.generation());
+                } catch (IllegalArgumentException e) {
+                    session.invalidate(); failed(ticket, response, "anonymous", "oidc-totp-failed"); return;
+                }
+                session.removeAttribute("oidc.deferred");
             }
             request.changeSessionId(); request.getSession().removeAttribute("totp.pending");
             request.getSession().setAttribute("admin.authenticatedAt", System.currentTimeMillis());
@@ -109,7 +124,7 @@ class TotpController {
     /** 코드 단계를 취소하고 대기 세션을 정리한다. 실패 기록은 유지한다. */
     @DeleteMapping("/login/totp") void cancel(HttpServletRequest request, HttpServletResponse response) {
         var session = request.getSession(false);
-        if (session != null && session.getAttribute("totp.pending") != null) { session.removeAttribute("totp.pending"); storage.audit("anonymous", "login-totp-cancel", 204); }
+        if (session != null && session.getAttribute("totp.pending") != null) { session.removeAttribute("totp.pending"); session.removeAttribute("oidc.deferred"); storage.audit("anonymous", "login-totp-cancel", 204); }
         response.setStatus(204);
     }
     /** 키 파일 누락·불일치는 500 대신 통제된 503과 오프라인 복구 안내로 응답한다. */

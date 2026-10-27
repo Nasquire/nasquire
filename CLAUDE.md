@@ -59,7 +59,7 @@
 - 공유는 생성 시 fileKey를 저장하고 접근 때 대조한다(기존 식별자 없는 공유는 재생성 필요). 업로드 이동/휴지통/덮어쓰기는 대상과 하위 공유를 감사와 함께 철회한다. 폴더 깊이 최대 64, 휴지통 실패 행은 표시하고 1시간 뒤 재시도한다. 시작 시 24시간 지난 업로드 `.nasquire-*.part`와 multipart 파일만 정리한다. 일반 소스는 정리하지 않는다.
 - 프록시 전달 헤더 전략은 기본 none이다. 선택 설정과 신뢰 경계는 `docs/verification/upload-share.md`의 보안 검토 반영 절을 따른다.
 
-- 관리자 TOTP: 기본 off, `Totp` JDK HMAC-SHA1/6자리/30초/±1, 마지막 승인 단계 DB CAS·복구 코드 SHA-256 원자 소모. `TotpService`는 기존 `EmbeddingSettings`의 로컬 AES-GCM 키를 재사용한다. 등록/해제는 관리자+CSRF, 비밀번호 성공 후 TOTP 대기는 권한 없는 세션 속성(5분), 최종 승인 때 세션 ID·CSRF 교체. 등록 비밀·복구 코드는 최초 응답만 제공한다.
+- 관리자 TOTP: 기본 off, `Totp` JDK HMAC-SHA1/6자리/30초/±1, 마지막 승인 단계 DB CAS·복구 코드 SHA-256 원자 소모. `TotpService`는 기존 `EmbeddingSettings`의 로컬 AES-GCM 키를 재사용한다. 등록/해제는 해당 사용자 세션+CSRF, 비밀번호 성공 후 TOTP 대기는 권한 없는 세션 속성(5분), 최종 승인 때 세션 ID·CSRF 교체. 등록 비밀·복구 코드는 최초 응답만 제공한다.
 - 시도 제한은 `LoginAttempts.acquire` 표로 확인·진행 중 예약을 원자 처리하고 실패 횟수 리셋·허용 시각 단축을 금지한다. 등록/해제는 `totp-manage:` 키로 분리, 등록도 비밀번호 재확인. 암호문은 `v2:`+용도별 AAD(`totp`/`embedding`), 키가 없거나 바뀌었는데 암호문이 있으면 새 키를 만들지 않고 `KeyUnavailable`(503·복구 안내).
 - 오프라인 복구: `java -jar app/build/libs/app-0.1.0.jar --recover-admin --data=/data` (앱 종료 필요). 웹 컨텍스트 없이 표준 입력 비밀번호를 검증하고 기존 DB 비밀번호 재설정·TOTP/복구 코드 삭제·감사를 트랜잭션 처리한다. 검증 기록은 `docs/verification/totp.md`.
 
@@ -77,16 +77,16 @@
 - 공유 전송은 열린 fd의 fstat dev/ino를 저장된 fileKey와 대조하고 그 fd만 사용한다. 폴더 공유는 확인한 루트 핸들을 유지하며 core SecureFiles의 openat·NOFOLLOW로 하위를 연다. OCR 회수의 `/proc` 열거·stat 읽기/파싱 실패는 종료 미확인으로 처리해 슬롯·작업 폴더를 보유한다. NAS/NFS 일반 파일 I/O 자체가 반환하지 않으면 복사·추출 시간 상한은 보장하지 못한다(일반 텍스트와 동일).
 
 - MCP OAuth: `nasquire.oauth.enabled` 기본 off, HTTPS 공개 origin 필요(루프백 HTTP 개발 예외). JDBC 내장 인가 서버·DCR 공개 클라이언트·S256 PKCE·resource/audience 고정, 외부 토큰 전달 금지.
-- OAuth 코드는 60초·1회용, 액세스는 1시간·MCP 전용, 리프레시는 회전·30일 상한·직전 토큰 10초 동일 응답 유예(다음 회전 전)·그 밖의 재사용 시 계열 철회. 원문 저장/로그 금지, 관리자 승인·관리 철회는 기존 세션(TOTP 포함)+CSRF.
+- OAuth 코드는 60초·1회용, 액세스는 1시간·MCP 전용, 리프레시는 회전·30일 상한·직전 토큰 10초 동일 응답 유예(다음 회전 전)·그 밖의 재사용 시 계열 철회. 원문 저장/로그 금지, 승인은 해당 사용자 세션(TOTP 포함)+CSRF, 전체 관리 철회는 ADMIN+CSRF.
 - OAuth 소스는 명시 승인 집합만 허용하며 빈 집합은 권한 없음이다. `oauth:` 식별자의 현재 권한 재검사를 다운로드에도 적용한다. 검증은 `VERIFY_PORT=8104 python3 scripts/verify-oauth.py`, 상세는 `docs/verification/oauth.md`.
 
-- OAuth 승인은 최근 10분 내 관리자 인증이 필요하며 pending/nonce는 단일 세션 객체다. 토큰/철회 쿼리는 거부하고, IPv6 /64 제한·정상 토큰 증명 예외·미승인 IP당 20개·감사 종류별 분당 1회·마지막 승인 만료 후 30일 정리를 적용한다. 프록시 설정/신뢰 경계는 `docs/install/oauth.md`를 따른다.
+- OAuth 승인은 최근 10분 내 사용자 인증이 필요하며 pending/nonce는 단일 세션 객체다. 토큰/철회 쿼리는 거부하고, IPv6 /64 제한·정상 토큰 증명 예외·미승인 IP당 20개·감사 종류별 분당 1회·마지막 승인 만료 후 30일 정리를 적용한다. 프록시 설정/신뢰 경계는 `docs/install/oauth.md`를 따른다.
 
 - 추출 실패 WARN은 소스 상대 경로·예외 종류만 기록하며 원문 예외 메시지/스택은 출력하지 않는다. OCR은 `ExtractionFailure`의 안전한 단계·종료 코드·시간 초과·예외 종류를 전달한다. 관리자 전용 소스 상태 `recentFailures`는 현재 검사 최근 최대 5건(메모리 전용)이다.
 
 - 검색 결과는 소스 이름·상대 경로로 표시하고 내부 path는 문서 API 호출에 유지한다. `SearchExcerpt.tsx`는 입력 질의 문자·숫자 토큰의 대소문자 무시 강조(React 텍스트 노드), 공백 축약·360자 주변 발췌·전체 청크 펼치기를 담당한다. REST·MCP 응답 형식은 바꾸지 않는다.
 
-- 계정 변경은 `/api/account` GET, `/api/account/password|username` PUT(관리자 세션+헤더 CSRF). 현재 비밀번호·활성 TOTP의 미사용 인증 앱 코드·`account-change:` 제한을 적용한다. 성공 시 DB `administrator.generation`을 CAS 증가시키고 현재 세션 ID·CSRF를 교체한다. 다른 관리자/코드 대기 세션은 다음 요청에 무효화한다. 사용자명은 최초 설정과 같은 ASCII 3~100자 규칙이다. 감사에는 변경 값을 기록하지 않는다.
+- 계정 변경은 `/api/account` GET, `/api/account/password|username` PUT(해당 사용자 세션+헤더 CSRF). 현재 비밀번호·활성 TOTP의 미사용 인증 앱 코드·`account-change:` 제한을 적용한다. 성공 시 DB `administrator.generation`을 CAS 증가시키고 현재 세션 ID·CSRF를 교체한다. 같은 사용자의 다른 로그인/코드 대기 세션은 다음 요청에 무효화한다. 사용자명은 최초 설정과 같은 ASCII 3~100자 규칙이다. 감사에는 변경 값을 기록하지 않는다.
 - 토큰 행 삭제는 `DELETE /api/tokens/{id}/record`, 일괄은 `/api/tokens/inactive`. 활성 토큰 삭제 409, 감사 보존·삭제 행위 기록, 다운로드 티켓은 삭제 후에도 현재 토큰 조회 실패로 거부한다.
 
 - 색인 기본 주기 300000ms·stable 2000ms. `IndexingSettings`의 데이터 폴더 `indexing.properties`가 환경 초기값보다 우선한다. `/api/indexing` GET/PUT은 관리자+헤더 CSRF·감사, 화면 범위 주기 1~60분·파일 1~512 MiB. 저장 즉시 같은 단일 작업자 스케줄 재설정. 소스 `/scan`은 변경분 검사 요청을 다음 한 번으로 합친다. 크기 초과는 오류와 분리하고 최근 상대 경로 5개를 관리자 상태에 메모리 보관한다. `/api/supported-extensions`는 빌드 기준(lite 문서, full 이미지 추가)이며 OCR off에서도 full 형식 안내는 유지한다. Office/HWP 8 MiB 별도 상한 유지.
@@ -94,3 +94,13 @@
 - 관리 화면 스크롤바는 `frontend/src/scrollbars.ts`가 호버·포커스 영역에 6px 오버레이를 표시한다. CSS에서 기본 스크롤바 공간을 제거하되 기본 휠·터치·키보드 스크롤을 유지하고, 강제 색 모드에서는 기본 스크롤바를 사용한다. 폭 전환·scrollbar-gutter로 레이아웃을 흔들지 않는다.
 
 - 안정화 대기 파일은 같은 단일 작업자가 소스별 후속 검사를 예약한다(최단 안정화 시각+25ms, 중복 병합, 연속 최대 10회 후 정기 검사로 복귀). 시작·주기 변경·소스 저장·재색인·OCR 재색인은 즉시 검사한다. 동일 소스 재색인은 기존 결과를 파일별 replace까지 유지하며 삭제 파일은 정리한다. 시작/소스 범위 변경/전체 벡터 재구축은 범위·세대 안전을 위해 기존 정리 경로를 유지한다. 파일 화면에 업로드 소스가 없으면 한/영 마운트·등록 안내와 소스 관리 이동 버튼을 표시한다.
+
+- 다중 계정: 기존 `administrator` ID 1을 ADMIN으로 보존하고 역할·활성 상태·세대·TOTP/복구 코드를 사용자별로 관리한다. 삭제는 자격 증명·권한을 폐기한 식별자 묘비로 남겨 ID 재사용을 금지한다. 사용자 변경은 `account_lock` DB 행 잠금과 트랜잭션으로 마지막 활성 ADMIN을 보호한다.
+- `/api/users/**`와 소스·업로드·공유·색인/AI/OAuth 관리는 ADMIN+헤더 CSRF, 계정·TOTP·자기 토큰·OAuth 승인은 USER도 허용한다. USER 화면은 검색·토큰·환경설정만 노출한다. 감사에는 actor_id/actor_name을 남기며 비밀번호·토큰 원문은 기록하지 않는다.
+- 모든 읽기는 현재 사용자 허용 소스를 적용하고 Bearer는 토큰/승인 범위와 소유자의 현재 허용 소스를 교차한다. 빈 API 토큰 범위는 소유자 허용 전체, 빈 OAuth/USER 허용 집합은 권한 없음이다. 다운로드 수신도 소유자 상태·현재 권한을 다시 검사한다. 세대가 변경된 로그인/TOTP 대기 세션은 다음 요청에서 무효화한다.
+- 복구 CLI는 `--username=`으로 ADMIN을 선택하며 하나일 때만 생략한다. 비활성 ADMIN 활성화·비밀번호/TOTP/복구 코드·세대·감사를 같은 트랜잭션으로 처리한다. 검증은 `docs/verification/accounts.md`.
+
+- OIDC 외부 로그인은 기본 off이며 MCP OAuth와 분리한다. ADMIN+헤더 CSRF+감사 설정, `oidc.properties` 0600·기존 `embedding.key` AES-GCM v2/AAD `oidc`, issuer 변경 시 비밀 폐기·암호문이 있으면 공유 키 재생성 금지. HTTPS 공개 origin/issuer(기존 루프백 개발 예외)·고정 callback·discovery issuer 검사·PKCE/state/nonce 5분 1회용·원격 5초/256 KiB/리디렉트 금지·RS256/ES256 및 클레임 검사.
+- 외부 식별자는 issuer/sub 고정, 최초 연결은 ADMIN 지정 email(verified 필수)/sub만 허용한다. 자동 가입 기본 off·USER/소스 0개, 그룹 역할 동기화는 account_lock 트랜잭션의 마지막 ADMIN 보호를 유지한다. 로컬 TOTP 계정은 OIDC 뒤에도 추가 코드를 요구하며 로컬 로그인/복구를 보존한다. [설치](docs/install/oidc.md)·[검증](docs/verification/oidc.md).
+
+- 인증 교차 검토: 현재 계정을 확인할 수 없으면 거부한다(ID 1 대체 금지). TOTP 대기 검증은 ID를 명시하고 OIDC 그룹 역할·세대 변경은 최종 승인 뒤에만 적용한다. 마이그레이션은 기존 id=1 CHECK만 제거하고 role 기본값은 USER, 최초 설정은 ADMIN을 명시한다. 삭제는 외부 연결·허용값을 제거하되 로컬 ID 묘비를 보존한다.

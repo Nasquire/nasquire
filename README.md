@@ -46,6 +46,7 @@ docker compose -f deploy/docker-compose.yml up -d
 `/sources/documents`를 UI 소스로 등록합니다. lite 예시는 512 MiB 한도이며 내장 모델·리랭커에는 부족합니다. full은 `-f deploy/docker-compose.full.yml`을 추가하고, 같은 full 이미지의 ML 전용 모드는 `deploy/docker-compose.ml.yml`을 사용합니다. 모델은 이미지에 포함하지 않습니다. PUID/PGID는 compose의 숫자 `user` 매핑을 통해 적용하며, 공개 이미지에 환경변수만 주어서는 사용자가 바뀌지 않습니다.
 
 - [Docker 공통 설치·HTTPS·백업·업그레이드·관리자 복구](docs/install/generic-docker.md)
+- 선택 외부 로그인 / Optional external sign in: [OIDC 설정 (한국어·English)](docs/install/oidc.md). 기본 off, 로컬 로그인 유지 / Off by default; local sign in remains available.
 - [Synology Container Manager](docs/install/synology.md) · [Unraid와 XML 템플릿](docs/install/unraid.md) · [TrueNAS SCALE](docs/install/truenas.md)
 - [배포·CI 검증과 미실측 항목](docs/verification/deploy.md) · [full 메모리 실측](docs/verification/full.md)
 
@@ -254,9 +255,25 @@ NAS HDD 절전과 대용량 폴더 검사 부담을 줄이기 위해 기본 변�
 
 ## 사용자별 접근 범위 / Per-user access scope
 
-컨테이너는 단일 UID로 마운트한 폴더를 읽으며 NAS 계정별 공유 폴더 권한(ACL)을 컨테이너 안에서 적용하지 않습니다. 호스트에서는 실행 UID의 파일 권한이 적용됩니다. 범위를 분리하려면 폴더를 마운트 지점별로 나누어 별도 소스로 등록하고, API 토큰·OAuth 승인의 소스 범위로 접근을 관리하세요. NAS 계정 연동(OIDC 등)과 다중 사용자·역할은 후속 과제입니다.
+Nasquire의 로컬 계정은 ADMIN(관리자)과 USER(사용자)로 구분합니다. 최초 설정과 기존 단일 관리자 DB는 첫 ADMIN 계정으로 이어집니다. ADMIN은 모든 소스를 검색하고 사용자·소스·업로드·공유·색인·AI/OAuth 설정을 관리합니다. USER는 검색·자기 API 토큰·계정/2단계 인증·정보·로그아웃만 사용할 수 있습니다. 관리자가 **사용자** 화면에서 허용 소스를 지정하며, USER의 기본 허용 집합은 비어 있습니다(접근 불가).
 
-The container reads mounted folders as a single UID; it does not apply each NAS account's shared-folder ACL inside the container. Host file permissions apply to that UID. Separate folders into mount points and sources, then control access through source scopes on API tokens and OAuth approvals. NAS account integration (such as OIDC), multiple users and roles remain future work.
+검색·문서·다운로드·MCP는 소스 권한을 검사합니다. API 토큰과 MCP OAuth 승인은 발급/승인한 계정에 속하며, 실효 범위는 지정 범위와 소유자의 현재 허용 소스의 교집합입니다. 기존 API 토큰의 빈 범위는 소유자에게 허용된 전체 소스라는 의미를 유지합니다. OAuth 승인은 명시적으로 고른 소스만 허용합니다. 권한 축소·비활성·삭제는 다음 토큰 요청과 이미 발급한 다운로드 주소에도 반영됩니다. 계정 역할·권한·상태 변경은 기존 로그인 세션을 다음 요청에 무효화합니다. 마지막 활성 ADMIN은 삭제·강등·비활성화할 수 없습니다.
+
+강등·삭제된 관리자가 만든 공유는 유지되며 관리자 공유 화면에서 철회합니다. 세션으로 발급한 다운로드 티켓은 세션 무효화 후에도 TTL 동안 유효하지만, 수신 시 계정 활성 상태와 현재 소스 권한을 다시 검사합니다.
+
+오프라인 복구는 앱을 종료한 뒤 `--recover-admin --data=/data --username=admin`으로 지정합니다. 관리자 계정이 하나면 사용자명을 생략할 수 있으며 여럿이면 목록을 확인한 뒤 지정해야 합니다. 비활성 ADMIN도 복구하면 활성화됩니다. 비밀번호는 기존처럼 표준 입력으로만 전달합니다. [검증 기록](docs/verification/accounts.md).
+
+컨테이너는 단일 UID로 마운트한 폴더를 읽으며 NAS 계정별 공유 폴더 ACL을 컨테이너 안에서 적용하지 않습니다. 호스트에서는 실행 UID의 파일 권한이 적용됩니다. 폴더를 별도 소스로 분리해 Nasquire의 계정·토큰·승인 범위를 지정하세요. 선택 [OIDC 외부 로그인](docs/install/oidc.md)을 제공하며 NAS 파일 ACL 자체는 연동하지 않습니다.
+
+Local accounts have ADMIN and USER roles. Initial setup creates the first ADMIN; an existing single administrator keeps its password, TOTP, recovery codes and session generation during migration. ADMIN can access every source and manage users, sources, uploads, shares, indexing and AI/OAuth settings. USER can access search, their own API tokens, account/two-factor settings, about and sign-out. Administrators assign source access in **Users**. A new USER starts with no source access.
+
+Search, documents, downloads and MCP enforce source permissions. Each API token and MCP OAuth approval belongs to its issuing/approving account. Its effective scope is the intersection of its scope and the owner's current permitted sources. An empty API token scope retains its existing meaning: all sources permitted to its owner. OAuth approvals require explicitly selected sources. Permission reductions, disabled accounts and deleted accounts apply on the next token request and when an existing download URL is received. Role, scope and status changes invalidate existing login sessions on their next request. The last active ADMIN cannot be deleted, demoted or disabled.
+
+Shares created by demoted or deleted administrators remain available until revoked in the administrator Shares screen. Session download tickets remain valid for their TTL even after session invalidation; receipt rechecks account activity and current source permissions.
+
+Stop the application before offline recovery: `--recover-admin --data=/data --username=admin`. The username may be omitted when there is exactly one ADMIN; otherwise the command lists administrators and requires selection. Recovery also enables a disabled ADMIN. Password input remains on standard input. See [verification](docs/verification/accounts.md).
+
+The container reads mounted folders as a single UID; it does not apply each NAS account's shared-folder ACL inside the container. Host file permissions apply to that UID. Separate folders into sources and assign account, token and approval scopes in Nasquire. Optional [OIDC sign in](docs/install/oidc.md) is available; NAS filesystem ACL integration remains future work.
 
 ## 기여 / Contributing
 

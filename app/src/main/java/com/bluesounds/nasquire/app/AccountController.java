@@ -27,7 +27,7 @@ class AccountController {
     @PutMapping("/{kind}") synchronized void change(@PathVariable String kind, @RequestBody Input input, Authentication auth, HttpServletRequest request, HttpServletResponse response) throws Exception {
         if (!kind.equals("password") && !kind.equals("username")) throw new IllegalArgumentException("계정 변경 종류 오류");
         String action = "account-change-" + kind;
-        try (var ticket = attempts.acquire("account-change:", addresses.address(request), "administrator", System.currentTimeMillis())) {
+        try (var ticket = attempts.acquire("account-change:", addresses.address(request), auth.getName(), System.currentTimeMillis())) {
             if (ticket == null) { storage.audit("admin", action + "-rate-limit", 429); response.setHeader("Retry-After", "900"); response.setStatus(429); return; }
             long generation = storage.generation();
             if (!Long.valueOf(generation).equals(request.getSession().getAttribute("admin.generation"))) { storage.audit("admin", action, 401); response.setStatus(401); return; }

@@ -342,7 +342,7 @@
 - [x] 하단 톱니바퀴·테마 세그먼트, 중앙 환경설정·라이선스 모달, 계정·2단계 인증·검색·full·정보·로그아웃 통합.
 - [x] 계정 변경 API·세션 세대/CSRF 교체·TOTP/시도 제한, 폐기·만료 토큰 삭제 및 감사 유지.
 - [x] lite/full 빌드·8104 런타임·브라우저(lite 93/full 95개 화면) 각각 종료 0, axe 위반·브라우저 오류 0. core 28·app 64·full 21개 테스트 실패·오류·생략 0. 초기 실패·수정과 검증 한계는 [브라우저 검증](verification/browser.md#관리-화면-2차-개선-기준-47e2df5)에 기록.
-- [ ] 다중 관리자 계정(역할 구분 포함)은 후속 단계.
+- [x] 다중 계정·역할은 아래 사용자 계정 단계에서 구현.
 
 ## 색인 주기·지원 형식 표시 개선 (기준 1048a55)
 
@@ -362,7 +362,8 @@
 - [x] 외부 코드·문서·번역은 받거나 반영하지 않고 버그 보고·기능 제안만 접수. [기여 정책](../CONTRIBUTING.md)·[비공개 보안 보고](../SECURITY.md).
 - [x] 단일 UID·NAS 계정 ACL 미적용 및 마운트/소스·API 토큰·OAuth 승인 범위 안내. [설치](install/generic-docker.md#사용자별-접근-범위).
 - [x] 과거 lite JAR 512 MiB cgroup·arm64 VM 제한 실측과 현재 메모리 개선 기록을 분리. [배포 검증](verification/deploy.md), [메모리 개선](verification/memory.md), [기준 a5542a2](https://github.com/Nasquire/nasquire/commit/a5542a2). 현재 개선본의 단독 512 MiB cgroup·NAS 재측정은 미완료.
-- [ ] 다중 사용자·역할 + 일반 OIDC 로그인(실제 요구 시). 현재 MCP OAuth는 일반 NAS 계정 로그인 연동이 아니다. [현재 OAuth 범위](install/oauth.md).
+- [x] 다중 사용자·역할은 아래 사용자 계정 단계에서 구현.
+- [x] 선택 [OIDC 외부 로그인](install/oidc.md). MCP OAuth는 별도의 MCP 인가 서버다. [현재 OAuth 범위](install/oauth.md).
 - [ ] 3.6 core 공개 API에 검색 권한 필터 확장 지점(사용자별 허용 경로/그룹). 현재 토큰·OAuth는 소스 단위다. [현재 접근 범위](../README.md#사용자별-접근-범위--per-user-access-scope).
 - [ ] MCP 도구 보강(파일명 검색·목록·색인 상태). [현재 도구](../README.md#mcp-connection).
 - arm64 추가 검증은 공식 비지원 결정으로 보류한다. 과거 VM 성공을 현재 지원으로 해석하지 않는다([결정 20d8333](https://github.com/Nasquire/nasquire/commit/20d8333)).
@@ -378,3 +379,29 @@
 - [x] 소스별 후속 검사 병합·10회 상한, 즉시 재색인, 동일 소스 결과 파일별 교체.
 - [x] 업로드 소스 없음 한/영 안내·소스 관리 이동.
 - [x] lite/full 빌드·런타임·lite 브라우저 및 내부 정보 검사 결과 기록(브라우저 최초 테스트 기대 제목 오류 수정 후 재실행 통과).
+
+## 다중 계정·역할과 사용자별 소스 권한 (기준 7cedb3c)
+
+- [x] 기존 관리자·비밀번호·TOTP·복구 코드·generation 보존 이관, 기존 API 토큰/OAuth 승인 소유자 지정.
+- [x] ADMIN 사용자 관리·마지막 활성 관리자 DB 잠금 보호·사용자별 세션 세대/TOTP/계정 변경·지정 관리자 복구 CLI.
+- [x] 검색·문서·다운로드·MCP 소스 권한, 토큰/OAuth 소유자 현재 권한 교집합·사용자별 토큰 관리·감사 actor.
+- [x] ADMIN 사용자 화면·USER 제한 메뉴/설정·한/영 UI·브라우저 스크립트 보강, README·구현 규칙.
+- [x] 통합 회귀·lite/full 빌드·8104 런타임/lite 브라우저 모두 종료 0. full 기준 core 34·app 68·full 21건 실패/오류/생략 0, 브라우저 120개 화면·USER 포함·axe/브라우저 오류 0. 공개 정보 무일치·공백 검사 통과·서버 종료. [실패 이력과 기록](verification/accounts.md).
+- [x] 일반 OIDC 로그인은 아래 후속 단계에서 구현.
+- [ ] NAS ACL/경로·그룹별 소스 권한은 별도 후속 과제다.
+
+## 선택 OIDC 외부 로그인
+
+- [x] 별도 암호화 설정·discovery/PKCE/JWKS 검증·외부 계정 연결·세션/TOTP 통합.
+- [x] 관리자/로그인 한영 화면·설치/검증 문서·가짜 IdP 회귀.
+- [x] lite/full 빌드·8104 런타임/브라우저·공개 정보 검사. full 기준 core 34·app 69·full 21건 실패/오류/생략 0, lite 브라우저 121개 화면·axe/브라우저 오류 0·서버 종료. [실패 이력·검증 한계](verification/oidc.md).
+
+## 인증 교차 검토 반영 (기준 4b274c5)
+
+- [x] 현재 계정 판정 실패 시 거부·TOTP ID 명시·감사 식별값 추정 제거.
+- [x] role 기본값 USER·최초 ADMIN 명시·기존 id=1 CHECK만 멱등 제거.
+- [x] 삭제 시 외부 연결·허용값 제거와 ID 묘비 유지·재연결 회귀.
+- [x] OIDC 그룹 역할·세대 변경을 TOTP 최종 승인 이후로 연기·마지막 ADMIN 보호.
+- [x] 대기 state 없는 콜백·IdP error는 실패 제한 집계 제외·실제 검증 실패 유지.
+- [x] USER OAuth/OIDC 쓰기 403·공유/티켓 정책·관리자 sub 권장 한영 문서.
+- [x] lite/full 빌드·8104 런타임/lite 브라우저 각각 종료 0. full 124건 실패/오류/생략 0·브라우저 121개 화면/19개 검사 오류 0·서버 종료/8104 반환. 내부 식별자 무일치·공백 검사 통과. [결과·초기 실패 이력](verification/accounts.md#인증-교차-검토-반영-기준-4b274c5), 상세 `build/verification/auth-review/`.

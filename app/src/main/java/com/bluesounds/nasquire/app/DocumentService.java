@@ -12,8 +12,9 @@ public class DocumentService {
     private final FullSettings full;
     public DocumentService(Storage storage, SearchIndex index, FullSettings full) { this.storage = storage; this.index = index; this.full = full; }
     public Set<String> scope(Storage.Identity identity, String source) {
+        if (identity == null) identity = storage.sessionIdentity();
         var allowed = new HashSet<String>();
-        for (Source s : storage.sources()) if (identity == null || (identity.sources().isEmpty() && !identity.tokenId().startsWith("oauth:")) || identity.sources().contains(s.id())) allowed.add(s.id());
+        for (Source s : storage.sources()) if (identity.sources().contains(s.id())) allowed.add(s.id());
         if (source != null && !source.isBlank()) {
             if (!allowed.contains(source)) throw new org.springframework.security.access.AccessDeniedException("소스 접근 불가");
             return Set.of(source);

@@ -31,11 +31,12 @@ public class SecurityConfiguration {
     @Bean BCryptPasswordEncoder passwordEncoder() { return new BCryptPasswordEncoder(12); }
     @Bean SecurityFilterChain security(HttpSecurity http, Storage storage, LoginAttempts attempts, ClientAddresses addresses, TotpService totp, OAuthService oauth, @Value("${nasquire.upload-max-bytes:33554432}") long maximum, @Value("${nasquire.mcp-allowed-origins:}") String allowedOrigins) throws Exception {
         http.authorizeHttpRequests(a -> a
-                .requestMatchers("/", "/index.html", "/assets/**", "/icon.svg", "/LICENSE.txt", "/react-LICENSE.txt", "/LICENSE-EXCEPTIONS.md", "/api/auth", "/api/setup", "/api/login", "/api/login/totp", "/download", "/error").permitAll()
+                .requestMatchers("/", "/index.html", "/assets/**", "/icon.svg", "/LICENSE.txt", "/react-LICENSE.txt", "/LICENSE-EXCEPTIONS.md", "/api/auth", "/api/setup", "/api/login", "/api/login/totp", "/oidc/status", "/oidc/login", "/oidc/callback", "/download", "/error").permitAll()
                 .requestMatchers("/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-authorization-server", "/oauth/register", "/oauth/token", "/oauth/revoke", "/oauth/login.js", "/oauth/style.css").permitAll()
                 .requestMatchers(org.springframework.http.HttpMethod.GET, "/oauth/authorize").permitAll()
                 .requestMatchers("/mcp").authenticated()
                 .requestMatchers("/api/search", "/api/document", "/api/download").authenticated()
+                .requestMatchers("/api/auth", "/api/allowed-sources", "/api/account", "/api/account/**", "/api/totp", "/api/totp/**", "/api/tokens", "/api/tokens/**", "/api/logout", "/oauth/authorize").hasAnyRole("ADMIN", "USER")
                 .anyRequest().hasRole("ADMIN"))
             .csrf(c -> c.ignoringRequestMatchers(r -> r.getAttribute("nasquire.token") != null || Set.of("/oauth/register", "/oauth/token", "/oauth/revoke").contains(r.getServletPath()))
                     .csrfTokenRepository(new HttpSessionCsrfTokenRepository())
@@ -51,19 +52,21 @@ public class SecurityConfiguration {
             .addFilterBefore(new MultipartGuard(maximum), CsrfFilter.class)
             .addFilterBefore(new LoginGuard(attempts, addresses, storage), org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class)
             .addFilterBefore(new BearerFilter(storage, oauth, attempts, addresses, Arrays.stream(allowedOrigins.split(",")).map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toSet())), CsrfFilter.class)
-            .formLogin(f -> f.securityContextRepository(new PasswordContextRepository(totp::enabled)).loginProcessingUrl("/api/login")
+            .formLogin(f -> f.securityContextRepository(new PasswordContextRepository(context -> totp.enabled(context.getAuthentication().getName()))).loginProcessingUrl("/api/login")
                     .successHandler((req, res, auth) -> {
-                        if (!Long.valueOf(storage.generation()).equals(req.getAttribute("admin.loginGeneration"))) {
+                        var account = storage.account(auth.getName());
+                        if (account == null || !account.active() || !Long.valueOf(account.generation()).equals(req.getAttribute("admin.loginGeneration"))) {
                             req.getSession().invalidate(); SecurityContextHolder.clearContext(); res.setStatus(401); return;
                         }
+                        req.getSession().setAttribute("account.id", account.id());
                         req.getSession().setAttribute("admin.generation", req.getAttribute("admin.loginGeneration"));
-                        if (totp.enabled()) {
+                        if (totp.enabled(auth.getName())) {
                             var context = SecurityContextHolder.createEmptyContext();
                             SecurityContextHolder.setContext(context);
                             new org.springframework.security.web.context.HttpSessionSecurityContextRepository().saveContext(context, req, res);
                             req.getSession().removeAttribute("admin.authenticatedAt");
                             req.getSession().setAttribute("totp.pending", new TotpController.Pending(auth.getName(), System.currentTimeMillis(), new java.util.concurrent.atomic.AtomicInteger()));
-                            storage.audit("anonymous", "login-totp-required", 202); res.setStatus(202);
+                            storage.audit("user:" + account.id(), "login-totp-required", 202); res.setStatus(202);
                         } else {
                             req.getSession().removeAttribute("totp.pending");
                             req.getSession().setAttribute("admin.authenticatedAt", System.currentTimeMillis());
@@ -84,10 +87,10 @@ public class SecurityConfiguration {
 
     /** 성공 핸들러보다 먼저 실행되는 기본 세션 저장에서도 ADMIN 노출을 차단한다. */
     static class PasswordContextRepository extends org.springframework.security.web.context.HttpSessionSecurityContextRepository {
-        private final java.util.function.BooleanSupplier requiresTotp;
-        PasswordContextRepository(java.util.function.BooleanSupplier requiresTotp) { this.requiresTotp = requiresTotp; }
+        private final java.util.function.Predicate<org.springframework.security.core.context.SecurityContext> requiresTotp;
+        PasswordContextRepository(java.util.function.Predicate<org.springframework.security.core.context.SecurityContext> requiresTotp) { this.requiresTotp = requiresTotp; }
         @Override public void saveContext(org.springframework.security.core.context.SecurityContext context, HttpServletRequest request, HttpServletResponse response) {
-            super.saveContext(requiresTotp.getAsBoolean() ? SecurityContextHolder.createEmptyContext() : context, request, response);
+            super.saveContext(context.getAuthentication() != null && requiresTotp.test(context) ? SecurityContextHolder.createEmptyContext() : context, request, response);
         }
     }
     /** 계정 변경 이전의 관리자·TOTP 대기 세션은 다음 요청에서 무효화한다. */
@@ -96,8 +99,11 @@ public class SecurityConfiguration {
         AccountGenerationGuard(Storage storage) { this.storage = storage; }
         protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain) throws IOException, ServletException {
             var session = req.getSession(false);
-            if (session != null && session.getAttribute("admin.generation") instanceof Long generation && generation != storage.generation()) {
-                session.invalidate(); SecurityContextHolder.clearContext();
+            if (session != null && session.getAttribute("admin.generation") instanceof Long generation) {
+                var account = session.getAttribute("account.id") instanceof Integer id ? storage.account(id) : null;
+                if (account == null || !account.active() || generation != account.generation()) {
+                    session.invalidate(); SecurityContextHolder.clearContext();
+                }
             }
             chain.doFilter(req, res);
         }
@@ -110,7 +116,7 @@ public class SecurityConfiguration {
             if (type != null && type.toLowerCase(java.util.Locale.ROOT).startsWith("multipart/")) {
                 if (!req.getServletPath().startsWith("/api/uploads/")) { res.setStatus(403); return; }
                 var auth = SecurityContextHolder.getContext().getAuthentication();
-                if (auth == null || auth.getAuthorities().stream().noneMatch(a -> a.getAuthority().equals("ROLE_ADMIN"))) { res.setStatus(401); return; }
+                if (auth == null || auth.getAuthorities().stream().noneMatch(a -> a.getAuthority().equals("ROLE_ADMIN"))) { res.setStatus(auth == null ? 401 : 403); return; }
                 if (req.getContentLengthLong() > maximum) { res.setStatus(413); return; }
             }
             chain.doFilter(req, res);
@@ -127,7 +133,8 @@ public class SecurityConfiguration {
             var ticket = attempts.acquire("", addresses.address(req), req.getParameter("username"), System.currentTimeMillis());
             if (ticket == null) { storage.audit("anonymous", "login-rate-limit", 429); res.setHeader("Retry-After", "900"); res.setStatus(429); return; }
             req.setAttribute(TICKET, ticket);
-            req.setAttribute("admin.loginGeneration", storage.generation());
+            var account = storage.account(req.getParameter("username"));
+            req.setAttribute("admin.loginGeneration", account == null ? -1L : account.generation());
             try (ticket) { chain.doFilter(req, res); }
         }
         static final String TICKET = "nasquire.loginTicket";

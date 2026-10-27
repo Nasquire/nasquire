@@ -46,6 +46,7 @@ class OAuthService {
         disabledReason = !enabled ? "OAuth is disabled / OAuth 설정이 꺼져 있습니다" : !valid ? "HTTPS public URL required (origin only) / HTTPS 공개 기본 주소가 필요합니다" : "";
         db.execute("CREATE TABLE IF NOT EXISTS oauth_clients (id VARCHAR(64) PRIMARY KEY, name VARCHAR(200) NOT NULL, redirects VARCHAR(22000) NOT NULL, created BIGINT NOT NULL, approved BOOLEAN DEFAULT FALSE NOT NULL)");
         db.execute("CREATE TABLE IF NOT EXISTS oauth_grants (id VARCHAR(64) PRIMARY KEY, client_id VARCHAR(64) NOT NULL, redirect_uri VARCHAR(2048) NOT NULL, audience VARCHAR(2048) NOT NULL, sources VARCHAR(4000) NOT NULL, code_hash VARCHAR(64) UNIQUE NOT NULL, challenge VARCHAR(43) NOT NULL, code_expires BIGINT NOT NULL, consumed BOOLEAN DEFAULT FALSE NOT NULL, expires BIGINT NOT NULL, revoked BOOLEAN DEFAULT FALSE NOT NULL)");
+        db.execute("ALTER TABLE oauth_grants ADD COLUMN IF NOT EXISTS owner_id INT DEFAULT 1 NOT NULL");
         db.execute("CREATE TABLE IF NOT EXISTS oauth_tokens (id VARCHAR(64) PRIMARY KEY, token_hash VARCHAR(64) UNIQUE NOT NULL, grant_id VARCHAR(64) NOT NULL, kind VARCHAR(10) NOT NULL, expires BIGINT NOT NULL, used BOOLEAN DEFAULT FALSE NOT NULL)");
         db.execute("CREATE INDEX IF NOT EXISTS oauth_tokens_grant ON oauth_tokens(grant_id)");
         db.execute("CREATE INDEX IF NOT EXISTS oauth_grants_client ON oauth_grants(client_id)");
@@ -132,11 +133,14 @@ class OAuthService {
     synchronized String approve(Authorization a, List<String> sources) {
         requireEnabled(); client(a.client);
         if (now() - a.created > 600000 || sources.isEmpty() || sources.size() > 100) throw invalid("invalid_request");
-        for (String source : sources) storage.source(source);
+        for (String source : sources) {
+            storage.source(source);
+            if (!storage.allowed(storage.currentId()).contains(source)) throw new org.springframework.security.access.AccessDeniedException("소스 접근 불가");
+        }
         if (db.queryForObject("SELECT COUNT(*) FROM oauth_grants WHERE client_id=? AND expires>?", Integer.class, a.client, now()) >= 100) throw invalid("temporarily_unavailable");
         String code = random(), family = UUID.randomUUID().toString();
         tx.executeWithoutResult(status -> {
-            db.update("INSERT INTO oauth_grants(id,client_id,redirect_uri,audience,sources,code_hash,challenge,code_expires,expires) VALUES (?,?,?,?,?,?,?,?,?)", family, a.client, a.redirect, resource, String.join("\n", new LinkedHashSet<>(sources)), SecurityConfiguration.hash(code), a.challenge, now() + 60000, now() + LIFETIME);
+            db.update("INSERT INTO oauth_grants(id,client_id,redirect_uri,audience,sources,code_hash,challenge,code_expires,expires,owner_id) VALUES (?,?,?,?,?,?,?,?,?,?)", family, a.client, a.redirect, resource, String.join("\n", new LinkedHashSet<>(sources)), SecurityConfiguration.hash(code), a.challenge, now() + 60000, now() + LIFETIME, storage.currentId());
             db.update("UPDATE oauth_clients SET approved=TRUE,last_approval_expires=? WHERE id=?", now() + LIFETIME, a.client);
             audit("approve", 200);
         });
@@ -177,6 +181,8 @@ class OAuthService {
             var rows = db.queryForList("SELECT * FROM oauth_grants WHERE code_hash=? AND client_id=?", SecurityConfiguration.hash(code), p.get("client_id"));
             if (rows.isEmpty()) return invalid("invalid_grant");
             var g = rows.getFirst(); family = g.get("ID").toString();
+            var owner = storage.account(((Number)g.get("OWNER_ID")).intValue());
+            if (owner == null || !owner.active()) return invalid("invalid_grant");
             if (!Objects.equals(g.get("REDIRECT_URI"), p.get("redirect_uri")) || !Objects.equals(g.get("AUDIENCE"), resource)
                     || !MessageDigest.isEqual(g.get("CHALLENGE").toString().getBytes(StandardCharsets.US_ASCII), challenge(verifier).getBytes(StandardCharsets.US_ASCII))) return invalid("invalid_grant");
             if (Boolean.TRUE.equals(g.get("CONSUMED"))) { revokeFamily(family); audit("code-reuse", 400); return invalid("invalid_grant"); }
@@ -189,6 +195,8 @@ class OAuthService {
             var rows = db.queryForList("SELECT t.id AS token_id,t.used,t.expires AS token_expires,g.* FROM oauth_tokens t JOIN oauth_grants g ON t.grant_id=g.id WHERE t.token_hash=? AND t.kind='refresh' AND g.client_id=?", SecurityConfiguration.hash(value), p.get("client_id"));
             if (rows.isEmpty()) return invalid("invalid_grant");
             var g = rows.getFirst(); family = g.get("ID").toString();
+            var owner = storage.account(((Number)g.get("OWNER_ID")).intValue());
+            if (owner == null || !owner.active()) return invalid("invalid_grant");
             if (!resource.equals(g.get("AUDIENCE"))) return invalid("invalid_grant");
             refreshHash = SecurityConfiguration.hash(value);
             if (Boolean.TRUE.equals(g.get("USED"))) {
@@ -224,7 +232,7 @@ class OAuthService {
     }
     Storage.Identity authenticate(String hash) {
         if (!enabled()) return null;
-        var rows = db.queryForList("SELECT t.id,g.sources FROM oauth_tokens t JOIN oauth_grants g ON t.grant_id=g.id JOIN oauth_clients c ON c.id=g.client_id WHERE t.token_hash=? AND t.kind='access' AND t.expires>? AND g.expires>? AND g.revoked=FALSE AND g.audience=?", hash, now(), now(), resource);
+        var rows = db.queryForList("SELECT t.id,g.sources,g.owner_id FROM oauth_tokens t JOIN oauth_grants g ON t.grant_id=g.id JOIN oauth_clients c ON c.id=g.client_id WHERE t.token_hash=? AND t.kind='access' AND t.expires>? AND g.expires>? AND g.revoked=FALSE AND g.audience=?", hash, now(), now(), resource);
         return rows.isEmpty() ? null : toIdentity(rows.getFirst());
     }
     Storage.Identity identity(String id) {
@@ -234,7 +242,7 @@ class OAuthService {
     }
     private Storage.Identity toIdentity(Map<String, Object> row) {
         Set<String> existing = new HashSet<>(); storage.sources().forEach(s -> existing.add(s.id()));
-        return new Storage.Identity(row.get("ID").toString(), row.get("SOURCES").toString().lines().filter(existing::contains).toList());
+        return storage.effective(row.get("ID").toString(), ((Number)row.get("OWNER_ID")).intValue(), row.get("SOURCES").toString().lines().filter(existing::contains).toList(), false);
     }
     synchronized void revoke(String client, String token) {
         requireEnabled(); endpointClient(client);
@@ -260,7 +268,7 @@ class OAuthService {
         cleanup();
         return Map.of("enabled", enabled(), "disabledReason", disabledReason,
                 "clients", db.queryForList("SELECT id,name,redirects,created,approved FROM oauth_clients ORDER BY created DESC"),
-                "grants", db.queryForList("SELECT id,client_id,sources,expires,revoked FROM oauth_grants ORDER BY expires DESC"));
+                "grants", db.queryForList("SELECT id,client_id,sources,expires,revoked,owner_id FROM oauth_grants ORDER BY expires DESC"));
     }
     void audit(String action, int status) { storage.audit("oauth", "oauth-" + action, status); }
 }
