@@ -12,7 +12,7 @@
 - [x] 2단계: 벡터 검색 — 임베딩 공급자(내장 ONNX 소형 다국어 int8 / OpenAI 호환 원격), 혼합 검색, 색인에 모델 ID 기록.
 - [x] 3단계: 형식 확장 — Word·PPT·Excel(POI, 스트리밍), HWP·HWPX, download_file 짧은 주소.
 - [x] 3.5단계: 업로드·공유 — 선택 기능 "업로드 소스"(기본 끔, 별도 쓰기 가능 폴더만 쓰고 일반 소스는 계속 읽기 전용, 웹 업로드·폴더·휴지통), 외부 공유 링크(파일 또는 폴더 하나, 무작위 토큰 `/s/{token}`, 만료·비밀번호·다운로드 횟수 제한·철회·감사 로그, 실경로 범위 검사·심볼릭 링크 탈출 차단·속도 제한, 범위 밖 목록·검색·MCP 노출 없음).
-- [ ] 3.6단계: 임베드용 core 라이브러리 — 앱 의존 없는 공개 API 정리, Maven 패키지 배포(`nasquire-core`), 버전 정책(SemVer), 사용 예제. 확장 지점(인증·저장 위치·원본 열기 주소)을 설정·인터페이스로.
+- [x] 3.6단계: 임베드용 core 라이브러리 — 앱 의존 없는 공개 API 정리, Maven 패키지 배포(`nasquire-core`), 버전 정책(SemVer), 사용 예제. 확장 지점(인증·저장 위치·원본 열기 주소)을 설정·인터페이스로.
 - [x] 4단계: full 모듈 기본 구현 — 원격/로컬 리랭커·격리된 Tesseract 처리 경로·Qdrant·ML 전용 모드 및 보안 잔여 수정.
 - [ ] 4단계 후속 구현·실측 — 실제 OCR 품질/속도 비교·실제 Qdrant 서버·NAS/NFS/SMB·전체 full 동시 부하 cgroup 검증은 미완료. 과거 arm64 VM 소규모 OCR·lite 제한 실측은 [배포 검증](verification/deploy.md)에 기록. PaddleOCR·원격 OCR 클라이언트는 미구현. full 설정 UI는 [브라우저 검증](verification/browser.md)으로 구현·검증 완료. 내장 모델의 512 MiB 초과는 유지한다. arm64 검증은 비지원 결정(2026-10-26)으로 보류.
 - [x] 5a단계: 배포 구성 — amd64 공식 `lite`·`full` 이미지와 아키텍처 중립 Dockerfile, 태그 전용 GHCR CI, NAS 설치 안내·Unraid 템플릿. amd64 빌드·JAR cgroup 및 과거 arm64 VM 실측 범위는 `verification/deploy.md`에 구분한다. 추가 arm64 검증은 비지원 결정(2026-10-26)으로 보류한다.
@@ -364,7 +364,7 @@
 - [x] 과거 lite JAR 512 MiB cgroup·arm64 VM 제한 실측과 현재 메모리 개선 기록을 분리. [배포 검증](verification/deploy.md), [메모리 개선](verification/memory.md), [기준 a5542a2](https://github.com/Nasquire/nasquire/commit/a5542a2). 현재 개선본의 단독 512 MiB cgroup·NAS 재측정은 미완료.
 - [x] 다중 사용자·역할은 아래 사용자 계정 단계에서 구현.
 - [x] 선택 [OIDC 외부 로그인](install/oidc.md). MCP OAuth는 별도의 MCP 인가 서버다. [현재 OAuth 범위](install/oauth.md).
-- [ ] 3.6 core 공개 API에 검색 권한 필터 확장 지점(사용자별 허용 경로/그룹). 현재 토큰·OAuth는 소스 단위다. [현재 접근 범위](../README.md#사용자별-접근-범위--per-user-access-scope).
+- [x] 3.6 core 공개 API에 AccessScope 소스/경로 접두사 권한 필터. core 그룹 정책을 추가했으며 앱 토큰·OAuth는 기존 소스 단위를 유지한다. [현재 접근 범위](../README.md#사용자별-접근-범위--per-user-access-scope).
 - [ ] MCP 도구 보강(파일명 검색·목록·색인 상태). [현재 도구](../README.md#mcp-connection).
 - arm64 추가 검증은 공식 비지원 결정으로 보류한다. 과거 VM 성공을 현재 지원으로 해석하지 않는다([결정 20d8333](https://github.com/Nasquire/nasquire/commit/20d8333)).
 
@@ -405,3 +405,15 @@
 - [x] 대기 state 없는 콜백·IdP error는 실패 제한 집계 제외·실제 검증 실패 유지.
 - [x] USER OAuth/OIDC 쓰기 403·공유/티켓 정책·관리자 sub 권장 한영 문서.
 - [x] lite/full 빌드·8104 런타임/lite 브라우저 각각 종료 0. full 124건 실패/오류/생략 0·브라우저 121개 화면/19개 검사 오류 0·서버 종료/8104 반환. 내부 식별자 무일치·공백 검사 통과. [결과·초기 실패 이력](verification/accounts.md#인증-교차-검토-반영-기준-4b274c5), 상세 `build/verification/auth-review/`.
+
+## 3.6 core 라이브러리 정리
+
+- [x] Spring 없는 NasquireCore 빌더·공개 패키지/Javadoc·내부 메모리 구현 패키지 구분. JPMS 보류 이유 문서화.
+- [x] 소스 공급자·색인 위치·원본 opener·추출기·벡터 공급자·파일 이벤트 확장점.
+- [x] AccessScope 소스/경로 경계 필터: BM25·HNSW·Qdrant·RRF 전후·문서 조회, 기존 앱은 소스 전체 범위 유지.
+- [x] Maven 좌표·sources/Javadoc·POM·환경변수 원격 설정·fixture 게시 제외, 한영 사용 문서·실행 예제 테스트.
+- [x] lite/full 빌드·로컬 게시·8104 런타임/lite 브라우저 각각 종료 0. full 기준 core 43·app 69·full 21건 실패/오류/생략 0, lite 브라우저 121개 화면·19개 검사 오류 0. 공개 정보 무일치·공백 검사 통과·서버 종료. [초기 실패와 상세](verification/core-library.md).
+- [x] 개인용/내부용 기본 open, Principal·불변 rule 정책·깊은 재허용·조회 시점 컴파일·스레드 안전 정책 교체.
+- [x] 권한 정책 후속 lite/full·로컬 게시·8104 런타임/lite 브라우저 종료 0, core 48·app 69·full 21건(full 기준) 실패/오류/생략 0. 초기 결과 파일 경쟁 실패·최종 결과는 [검증 기록](verification/core-library.md#사용자그룹-정책-후속-기준-2e1f8f2).
+- [x] BM25/HNSW/Qdrant/RRF·문서 조회 공통 allow/deny 필터·판정 표·상한·실행 예제·한영 문서.
+- [ ] 실제 Qdrant·NAS 파일시스템 실측은 범위 밖.

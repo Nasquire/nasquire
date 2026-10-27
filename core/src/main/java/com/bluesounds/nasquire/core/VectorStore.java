@@ -18,5 +18,10 @@ public interface VectorStore extends AutoCloseable {
     void deleteSource(String source) throws IOException;
     /** sources는 비어 있지 않아야 하며 소스 범위와 epoch를 저장소 쪽 필터로 전달하고 응답도 다시 검사해야 한다. */
     List<Match> search(float[] vector, Set<String> sources, int limit, long epoch) throws IOException;
+    /** 경로 필터를 지원하지 않는 구현은 제한 검색을 안전하게 거부한다. */
+    default List<Match> search(float[] vector, AccessScope scope, int limit, long epoch) throws IOException {
+        if (scope.restricted()) throw new IOException("저장소 경로 필터 미지원");
+        return search(vector, scope.sources(), limit, epoch);
+    }
     default void close() { }
 }

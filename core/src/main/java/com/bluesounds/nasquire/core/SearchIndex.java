@@ -1,5 +1,6 @@
 package com.bluesounds.nasquire.core;
 
+import org.apache.lucene.util.automaton.*;
 import java.io.*;
 import java.nio.file.*;
 import java.util.*;
@@ -29,7 +30,7 @@ public final class SearchIndex implements AutoCloseable {
     private VectorStore store;
     private String indexedModel = "off", indexedStore = "lucene";
     private int indexedDimensions;
-    private boolean reindexRequired, rebuilding, rebuildRequested;
+    private boolean reindexRequired, rebuilding, rebuildRequested, accessUpgrade;
     /**
      * 벡터 구성 세대. 공급자·저장소 교체와 재색인 시작 때 증가한다. 원격 호출(임베딩·Qdrant)은 이 객체의 잠금 밖에서 수행하고,
      * 결과를 게시·사용하기 전에 잠금 안에서 세대가 그대로인지 확인한다.
@@ -126,7 +127,7 @@ public final class SearchIndex implements AutoCloseable {
     }
     public synchronized boolean indexingAllowed() { return embedding == null || !reindexRequired || rebuilding; }
     public synchronized void finishRebuild(boolean complete) {
-        if (complete && rebuilding) { indexedModel = model(); indexedDimensions = dimensions(); indexedStore = embedding == null ? "lucene" : storeId(); reindexRequired = false; rebuilding = false; }
+        if (complete && rebuilding) { accessUpgrade = false; indexedModel = model(); indexedDimensions = dimensions(); indexedStore = embedding == null ? "lucene" : storeId(); reindexRequired = false; rebuilding = false; }
     }
     public float[] testEmbedding() {
         Providers.EmbeddingProvider provider;
@@ -151,8 +152,8 @@ public final class SearchIndex implements AutoCloseable {
                 reindexRequired = Boolean.parseBoolean(meta.getOrDefault("embedding.incomplete", "false"));
                 indexedStore = meta.getOrDefault("vector.store", "lucene");
                 epoch = Long.parseLong(meta.getOrDefault("vector.epoch", "0"));
-                // 세대 기록 이전의 외부 점은 세대 payload가 없어 검색에서 걸러지므로 한 번 재색인한다.
-                if (indexedStore.startsWith("qdrant:") && !meta.containsKey("vector.epoch")) reindexRequired = true;
+                // 경로 권한 payload가 없는 기존 Qdrant 점은 전체 재색인으로 형식을 갱신한다.
+                if (indexedStore.startsWith("qdrant:") && !"2".equals(meta.get("access.format"))) { reindexRequired = true; rebuildRequested = true; accessUpgrade = true; }
             }
         }
         writer = new IndexWriter(directory, config);
@@ -164,6 +165,7 @@ public final class SearchIndex implements AutoCloseable {
      * 게시하지 못하면 이미 쓴 외부 점을 지운다(재색인으로 세대가 바뀐 경우는 검색 세대 필터가 거른다).
      */
     public void replace(Source source, String relative, long mtime, List<Chunk> chunks) throws IOException {
+        AccessScope.validatePath(relative);
         String key = source.id() + ":" + relative;
         Providers.EmbeddingProvider provider; VectorStore target; int dims; long expected, startEpoch;
         var mine = new Pending(source.id(), key);
@@ -254,13 +256,18 @@ public final class SearchIndex implements AutoCloseable {
         ensureOpen();
         writer.setLiveCommitData(Map.of("embedding.model", indexedModel, "embedding.dimensions", String.valueOf(indexedDimensions),
                 "embedding.incomplete", String.valueOf(reindexRequired || rebuilding), "vector.store", indexedStore,
-                "vector.epoch", String.valueOf(epoch)).entrySet());
+                "vector.epoch", String.valueOf(epoch), "access.format", accessUpgrade ? "1" : "2").entrySet());
         writer.commit(); searchers.maybeRefreshBlocking();
     }
 
     public List<Hit> search(String query, Set<String> sources, int limit) throws IOException { return search(query, sources, limit, null); }
     /** keyword 검색과 원격 호출은 공통 잠금 없이 수행한다. 외부 결과는 세대 확인 뒤 잠금 안의 Lucene 조회로만 본문을 얻는다. */
     public List<Hit> search(String query, Set<String> sources, int limit, String mode) throws IOException {
+        return search(query, AccessScope.sources(sources), limit, mode);
+    }
+    public List<Hit> search(String query, AccessScope scope, int limit) throws IOException { return search(query, scope, limit, null); }
+    public List<Hit> search(String query, AccessScope scope, int limit, String mode) throws IOException {
+        Set<String> sources = scope.sources();
         ensureOpen();
         if (mode == null || mode.isBlank()) { synchronized (this) { mode = embedding == null ? "keyword" : "hybrid"; } }
         if (!Set.of("keyword", "vector", "hybrid").contains(mode)) throw new IllegalArgumentException("검색 mode 오류");
@@ -270,8 +277,8 @@ public final class SearchIndex implements AutoCloseable {
         try { textQuery = new QueryParser("text", analyzer).parse(QueryParser.escape(query)); }
         catch (org.apache.lucene.queryparser.classic.ParseException e) { throw new IllegalArgumentException("검색어 오류"); }
         var keyword = new BooleanQuery.Builder().add(textQuery, BooleanClause.Occur.MUST)
-                .add(scope(sources), BooleanClause.Occur.FILTER).build();
-        if (mode.equals("keyword")) return find(keyword, limit);
+                .add(scope(scope), BooleanClause.Occur.FILTER).build();
+        if (mode.equals("keyword")) return checked(find(keyword, limit), scope);
         Providers.EmbeddingProvider provider; VectorStore target; long expected, currentEpoch;
         synchronized (this) {
             ensureOpen();
@@ -283,15 +290,15 @@ public final class SearchIndex implements AutoCloseable {
         List<Hit> vector;
         try {
             float[] embedded = provider.embedQuery(query);
-            var matches = target == null ? null : target.search(embedded, sources, candidates, currentEpoch);
+            var matches = target == null ? null : target.search(embedded, scope, candidates, currentEpoch);
             synchronized (this) {
                 ensureOpen(); checkGeneration(expected);
                 if (reindexRequired || rebuilding) throw new IllegalStateException("공급자 또는 재색인 필요");
-                vector = target != null ? external(matches, sources)
-                        : find(new KnnFloatVectorQuery("embedding", embedded, candidates, scope(sources)), candidates);
+                vector = target != null ? external(matches, scope)
+                        : find(new KnnFloatVectorQuery("embedding", embedded, candidates, scope(scope)), candidates);
             }
         } finally { exit(); }
-        return mode.equals("vector") ? vector.stream().limit(limit).toList() : rrf(find(keyword, candidates), vector, limit);
+        return checked(mode.equals("vector") ? vector.stream().limit(limit).toList() : rrf(checked(find(keyword, candidates), scope), checked(vector, scope), limit), scope);
     }
 
     /** 같은 문서의 서로 다른 조각을 합치지 않는다. RRF 상수는 60이다. */
@@ -308,14 +315,15 @@ public final class SearchIndex implements AutoCloseable {
     }
 
     /** 외부 저장소의 조각 식별자를 소스 범위 필터를 건 Lucene 조회로 바꾼다. 범위 밖·삭제된 조각은 버린다. */
-    private List<Hit> external(List<VectorStore.Match> matches, Set<String> sources) throws IOException {
+    private List<Hit> external(List<VectorStore.Match> matches, AccessScope scope) throws IOException {
+        var sources = scope.sources();
         if (matches.isEmpty()) return List.of();
         var ids = new ArrayList<org.apache.lucene.util.BytesRef>();
-        for (var m : matches) if (sources.contains(m.source())) ids.add(new org.apache.lucene.util.BytesRef(m.key() + "\0" + m.offset()));
+        for (var m : matches) if (scope.allows(m.source(), m.key())) ids.add(new org.apache.lucene.util.BytesRef(m.key() + "\0" + m.offset()));
         if (ids.isEmpty()) return List.of();
         var found = new HashMap<String, Hit>();
         for (var h : find(new BooleanQuery.Builder().add(new TermInSetQuery("chunk", ids), BooleanClause.Occur.MUST)
-                .add(scope(sources), BooleanClause.Occur.FILTER).build(), ids.size())) found.put(h.path() + "\0" + h.offset(), h);
+                .add(scope(scope), BooleanClause.Occur.FILTER).build(), ids.size())) found.put(h.path() + "\0" + h.offset(), h);
         var hits = new ArrayList<Hit>();
         for (var m : matches) {
             var h = found.remove(m.key() + "\0" + m.offset());
@@ -326,16 +334,44 @@ public final class SearchIndex implements AutoCloseable {
     }
 
     public List<Hit> document(String path, Set<String> sources) throws IOException {
+        return document(path, AccessScope.sources(sources));
+    }
+    public List<Hit> document(String path, AccessScope scope) throws IOException {
         ensureOpen();
         var hits = find(new BooleanQuery.Builder()
                 .add(new TermQuery(new Term("key", path)), BooleanClause.Occur.MUST)
-                .add(scope(sources), BooleanClause.Occur.FILTER).build(), 4096);
-        return hits.stream().sorted(Comparator.comparingInt(Hit::page).thenComparingInt(Hit::offset)).toList();
+                .add(scope(scope), BooleanClause.Occur.FILTER).build(), 4096);
+        return checked(hits, scope).stream().sorted(Comparator.comparingInt(Hit::page).thenComparingInt(Hit::offset)).toList();
     }
 
-    private Query scope(Set<String> sources) {
-        if (sources.isEmpty()) return new MatchNoDocsQuery();
-        return new TermInSetQuery("source", sources.stream().map(org.apache.lucene.util.BytesRef::new).toList());
+    private static List<Hit> checked(List<Hit> hits, AccessScope scope) {
+        return hits.stream().filter(h -> scope.allows(h.source(), h.path())).toList();
+    }
+    private Query scope(AccessScope scope) {
+        if (scope.sources().isEmpty()) return new MatchNoDocsQuery();
+        if (!scope.restricted())
+            return new TermInSetQuery("source", scope.sources().stream().map(org.apache.lucene.util.BytesRef::new).toList());
+        var bySource = new HashMap<String, List<Automaton>>();
+        for (var region : scope.regions()) {
+            Automaton paths = pathAutomaton(region.source(), region.prefix());
+            if (!region.excluded().isEmpty()) paths = Operations.minus(paths,
+                    Operations.union(region.excluded().stream().map(p -> pathAutomaton(region.source(), p)).toList()),
+                    Operations.DEFAULT_DETERMINIZE_WORK_LIMIT);
+            bySource.computeIfAbsent(region.source(), k -> new ArrayList<>()).add(paths);
+        }
+        var allowed = new BooleanQuery.Builder();
+        bySource.forEach((source, paths) -> allowed.add(new BooleanQuery.Builder()
+                .add(new TermQuery(new Term("source", source)), BooleanClause.Occur.FILTER)
+                .add(new AutomatonQuery(new Term("key", ""), Operations.determinize(Operations.union(paths),
+                        Operations.DEFAULT_DETERMINIZE_WORK_LIMIT)), BooleanClause.Occur.FILTER)
+                .build(), BooleanClause.Occur.SHOULD));
+        return allowed.build();
+    }
+    private Automaton pathAutomaton(String source, String path) {
+        String key = source + ":" + path;
+        if (path.isEmpty()) return Operations.concatenate(Automata.makeString(key), Automata.makeAnyString());
+        return Operations.union(Automata.makeString(key),
+                Operations.concatenate(Automata.makeString(key + "/"), Automata.makeAnyString()));
     }
 
     private List<Hit> find(Query query, int limit) throws IOException {

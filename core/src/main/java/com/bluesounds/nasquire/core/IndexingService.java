@@ -1,6 +1,7 @@
 package com.bluesounds.nasquire.core;
 
 import java.io.*;
+import com.bluesounds.nasquire.core.internal.IdleHeapReclaimer;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.*;
@@ -19,6 +20,16 @@ public final class IndexingService implements AutoCloseable {
     }
     private record Stamp(long size, long mtime, long stableSince, boolean indexed) { }
     private final SearchIndex index;
+    private final OriginalOpener opener;
+    private final IndexEvent.Listener listener;
+    private void event(IndexEvent.Kind kind, String source, String path, long size, long mtime, String version) {
+        try { listener.onEvent(new IndexEvent(kind, source, path, size, mtime, version)); }
+        catch (RuntimeException e) { LOG.log(System.Logger.Level.WARNING, "색인 이벤트 리스너 실패"); }
+    }
+    private void deleted(String source) {
+        snapshots.getOrDefault(source, Map.of()).forEach((path, stamp) ->
+            event(IndexEvent.Kind.DELETED, source, path, stamp.size, stamp.mtime, stamp.size + ":" + stamp.mtime));
+    }
     private volatile long maxBytes;
     private final long stableMillis;
     private final int maxCharacters;
@@ -43,6 +54,11 @@ public final class IndexingService implements AutoCloseable {
     }, 5000, 300000);
 
     public IndexingService(SearchIndex index, long maxBytes, int maxCharacters, long stableMillis, List<TextExtractor> extractors) {
+        this(index, maxBytes, maxCharacters, stableMillis, extractors, OriginalOpener.secure(), event -> { });
+    }
+    public IndexingService(SearchIndex index, long maxBytes, int maxCharacters, long stableMillis, List<TextExtractor> extractors,
+            OriginalOpener opener, IndexEvent.Listener listener) {
+        this.opener = Objects.requireNonNull(opener); this.listener = Objects.requireNonNull(listener);
         this.index = index; this.maxBytes = maxBytes; this.maxCharacters = maxCharacters;
         this.stableMillis = stableMillis; this.extractors = List.copyOf(extractors);
     }
@@ -126,9 +142,10 @@ public final class IndexingService implements AutoCloseable {
             selected = null;
         }
         if (!index.indexingAllowed()) return;
+        var removed = new HashSet<String>();
         var active = sources.stream().map(Source::id).collect(java.util.stream.Collectors.toSet());
         for (String old : new HashSet<>(definitions.keySet())) {
-            if (!active.contains(old)) { index.deleteSource(old); definitions.remove(old); snapshots.remove(old); statuses.remove(old); }
+            if (!active.contains(old)) { index.deleteSource(old); deleted(old); definitions.remove(old); snapshots.remove(old); removed.add(old); }
         }
         var completed = new HashMap<String, Status>();
         for (Source source : sources) {
@@ -137,7 +154,7 @@ public final class IndexingService implements AutoCloseable {
             boolean requestedReindex = reindex.remove(source.id());
             if (changed) {
                 // 루트·범위 변경과 시작 시에는 이전 범위의 문서를 먼저 정리한다.
-                index.deleteSource(source.id()); snapshots.remove(source.id());
+                index.deleteSource(source.id()); deleted(source.id()); snapshots.remove(source.id());
             } else if (requestedReindex) {
                 var previous = snapshots.get(source.id());
                 if (previous != null) previous.replaceAll((key, stamp) ->
@@ -155,6 +172,7 @@ public final class IndexingService implements AutoCloseable {
         }
         // 검색자가 새 색인을 읽을 수 있게 된 뒤 완료 상태를 공개한다.
         statuses.putAll(completed);
+        removed.forEach(statuses::remove);
     }
 
     private Status scanSource(Source source) {
@@ -206,10 +224,10 @@ public final class IndexingService implements AutoCloseable {
                                 }
                             };
                             Object identity = attrs.fileKey();
-                            if (SecureFiles.supported()) {
+                            {
                                 // 루트부터 각 요소를 NOFOLLOW로 열어 고정한 fd만 읽는다. 검사 뒤 중간 디렉터리를 소스 밖 링크로 바꾸거나
                                 // FIFO로 바꿔도 소스 밖 내용을 읽거나 멈추지 않는다.
-                                try (var pinned = SecureFiles.open(real)) {
+                                try (var pinned = opener.open(real)) {
                                     var opened = Files.readAttributes(pinned.path(), BasicFileAttributes.class);
                                     if (!java.util.Objects.equals(opened.fileKey(), identity) || opened.size() != stamp.size
                                             || opened.lastModifiedTime().toMillis() != stamp.mtime) throw new IOException("추출 중 파일 변경");
@@ -218,8 +236,6 @@ public final class IndexingService implements AutoCloseable {
                                     var done = Files.readAttributes(pinned.path(), BasicFileAttributes.class);
                                     if (done.size() != stamp.size || done.lastModifiedTime().toMillis() != stamp.mtime) throw new IOException("추출 중 파일 변경");
                                 }
-                            } else {
-                                throw new IOException("안전한 원본 열기 미지원");
                             }
                             // 추출 도중 변경·교체된 파일은 이번 검사에서 게시하지 않는다.
                             var after = Files.readAttributes(file.toRealPath(), BasicFileAttributes.class);
@@ -227,6 +243,8 @@ public final class IndexingService implements AutoCloseable {
                                     || after.size() != stamp.size || after.lastModifiedTime().toMillis() != stamp.mtime)
                                 throw new IOException("추출 중 파일 변경");
                             index.replace(source, key, stamp.mtime, chunks);
+                            event(old != null && old.indexed ? IndexEvent.Kind.UPDATED : IndexEvent.Kind.ADDED,
+                                    source.id(), key, stamp.size, stamp.mtime, stamp.size + ":" + stamp.mtime);
                             stamp = new Stamp(stamp.size, stamp.mtime, stamp.stableSince, true);
                         }
                         next.put(key, stamp);
@@ -234,6 +252,8 @@ public final class IndexingService implements AutoCloseable {
                     } catch (IOException | RuntimeException | OutOfMemoryError | StackOverflowError e) {
                         // 한 파일의 추출 메모리 부족이 소스 전체 검사를 멈추지 않게 그 파일만 오류로 남긴다.
                         counts[2]++;
+                        event(IndexEvent.Kind.FAILED, source.id(), Source.normalized(relative), ignored.size(), ignored.lastModifiedTime().toMillis(),
+                                ignored.size() + ":" + ignored.lastModifiedTime().toMillis());
                         // 예외 메시지·스택에는 절대 경로·문서 내용·원격 응답이 있을 수 있어 출력하지 않는다.
                         Throwable detail = e;
                         for (int depth = 0; depth < 4 && !(detail instanceof ExtractionFailure) && detail.getCause() != null; depth++) detail = detail.getCause();
@@ -247,7 +267,11 @@ public final class IndexingService implements AutoCloseable {
                     return FileVisitResult.CONTINUE;
                 }
             });
-            for (String deleted : previous.keySet()) if (!next.containsKey(deleted)) index.delete(source.id() + ":" + deleted);
+            for (String deleted : previous.keySet()) if (!next.containsKey(deleted)) {
+                index.delete(source.id() + ":" + deleted);
+                var old = previous.get(deleted);
+                event(IndexEvent.Kind.DELETED, source.id(), deleted, old.size, old.mtime, old.size + ":" + old.mtime);
+            }
             snapshots.put(source.id(), next);
             return new Status(counts[2] == 0 ? "ready" : "error", counts[0], counts[1], counts[2], counts[2] == 0 ? "" : "일부 파일 추출 실패", failures, counts[3], oversized);
         } catch (IOException | RuntimeException e) {

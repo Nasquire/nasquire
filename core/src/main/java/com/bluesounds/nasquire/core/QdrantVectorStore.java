@@ -61,7 +61,7 @@ public final class QdrantVectorStore implements VectorStore {
         var body = new JsonObject(); body.add("vectors", vectors);
         call("PUT", "", body, false, deadline);
         // 범위 필터와 삭제 필터가 쓰는 payload 필드를 색인한다.
-        for (String field : List.of("source", "key", "epoch")) {
+        for (String field : List.of("source", "key", "epoch", "access")) {
             var index = new JsonObject(); index.addProperty("field_name", field); index.addProperty("field_schema", field.equals("epoch") ? "integer" : "keyword");
             call("PUT", "/index?wait=true", index, false, deadline);
         }
@@ -91,6 +91,13 @@ public final class QdrantVectorStore implements VectorStore {
                 var vector = new JsonArray(); for (float v : p.vector()) vector.add(v); point.add("vector", vector);
                 var payload = new JsonObject(); payload.addProperty("source", p.source()); payload.addProperty("key", p.key()); payload.addProperty("offset", p.offset());
                 payload.addProperty("epoch", p.epoch());
+                var access = new JsonArray();
+                String relative = p.key().substring(p.source().length() + 1);
+                AccessScope.validatePath(relative);
+                access.add(p.key());
+                for (int slash = relative.indexOf('/'); slash >= 0; slash = relative.indexOf('/', slash + 1))
+                    access.add(p.source() + ":" + relative.substring(0, slash));
+                payload.add("access", access);
                 point.add("payload", payload); array.add(point);
             }
             var body = new JsonObject(); body.add("points", array);
@@ -104,6 +111,10 @@ public final class QdrantVectorStore implements VectorStore {
         call("POST", "/points/delete?wait=true", body, true, deadline);
     }
     public List<Match> search(float[] vector, Set<String> sources, int limit, long epoch) throws IOException {
+        return search(vector, AccessScope.sources(sources), limit, epoch);
+    }
+    public List<Match> search(float[] vector, AccessScope scope, int limit, long epoch) throws IOException {
+        var sources = scope.sources();
         if (sources.isEmpty()) return List.of();
         if (limit < 1 || limit > 1000) throw new IllegalArgumentException("결과 수 오류");
         var query = new JsonArray(); for (float v : vector) query.add(v);
@@ -112,6 +123,20 @@ public final class QdrantVectorStore implements VectorStore {
         var filter = must("source", match("any", any));
         var current = new JsonObject(); current.addProperty("key", "epoch"); current.add("match", match("value", new JsonPrimitive(epoch)));
         filter.getAsJsonArray("must").add(current);
+        var allowed = new JsonArray();
+        for (var region : scope.regions()) {
+            var scoped = must("source", match("value", new JsonPrimitive(region.source())));
+            if (!region.prefix().isEmpty()) scoped.getAsJsonArray("must").add(
+                    must("access", match("value", new JsonPrimitive(region.source() + ":" + region.prefix()))).getAsJsonArray("must").get(0));
+            var denied = new JsonArray();
+            for (String excluded : region.excluded()) denied.add(excluded.isEmpty()
+                    ? must("source", match("value", new JsonPrimitive(region.source())))
+                    : must("access", match("value", new JsonPrimitive(region.source() + ":" + excluded))));
+            scoped.add("must_not", denied);
+            allowed.add(scoped);
+        }
+        if (allowed.isEmpty()) return List.of();
+        filter.add("should", allowed);
         body.add("filter", filter);
         var fields = new JsonArray(); fields.add("source"); fields.add("key"); fields.add("offset"); fields.add("epoch");
         body.add("with_payload", fields); body.addProperty("with_vector", false);
@@ -124,7 +149,7 @@ public final class QdrantVectorStore implements VectorStore {
                 int offset = payload.get("offset").getAsInt(); float score = point.get("score").getAsFloat();
                 // 서버 필터가 무시되거나 손상돼도 범위 밖·이전 세대 점은 버린다.
                 if (!payload.has("epoch") || payload.get("epoch").getAsLong() != epoch) continue;
-                if (!sources.contains(source) || !key.startsWith(source + ":") || !Float.isFinite(score) || offset < 0) continue;
+                if (!scope.allows(source, key) || !Float.isFinite(score) || offset < 0) continue;
                 matches.add(new Match(source, key, offset, score));
                 if (matches.size() >= limit) break;
             }

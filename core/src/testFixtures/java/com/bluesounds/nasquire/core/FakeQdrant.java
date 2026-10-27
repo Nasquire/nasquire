@@ -106,10 +106,23 @@ public final class FakeQdrant implements AutoCloseable {
     /** must 조건의 match.value / match.any만 지원한다. 필터가 없으면 거부한다. */
     private static boolean matches(Point p, JsonObject filter) {
         if (filter == null) throw new IllegalArgumentException("filter 필요");
+        if (filter.has("must_not")) for (var excluded : filter.getAsJsonArray("must_not"))
+            if (matches(p, excluded.getAsJsonObject())) return false;
+        if (filter.has("should")) {
+            boolean any = false;
+            for (var alternative : filter.getAsJsonArray("should")) any |= matches(p, alternative.getAsJsonObject());
+            if (!any) return false;
+        }
         for (var c : filter.getAsJsonArray("must")) {
             var condition = c.getAsJsonObject(); var match = condition.getAsJsonObject("match");
             var field = p.payload.get(condition.get("key").getAsString());
             if (field == null) return false;
+            if (field.isJsonArray()) {
+                boolean found = false;
+                for (var value : field.getAsJsonArray()) found |= value.equals(match.get("value"));
+                if (!found) return false;
+                continue;
+            }
             String actual = field.getAsString();
             if (match.has("value") && !match.get("value").getAsString().equals(actual)) return false;
             if (match.has("any")) {

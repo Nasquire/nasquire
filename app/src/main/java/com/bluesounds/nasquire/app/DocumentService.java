@@ -29,14 +29,14 @@ public class DocumentService {
     }
     public List<SearchIndex.Hit> search(Storage.Identity identity, String query, String source, int limit, String mode, boolean rerank) throws IOException {
         // 소스 범위를 적용한 결과만 외부 공급자에 전달한다. 원격 응답은 순서만 바꿀 수 있다.
-        return full.rerank(query, index.search(query, scope(identity, source), limit, mode), rerank);
+        return full.rerank(query, index.search(query, AccessScope.sources(scope(identity, source)), limit, mode), rerank);
     }
     public Map<String, Object> document(Storage.Identity identity, String path, Integer from, Integer to, Integer offset, Integer length) throws IOException {
         if (path == null || path.length() > 4096 || !path.contains(":")) throw new IllegalArgumentException("소스 ID:상대경로가 필요합니다");
         if (from != null && from < 1 || to != null && to < 1 || from != null && to != null && to < from
                 || offset != null && offset < 0 || length != null && (length < 1 || length > 100000)
                 || (from != null || to != null) && (offset != null || length != null)) throw new IllegalArgumentException("문서 범위 오류");
-        var hits = index.document(path, scope(identity, path.substring(0, path.indexOf(':'))));
+        var hits = index.document(path, AccessScope.sources(scope(identity, path.substring(0, path.indexOf(':')))));
         if (hits.isEmpty()) throw new NoSuchElementException("문서 없음");
         int start = offset == null ? 0 : offset;
         int max = length == null ? 100000 : length;

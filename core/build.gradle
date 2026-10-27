@@ -21,3 +21,51 @@ tasks.register('generateSamples', JavaExec) {
     mainClass = 'com.bluesounds.nasquire.core.SampleDocuments'
     args rootProject.layout.buildDirectory.dir('samples').get().asFile.absolutePath
 }
+
+apply plugin: 'maven-publish'
+group = 'com.bluesounds.nasquire'
+java { withSourcesJar(); withJavadocJar() }
+tasks.withType(Javadoc).configureEach {
+    options.encoding = 'UTF-8'
+    options.addStringOption('Xdoclint:none', '-quiet')
+}
+// 앱 테스트에서만 사용하는 fixture는 Maven 게시 변형에서 제외한다.
+components.java.withVariantsFromConfiguration(configurations.testFixturesApiElements) { skip() }
+components.java.withVariantsFromConfiguration(configurations.testFixturesRuntimeElements) { skip() }
+publishing {
+    publications {
+        core(MavenPublication) {
+            from components.java
+            artifactId = 'nasquire-core'
+            pom {
+                name = 'Nasquire Core'
+                description = 'Read-only document indexing and search library. AGPL-3.0 with additional permissions in LICENSE-EXCEPTIONS.md.'
+                url = 'https://github.com/Nasquire/nasquire'
+                licenses {
+                    license {
+                        name = 'GNU Affero General Public License v3.0; see LICENSE-EXCEPTIONS.md for additional permissions'
+                        url = 'https://github.com/Nasquire/nasquire/blob/main/LICENSE-EXCEPTIONS.md'
+                    }
+                }
+                scm {
+                    url = 'https://github.com/Nasquire/nasquire'
+                    connection = 'scm:git:https://github.com/Nasquire/nasquire.git'
+                }
+            }
+        }
+    }
+    repositories {
+        maven { name = 'buildRepo'; url = rootProject.layout.buildDirectory.dir('repo') }
+        def remoteUrl = providers.gradleProperty('NASQUIRE_MAVEN_URL').orElse(providers.environmentVariable('NASQUIRE_MAVEN_URL')).filter { !it.trim().isEmpty() }
+        if (remoteUrl.isPresent()) {
+            maven {
+                name = 'remote'
+                url = remoteUrl.get()
+                credentials {
+                    username = providers.gradleProperty('NASQUIRE_MAVEN_USER').orElse(providers.environmentVariable('NASQUIRE_MAVEN_USER')).getOrElse('')
+                    password = providers.gradleProperty('NASQUIRE_MAVEN_TOKEN').orElse(providers.environmentVariable('NASQUIRE_MAVEN_TOKEN')).getOrElse('')
+                }
+            }
+        }
+    }
+}

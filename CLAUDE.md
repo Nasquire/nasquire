@@ -25,9 +25,12 @@
 - `docs/ROADMAP.md`, `docs/verification/mvp.md`, `THIRD-PARTY.md`: 진행·실측·의존성 라이선스.
 - `CONTRIBUTING.md`·`SECURITY.md`: 한/영 기여·보안 정책. 외부 코드·문서·번역은 받거나 반영하지 않으며 이슈는 버그·기능 아이디어만 받는다. `.github/ISSUE_TEMPLATE/`과 PR 안내를 유지한다. `close-external-prs.yml`은 OWNER/MEMBER/COLLABORATOR 외 PR을 안내 후 닫는다. `pull_request_target`에서 PR 코드를 체크아웃·실행하지 않고 `pull-requests: write`만 부여하며 액션 SHA를 고정한다.
 
+- `docs/core-library.md`: nasquire-core 공개 API·AccessScope·이벤트·독립 앱 예제·게시 안내. 내부 구현은 core.internal, JPMS는 classpath 호환을 위해 보류한다.
+
 ## 명령
 - 빌드·테스트(기본 lite): `./gradlew build -q` (`:app:verifyLiteClasspath`가 full/ONNX/DJL 유입 검사)
 - full 선택 빌드·실행: `./gradlew -Pfull build -q`, `./gradlew -Pfull :app:bootRun`; 공급자 테스트 `./gradlew :full:test -q`. 앱 JAR 경로는 같으므로 마지막 빌드 구성에 유의한다. Dockerfile의 기본 타깃도 lite다.
+- 로컬 라이브러리 게시: `./gradlew :core:publishToMavenLocal -Dmaven.repo.local="$PWD/build/maven-local" -q` (원격 게시 금지, 좌표 `com.bluesounds.nasquire:nasquire-core:0.1.0`).
 - 코어/통합 테스트: `./gradlew :core:test :app:test -q` (가짜 Qdrant는 core testFixtures `FakeQdrant`)
 - 실행: `./gradlew :app:bootRun` (포트 8080, 저장소 루트 `./data`)
 - 별도 설정: `./gradlew :app:bootRun --args='--server.port=8101 --nasquire.data=./data'`
@@ -104,3 +107,5 @@
 - 외부 식별자는 issuer/sub 고정, 최초 연결은 ADMIN 지정 email(verified 필수)/sub만 허용한다. 자동 가입 기본 off·USER/소스 0개, 그룹 역할 동기화는 account_lock 트랜잭션의 마지막 ADMIN 보호를 유지한다. 로컬 TOTP 계정은 OIDC 뒤에도 추가 코드를 요구하며 로컬 로그인/복구를 보존한다. [설치](docs/install/oidc.md)·[검증](docs/verification/oidc.md).
 
 - 인증 교차 검토: 현재 계정을 확인할 수 없으면 거부한다(ID 1 대체 금지). TOTP 대기 검증은 ID를 명시하고 OIDC 그룹 역할·세대 변경은 최종 승인 뒤에만 적용한다. 마이그레이션은 기존 id=1 CHECK만 제거하고 role 기본값은 USER, 최초 설정은 ADMIN을 명시한다. 삭제는 외부 연결·허용값을 제거하되 로컬 ID 묘비를 보존한다.
+
+- core 권한은 조회 시점 계산: 기본 OpenAccessPolicy는 개인용/내부용 전체 소스 허용. RuleAccessPolicy는 가장 긴 접두사·동률 DENY·기본 거부이며 하위 재허용을 보존한다. 멤버십은 앱이 Principal로 제공하고 정책 교체는 재색인을 요구하지 않는다. AccessScope의 공통 허용 영역을 Lucene/Qdrant 후보 필터에 적용하고 결과·외부 전송 전에 재검사한다. 앱의 기존 AccessScope·인증 경로는 유지한다.

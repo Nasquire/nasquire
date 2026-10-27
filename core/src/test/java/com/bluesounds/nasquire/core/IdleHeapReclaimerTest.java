@@ -1,4 +1,5 @@
 package com.bluesounds.nasquire.core;
+import com.bluesounds.nasquire.core.internal.IdleHeapReclaimer;
 
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;

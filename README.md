@@ -280,3 +280,5 @@ The container reads mounted folders as a single UID; it does not apply each NAS 
 버그 보고·기능 제안은 이슈로 환영합니다. 외부 PR·패치 및 이슈에 첨부된 코드·문서·번역은 받지 않으며 반영하지 않습니다. 제안은 아이디어로만 참고하고 메인테이너가 직접 구현합니다. [기여 정책](CONTRIBUTING.md)과 비공개 취약점 보고를 위한 [보안 정책](SECURITY.md)을 확인하세요.
 
 Bug reports and feature ideas are welcome through issues. External PRs, patches, and code, documentation or translations attached to issues are neither accepted nor incorporated. Suggestions are ideas only; the maintainer implements changes independently. See [Contributing](CONTRIBUTING.md) and the [Security policy](SECURITY.md) for private vulnerability reporting.
+
+독립 Java 라이브러리 / Standalone Java library: [nasquire-core 사용 안내 / guide](docs/core-library.md).
