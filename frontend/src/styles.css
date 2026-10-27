@@ -11,6 +11,7 @@
   --text: #14171f;
   --text-2: #5b6270;
   --text-3: #666e7c;
+  --scrollbar-thumb: #5b627080;
   --accent: #1e3a8a;
   --accent-fg: #ffffff;
   --accent-soft: #eaf0fc;
@@ -51,6 +52,7 @@
   --text: #e9ebf0;
   --text-2: #a3a9b6;
   --text-3: #949dae;
+  --scrollbar-thumb: #a3a9b680;
   --accent: #a9c3ff;
   --accent-fg: #0e1015;
   --accent-soft: #1d2536;
@@ -83,6 +85,7 @@
     --text: #e9ebf0;
     --text-2: #a3a9b6;
     --text-3: #949dae;
+    --scrollbar-thumb: #a3a9b680;
     --accent: #a9c3ff;
     --accent-fg: #0e1015;
     --accent-soft: #1d2536;
@@ -102,6 +105,19 @@
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
+
+/* 기본 스크롤 동작은 유지하고 스크롤바 폭을 전환하지 않는다. */
+@media not all and (forced-colors: active) {
+  * { scrollbar-width: none; scrollbar-color: var(--scrollbar-thumb) transparent; }
+  *::-webkit-scrollbar { width: 0; height: 0; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 3px; }
+}
+.scrollbar-overlay { position: fixed; z-index: 1000; pointer-events: none; overflow: hidden; }
+.scrollbar-thumb { position: absolute; background: var(--scrollbar-thumb); border-radius: 3px; pointer-events: auto; touch-action: none; }
+.scrollbar-y { width: 6px; right: 2px; }
+.scrollbar-x { height: 6px; bottom: 2px; }
+@media (forced-colors: active) { .scrollbar-overlay { display: none; } }
 
 body { background: var(--bg); color: var(--text); font: 14px/1.6 var(--font); -webkit-font-smoothing: antialiased; }
 button { box-sizing: border-box; min-height: var(--ctl-h); line-height: 1.3; font: inherit; color: inherit; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; cursor: pointer; }

@@ -31,6 +31,9 @@ public final class IndexingService implements AutoCloseable {
         var t = new Thread(r, "nasquire-indexer"); t.setPriority(Thread.MIN_PRIORITY); t.setDaemon(true); return t;
     });
 
+    private static final int MAX_FOLLOW_UPS = 10;
+    private final Map<String, ScheduledFuture<?>> followUps = new HashMap<>();
+    private final Map<String, Integer> followUpCounts = new HashMap<>();
     private long extractionAttempts;
     private final IdleHeapReclaimer heapReclaimer = new IdleHeapReclaimer(worker, () -> {
         // G1 등 다른 GC의 정책에는 개입하지 않는다. 운영자가 명시적으로 끌 수도 있다.
@@ -61,7 +64,17 @@ public final class IndexingService implements AutoCloseable {
         // 실행 중 요청도 최대 다음 한 번으로 합치며 같은 단일 작업자에서 처리한다.
         if (requested.add(id)) worker.execute(() -> { requested.remove(id); safelyScan(id); });
     }
-    private void safelyScan(String id) {
+    private synchronized void safelyScan(String id) {
+        resetFollowUps(id);
+        runScan(id);
+    }
+    private void resetFollowUps(String id) {
+        for (String key : new HashSet<>(followUps.keySet())) {
+            if (id == null || id.equals(key)) followUps.remove(key).cancel(false);
+        }
+        if (id == null) followUpCounts.clear(); else followUpCounts.remove(id);
+    }
+    private void runScan(String id) {
         try {
             var all = sources.get();
             if (id == null) scan(all);
@@ -75,7 +88,24 @@ public final class IndexingService implements AutoCloseable {
         // 삭제와 재구축 완료 판단에는 전체 소스 목록을 사용한다.
         scanInternal(all, id);
     }
-    public void reindex(String id) { reindex.add(id); }
+    public void reindex(String id) {
+        reindex.add(id);
+        if (sources != null) scanNow(id);
+    }
+    private void scheduleFollowUp(String id) {
+        if (sources == null || worker.isShutdown() || followUps.containsKey(id)
+                || followUpCounts.getOrDefault(id, 0) >= MAX_FOLLOW_UPS) return;
+        var pending = snapshots.getOrDefault(id, Map.of()).values().stream().filter(s -> !s.indexed).toList();
+        if (pending.isEmpty()) return;
+        long due = pending.stream().mapToLong(s -> s.stableSince + stableMillis).min().orElseThrow();
+        followUps.put(id, worker.schedule(() -> {
+            synchronized (this) {
+                followUps.remove(id);
+                followUpCounts.merge(id, 1, Integer::sum);
+                runScan(id);
+            }
+        }, Math.max(25, due - System.currentTimeMillis() + 25), TimeUnit.MILLISECONDS));
+    }
     public Status status(String id) { return statuses.getOrDefault(id, new Status("waiting", 0, 0, 0, "")); }
 
     public synchronized void scan(List<Source> sources) throws IOException {
@@ -91,7 +121,10 @@ public final class IndexingService implements AutoCloseable {
     }
 
     private void scanCycle(List<Source> sources, String selected) throws IOException {
-        if (index.beginRebuild()) { snapshots.clear(); definitions.clear(); }
+        if (index.beginRebuild()) {
+            snapshots.clear(); definitions.clear(); resetFollowUps(null);
+            selected = null;
+        }
         if (!index.indexingAllowed()) return;
         var active = sources.stream().map(Source::id).collect(java.util.stream.Collectors.toSet());
         for (String old : new HashSet<>(definitions.keySet())) {
@@ -100,13 +133,24 @@ public final class IndexingService implements AutoCloseable {
         var completed = new HashMap<String, Status>();
         for (Source source : sources) {
             if (selected != null && !selected.equals(source.id())) continue;
-            if (!source.equals(definitions.put(source.id(), source)) || reindex.remove(source.id())) {
+            boolean changed = !source.equals(definitions.put(source.id(), source));
+            boolean requestedReindex = reindex.remove(source.id());
+            if (changed) {
+                // 루트·범위 변경과 시작 시에는 이전 범위의 문서를 먼저 정리한다.
                 index.deleteSource(source.id()); snapshots.remove(source.id());
+            } else if (requestedReindex) {
+                var previous = snapshots.get(source.id());
+                if (previous != null) previous.replaceAll((key, stamp) ->
+                        new Stamp(stamp.size, stamp.mtime, System.currentTimeMillis(), false));
             }
             completed.put(source.id(), scanSource(source));
+            scheduleFollowUp(source.id());
         }
         synchronized (index) {
-            index.finishRebuild(completed.size() == sources.size() && completed.values().stream().allMatch(s -> s.state().equals("ready") && s.pending() == 0 && s.errors() == 0));
+            index.finishRebuild(sources.stream().allMatch(source -> {
+                var status = completed.getOrDefault(source.id(), statuses.get(source.id()));
+                return status != null && status.state().equals("ready") && status.pending() == 0 && status.errors() == 0;
+            }));
             index.refresh();
         }
         // 검색자가 새 색인을 읽을 수 있게 된 뒤 완료 상태를 공개한다.
@@ -186,7 +230,7 @@ public final class IndexingService implements AutoCloseable {
                             stamp = new Stamp(stamp.size, stamp.mtime, stamp.stableSince, true);
                         }
                         next.put(key, stamp);
-                        if (stamp.indexed) counts[0]++; else { counts[1]++; index.delete(source.id() + ":" + key); }
+                        if (stamp.indexed) counts[0]++; else counts[1]++;
                     } catch (IOException | RuntimeException | OutOfMemoryError | StackOverflowError e) {
                         // 한 파일의 추출 메모리 부족이 소스 전체 검사를 멈추지 않게 그 파일만 오류로 남긴다.
                         counts[2]++;
@@ -213,7 +257,11 @@ public final class IndexingService implements AutoCloseable {
 
     public void close() {
         // 정상 종료에서는 진행 중 Lucene 파일 I/O를 인터럽트하지 않는다.
-        worker.shutdown();
+        synchronized (this) {
+            if (periodic != null) periodic.cancel(false);
+            resetFollowUps(null);
+            worker.shutdown();
+        }
         heapReclaimer.cancel();
         try {
             if (!worker.awaitTermination(30, TimeUnit.SECONDS)) {

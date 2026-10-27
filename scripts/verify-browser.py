@@ -137,6 +137,74 @@ async def add_source(page, name, path, kind='directory'):
     await expect(page.get_by_role('heading', name=name, exact=True)).to_be_visible()
 
 
+async def verify_scrollbars(page):
+    # 실제 overflow 요소에서 공간·호버·포커스·휠·키보드·드래그·테마·강제 색을 검사한다.
+    await page.evaluate("document.documentElement.style.overflow = 'hidden'")
+    for tag in ('div', 'pre', 'textarea'):
+        await page.evaluate(r"""tag => {
+          const node = document.createElement(tag);
+          node.id = 'scrollbar-probe'; node.tabIndex = 0;
+          node.style.cssText = 'position:fixed;left:20px;top:20px;width:240px;height:140px;overflow:scroll;white-space:pre;z-index:100;background:var(--bg);margin:0;padding:0;border:0;resize:none';
+          const text = ('long line '.repeat(80) + '\n').repeat(80);
+          if (tag === 'textarea') node.value = text;
+          else node.textContent = text;
+          document.getElementById('root').append(node);
+        }""", tag)
+        probe = page.locator('#scrollbar-probe')
+        await page.mouse.move(500, 400)
+        await expect(page.locator('.scrollbar-overlay')).to_have_count(0)
+        before = await probe.evaluate('(e) => [e.clientWidth,e.clientHeight,e.scrollWidth,e.scrollHeight]')
+        assert before[:2] == [240, 140], '숨김 스크롤바 공간: ' + tag
+        await probe.hover(position={'x':80,'y':60})
+        await expect(page.locator('.scrollbar-y:visible')).to_have_count(1)
+        assert await page.locator('.scrollbar-y').evaluate('(e) => e.getBoundingClientRect().width') == 6
+        assert await probe.evaluate('(e) => [e.clientWidth,e.clientHeight,e.scrollWidth,e.scrollHeight]') == before, '호버 레이아웃 이동'
+        await page.mouse.wheel(0, 240)
+        await page.wait_for_function("document.getElementById('scrollbar-probe').scrollTop > 0")
+        await page.mouse.wheel(240, 0)
+        await page.wait_for_function("document.getElementById('scrollbar-probe').scrollLeft > 0")
+        if tag == 'div':
+            await probe.evaluate('(e) => { e.scrollTop = 0; e.scrollLeft = 0 }')
+            touch = await page.context.new_cdp_session(page)
+            await touch.send('Emulation.setTouchEmulationEnabled', {'enabled': True})
+            await touch.send('Input.dispatchTouchEvent', {'type':'touchStart', 'touchPoints':[{'x':100,'y':130}]})
+            for y in (110, 90, 70, 50):
+                await touch.send('Input.dispatchTouchEvent', {'type':'touchMove', 'touchPoints':[{'x':100,'y':y}]})
+                await page.wait_for_timeout(30)
+            await touch.send('Input.dispatchTouchEvent', {'type':'touchEnd', 'touchPoints':[]})
+            await page.wait_for_function("document.getElementById('scrollbar-probe').scrollTop > 0")
+            await touch.send('Emulation.setTouchEmulationEnabled', {'enabled': False})
+            await touch.detach()
+        await probe.focus()
+        await page.mouse.move(500, 400)
+        await expect(page.locator('.scrollbar-y:visible')).to_have_count(1)
+        await page.keyboard.press('Control+End' if tag == 'textarea' else 'End')
+        await page.wait_for_function("document.getElementById('scrollbar-probe').scrollTop > 240")
+        await probe.evaluate('(e) => { e.scrollTop = 0; e.scrollLeft = 0 }')
+        await page.wait_for_timeout(80)
+        thumb = page.locator('.scrollbar-y')
+        box = await thumb.bounding_box()
+        await page.mouse.move(box['x'] + 3, box['y'] + 4)
+        await page.mouse.down()
+        await page.mouse.move(box['x'] + 3, box['y'] + 60, steps=5)
+        await page.mouse.up()
+        assert await probe.evaluate('(e) => e.scrollTop') > 0, '스크롤바 드래그'
+        colors = []
+        for theme in ('light', 'dark'):
+            await page.evaluate('(theme) => document.documentElement.dataset.theme = theme', theme)
+            colors.append(await thumb.evaluate('(e) => getComputedStyle(e).backgroundColor'))
+        assert colors[0] != colors[1] and all('0.5' in color for color in colors), '테마 반투명 색'
+        await page.emulate_media(forced_colors='active')
+        await expect(page.locator('.scrollbar-overlay')).to_have_count(0)
+        assert await probe.evaluate('(e) => getComputedStyle(e).scrollbarWidth') == 'auto', '강제 색 기본 스크롤바'
+        await page.emulate_media(forced_colors='none')
+        await probe.evaluate('(e) => { e.blur(); e.remove() }')
+        await page.mouse.move(500, 400)
+        await expect(page.locator('.scrollbar-overlay')).to_have_count(0)
+    await page.evaluate('delete document.documentElement.dataset.theme')
+    await page.evaluate("document.documentElement.style.removeProperty('overflow')")
+
+
 async def main():
     OUT.mkdir(parents=True, exist_ok=True)
     summary = {'build': 'full' if os.environ.get('VERIFY_FULL') == 'true' else 'lite', 'checks': [], 'audits': [], 'consoleErrors': [], 'failedRequests': [], 'httpErrors': []}
@@ -181,11 +249,28 @@ async def main():
         try:
             await page.goto(BASE)
             await expect(page.get_by_role('heading', name='Set up Nasquire')).to_be_visible()
+            await verify_scrollbars(page)
+            passed('스크롤바 공간·호버·포커스·휠·키보드·드래그·테마·강제 색')
             await audit(page, 'setup-en-desktop')
             password = secrets.token_urlsafe(24) + 'a1!'
             await login(page, password)
             await expect(page.get_by_role('navigation')).to_be_visible()
             passed('첫 설정·관리자 로그인')
+            empty_state = await context.storage_state()
+            for locale, message, button, heading in [
+                ('en-US', 'There are no upload sources.', 'Manage sources', 'Your knowledge, connected'),
+                ('ko-KR', '업로드 소스가 없습니다.', '소스 관리로 이동', '내 폴더를 지식으로')]:
+                empty_context = await browser.new_context(locale=locale, storage_state=empty_state)
+                empty_page = await empty_context.new_page()
+                await empty_page.goto(BASE)
+                await nav(empty_page, 'Files and shares' if locale == 'en-US' else '파일·공유')
+                await expect(empty_page.get_by_text(message, exact=False)).to_be_visible()
+                await expect(empty_page.locator('section.card').first.locator('select')).to_have_count(0)
+                await audit(empty_page, 'uploads-empty-' + locale)
+                await empty_page.get_by_role('button', name=button, exact=True).click()
+                await expect(empty_page.get_by_role('heading', name=heading, exact=True)).to_be_visible()
+                await empty_context.close()
+            passed('업로드 소스 없음 한/영 안내·소스 관리 이동')
             upload = OUT / 'uploads'
             upload.mkdir(exist_ok=True)
             await add_source(page, 'Sample documents', ROOT / 'build/samples')
@@ -381,6 +466,14 @@ async def main():
                 await licenses.get_by_role('tab', name=file, exact=True).click()
                 await expect(licenses.get_by_role('tabpanel')).not_to_have_text('Loading…')
                 assert len(await licenses.get_by_role('tabpanel').inner_text()) > 100
+            panel = licenses.get_by_role('tabpanel')
+            await panel.focus()
+            await expect(licenses.locator('.scrollbar-y:visible')).not_to_have_count(0)
+            await expect(page.locator('body > .scrollbar-overlay')).to_have_count(0)
+            dimensions = await panel.evaluate('(e) => [e.clientWidth,e.clientHeight]')
+            await page.keyboard.press('End')
+            await page.wait_for_function("document.getElementById('license-text').scrollTop > 0")
+            assert await panel.evaluate('(e) => [e.clientWidth,e.clientHeight]') == dimensions
             await audit(page, 'licenses-en-desktop')
             await page.keyboard.press('Escape')
             await expect(page.get_by_role('button', name='View licenses')).to_be_focused()

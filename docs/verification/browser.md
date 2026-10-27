@@ -95,3 +95,17 @@ Playwright 1.64.1·Chromium 156.0.8078.4·axe-core 4.14.0을 사용했다.
 최종 결과와 명령별 종료 코드는 로컬 `build/verification/admin-ui/report.txt`, 전체 테스트 합계는 같은 폴더의 `tests-full.json`에 기록한다. 화면별 axe·레이아웃·오류 결과와 스크린샷은 `build/verification/browser/`, `build/verification/browser-full/`에 보존한다. 실패 화면/요약은 `build/verification/browser-admin-attempt-1/`부터 `-3/`까지 보존한다. 인증값은 보고와 로그에 기록하지 않는다.
 
 최종 결과: `./gradlew build -q`, `./gradlew -Pfull build -q`, `VERIFY_PORT=8104 python3 scripts/verify-runtime.py`, 브라우저 lite 및 `VERIFY_FULL=true` 모두 종료 0. core 28·app 64·full 21개 테스트 실패·오류·생략 0. lite 93/full 95개 화면 모두 axe 위반·브라우저 오류 0, 서버 종료·8104 반환 확인. 런타임 최대 RSS 280.1 MiB이며 강제 컨테이너 메모리 상한 실측은 아니다. 내부 정보 검사 일치 0건(`rg` 종료 1)·공백 검사 종료 0. 첫 full 브라우저 실패 자료는 `build/verification/browser-full-admin-attempt-1/`에 보존한다.
+
+## 관리 화면 스크롤바 숨김 (기준 9ca8a6c)
+
+기본 스크롤바는 Firefox의 `scrollbar-width`/`scrollbar-color`와 Chromium·Safari의 `::-webkit-scrollbar`로 공간 없이 숨긴다. 호버·포커스 영역의 위치·스크롤 비율을 `frontend/src/scrollbars.ts`에서 읽어 6px 반투명 오버레이를 겹쳐 표시한다. 기본 스크롤바 폭을 전환하면 일반 스크롤바를 사용하는 OS에서 레이아웃이 이동하므로 별도 표시를 사용했다. `scrollbar-gutter`·기존 overflow·콘텐츠 크기는 변경하지 않는다. 강제 색 모드에서는 이 스타일과 오버레이를 적용하지 않아 기본 스크롤바를 유지한다.
+
+오버레이는 양방향 드래그와 그 위의 휠 입력을 지원하며, 내용 영역의 휠·터치·키보드 스크롤은 브라우저가 처리한다. 보조 표시를 접근성 트리와 Tab 순서에서 제외하고 기존 스크롤 영역의 포커스를 유지한다. 중첩 모달은 최상위 모달에만 표시하여 비활성 배경에 스크롤바가 남지 않게 한다.
+
+`scripts/verify-browser.py`에 일반 영역·pre·textarea의 기본 공간 0, 호버/포커스 표시, 6px 너비, 내용 크기 불변, 가로/세로 휠, 키보드, 드래그, 테마 반투명 색, 강제 색 기본 복귀 검사를 추가했다. Chromium CDP 터치 스와이프 모의 입력과 실제 라이선스 모달의 키보드 스크롤·배경 표시 제거도 검사한다.
+
+실패 이력: 첫 브라우저 실행은 초기 설정 페이지의 실제 페이지 스크롤바까지 테스트용 영역과 함께 집계하여 종료 1이었다. 테스트 중 페이지 스크롤을 분리했고 overflow가 잠긴 페이지의 표시는 제외했다. 증거는 `build/verification/scrollbars/browser-attempt-1/`에 보존했다. 수정 후 전체 브라우저 검증 종료 0을 확인했고, 스크린샷에서 발견한 비활성 배경 표시까지 보완하여 최종 재검증했다.
+
+검증 한계: Firefox 실행 파일은 Snap 사용자 데이터·프로세스 격리 제약으로 `firefox --version`부터 종료 46이었다(`build/verification/scrollbars/firefox-check.log`). Safari·실제 OS 기본 스크롤바·실제 터치 기기·스크린리더는 이 환경에서 검증하지 못했다. full 빌드·외부 서비스 검증은 이번 공통 화면 스타일 변경 범위에서 실행하지 않았다. lite 빌드의 full 공급자 전용 OCR 통합 테스트 2건은 구성 조건으로 생략된다.
+
+최종 결과: `./gradlew build -q` 종료 0, lite 브라우저 93개 화면 종료 0, axe 위반·브라우저 오류 0, 8104 서버 종료·포트 반환 확인. core 31·app 65·full 모듈 21건 중 실패/오류 0, app의 위 2건만 생략했다(full 앱 구성 빌드는 수행하지 않았다). `python3 -m py_compile scripts/verify-browser.py`·`git diff --check` 종료 0, 추적 파일·신규 코드·커밋 메시지 내부 정보 검사 무일치(`rg` 종료 1). 상세 명령·결과는 `build/verification/scrollbars/report.json`, 빌드/브라우저 로그는 같은 폴더의 `build.log`·`browser.log`, 화면별 결과·스크린샷은 `build/verification/browser/`에 있다.

@@ -109,7 +109,7 @@ export default function App() {
     <div className="sidebar-bottom"><button type="button" className="settings-trigger" aria-label={t('Settings', '환경설정')} title={t('Settings', '환경설정')} aria-haspopup="dialog" aria-expanded={settingsOpen} onClick={() => { setError(''); setSettingsOpen(true) }}><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="m9 3-1 3-3 1-2 5 2 5 3 1 1 3h6l1-3 3-1 2-5-2-5-3-1-1-3Z"/><circle cx="12" cy="12" r="3"/></svg></button><div role="group" aria-label={t('Theme', '테마')}>{(['auto', 'light', 'dark'] as const).map((value, i) => <button key={value} aria-pressed={theme === value} onClick={() => setTheme(value)}>{[t('Auto', '자동'), t('Light', '라이트'), t('Dark', '다크')][i]}</button>)}</div></div>
   </aside><main className="main"><header>{titles[page]}</header><div className="content">
     {error && <p className="error" role="alert">{error}</p>}
-    {page === 'files' && <Files sources={sources} api={api} csrfHeader={auth.csrfHeader} csrfToken={auth.csrfToken} />}
+    {page === 'files' && <Files onSources={() => setPage('sources')} sources={sources} api={api} csrfHeader={auth.csrfHeader} csrfToken={auth.csrfToken} />}
     {page === 'sources' && <><h1>{t('Your knowledge, connected', '내 폴더를 지식으로')}</h1><p>{t('Standard sources are read-only. Enable an upload source in a separate writable folder.', '일반 소스는 읽기 전용입니다. 별도 쓰기 가능 폴더를 업로드 소스로 등록할 수 있습니다.')}</p>
       <section className="card"><h2>{edit ? t('Edit source', '소스 편집') : t('Add a source', '소스 등록')}</h2><form key={edit?.id ?? 'new'} onSubmit={e => submit(e, async data => {
         const globs = (key: string) => String(data.get(key)).split('\n').map(v => v.trim()).filter(Boolean)

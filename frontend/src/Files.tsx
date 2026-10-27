@@ -4,7 +4,7 @@ const t = (en: string, kr: string) => ko ? kr : en
 type Source = { id: string; name: string; kind: string }
 type Entry = { name: string; path: string; directory: boolean; size: number }
 type Api = <T>(path: string, method?: string, body?: unknown) => Promise<T>
-export default function Files({ sources, api, csrfHeader, csrfToken }: { sources: Source[]; api: Api; csrfHeader: string; csrfToken: string }) {
+export default function Files({ sources, api, csrfHeader, csrfToken, onSources }: { sources: Source[]; api: Api; csrfHeader: string; csrfToken: string; onSources: () => void }) {
   const [source, setSource] = useState('')
   const [path, setPath] = useState('')
   const [entries, setEntries] = useState<Entry[]>([])
@@ -31,10 +31,10 @@ export default function Files({ sources, api, csrfHeader, csrfToken }: { sources
   }
   useEffect(() => { void refresh().catch(e => setError(String(e))) }, [source, path])
   return <><h1>{t('Uploads and sharing', '업로드·외부 공유')}</h1>
-    <p>{t('Only upload sources allow changes. API tokens and MCP remain read-only.', '업로드 소스에서만 파일을 변경합니다. API 토큰과 MCP는 읽기 전용입니다.')}</p>
+    <p>{t('Upload and manage files in upload sources. Regular sources, API tokens and MCP are read-only.', '업로드 소스에서 파일을 올리고 관리합니다. 일반 소스·API 토큰·MCP는 읽기 전용입니다.')}</p>
     {error && <p className="error" role="alert">{error}</p>}
     <section className="card"><h2>{t('Upload files', '파일 관리')}</h2>
-      <label>{t('Upload source', '업로드 소스')}<select value={source} onChange={e => { setSource(e.target.value); setPath('') }}><option value="">{t('Select source', '소스 선택')}</option>{sources.filter(s => s.kind === 'upload').map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
+      {sources.some(s => s.kind === 'upload') ? <label>{t('Upload source', '업로드 소스')}<select value={source} onChange={e => { setSource(e.target.value); setPath('') }}><option value="">{t('Select source', '소스 선택')}</option>{sources.filter(s => s.kind === 'upload').map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label> : <div className="notice"><p>{t('There are no upload sources. Mount a separate writable folder, then register it as an upload source in Sources.', '업로드 소스가 없습니다. 쓰기 가능한 별도 폴더를 마운트한 뒤 소스 관리에서 종류를 업로드로 등록하세요')}</p><button onClick={onSources}>{t('Manage sources', '소스 관리로 이동')}</button></div>}
       {source && <><p><code>{path || '/'}</code></p><button disabled={busy || !path} onClick={() => setPath(path.split('/').slice(0, -1).join('/'))}>{t('Parent folder', '상위 폴더')}</button>
         <form onSubmit={e => submit(e, async data => {
           const file = data.get('file') as File
