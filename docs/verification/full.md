@@ -12,6 +12,10 @@
 
 ## 설정 API
 
+> 3.7 1차(2026-11-15) 이후: 리랭커 항목(`reranker`·`baseUrl`·`model`·`apiKey`·`topN`·`timeoutSeconds`·`local*`·`allowInsecureHttp`)은 검색 설정 `/api/reranker`로 옮겼고 원격 리랭커는 lite에서도 동작한다(서버 여러 개, [임베딩·원격 연결](../embeddings.md#원격-리랭커--remote-reranker)). `/api/full`은 OCR 필드만 받는다. 아래 표의 리랭커 행은 이전 기록이다.
+>
+> 3.7 2차(2026-11-15) 이후: OCR 선택(`ocr`)·쪽 상한(`ocrMaxPages`)은 일반 설정 `/api/ocr`(`ocr=off|tesseract|remote`, `maxPages`)로 옮겼고 원격 OCR은 lite에서도 동작한다([원격 OCR](../embeddings.md#원격-ocr--remote-ocr)). `/api/full`에는 로컬 Tesseract 제한(`ocrTimeoutSeconds`·`ocrMemoryMiB`)만 남으며 이전 입력은 OCR 설정으로 넘긴다. OCR 렌더링 격리 코드는 core `core.ocr`로 옮겼다.
+
 `GET /api/full`은 `available`(full 구현 포함), `hasKey`, 비밀값을 제외한 설정을 제공한다. `PUT /api/full`은 아래 문자열 필드를 받는다. 빈 `apiKey`는 기존 값을 유지한다.
 
 | 필드 | 기본값 / 허용 범위 |

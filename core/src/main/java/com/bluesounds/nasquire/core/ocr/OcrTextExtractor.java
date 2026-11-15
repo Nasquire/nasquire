@@ -1,6 +1,7 @@
-package com.bluesounds.nasquire.full;
+package com.bluesounds.nasquire.core.ocr;
 
 import com.bluesounds.nasquire.core.*;
+import com.bluesounds.nasquire.core.layout.LayoutCheck;
 import java.awt.image.BufferedImage;
 import java.io.*;
 import java.nio.file.Path;
@@ -25,6 +26,8 @@ public final class OcrTextExtractor implements TextExtractor {
         if (maxPages < 1 || maxPages > 100) throw new IllegalArgumentException("OCR 쪽 상한 오류");
         this.provider = provider; this.maxPages = maxPages; this.sandbox = sandbox;
     }
+    OcrSandbox sandbox() { return sandbox; }
+    int maxPages() { return maxPages; }
     public boolean supports(Path path) {
         String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
         return Set.of("pdf", "png", "jpg", "jpeg", "tif", "tiff", "bmp", "gif").contains(name.substring(name.lastIndexOf('.') + 1));
@@ -38,29 +41,48 @@ public final class OcrTextExtractor implements TextExtractor {
     }
     @Override
     public void extractLocated(Path name, Path path, LocatedConsumer consumer, int maxCharacters) throws IOException {
+        extractLocated(name, path, consumer, maxCharacters, null);
+    }
+    /**
+     * check가 있으면(Docling 연결 시에만) 글자 층 쪽은 PDFBox 신호로, 스캔 쪽·단일 프레임 이미지는 자식이 렌더링한 래스터의 직선 격자로 판단한다.
+     * 원격 OCR·Tesseract 모두 글자만 돌려주므로(단어 위치 없음) 스캔 쪽의 단어 위치 정렬은 쓰지 않는다.
+     */
+    @Override
+    public void extractLocated(Path name, Path path, LocatedConsumer consumer, int maxCharacters, LayoutCheck check) throws IOException {
         int[] remaining = {maxCharacters};
+        boolean grid = check != null && !check.always();
         if (name.toString().toLowerCase(Locale.ROOT).endsWith(".pdf")) {
             // 텍스트 추출은 기존 PDF 추출기(같은 상한)로 하고, 텍스트 없는 쪽만 모아 자식 프로세스 한 번으로 렌더링한다.
             var parts = new ArrayList<Part>(); var blank = new ArrayList<Integer>();
-            new PdfTextExtractor().extractLocated(path, (page, location, text) -> {
+            new PdfTextExtractor().extract(path, (page, text) -> {
                 if (text.isBlank()) {
                     if (blank.size() >= maxPages) throw new IOException("OCR 쪽 상한 초과");
                     blank.add(page); parts.add(new Part(page, null, null));
-                } else parts.add(new Part(page, location, text));
-            }, maxCharacters);
+                } else parts.add(new Part(page, Location.page(page), text));
+            }, maxCharacters, check, false);
             if (blank.isEmpty()) { for (var p : parts) accept(consumer, p.page(), p.location(), p.text(), remaining); return; }
-            try (var job = sandbox.pdf(path, blank, maxPages)) {
+            try (var job = sandbox.pdf(path, blank, maxPages, grid)) {
                 int n = 0;
                 for (var p : parts) {
-                    if (p.text() == null) accept(consumer, p.page(), ocrLocation(p.page()), recognize(job.page(++n)), remaining);
+                    if (p.text() == null) {
+                        int index = ++n;
+                        if (check != null) scanned(check, p.page(), job.grid(index));
+                        accept(consumer, p.page(), ocrLocation(p.page()), recognize(job.page(index)), remaining);
+                    }
                     else accept(consumer, p.page(), p.location(), p.text(), remaining);
                 }
             }
         } else {
-            try (var job = sandbox.image(path, maxPages)) {
+            try (var job = sandbox.image(path, maxPages, grid)) {
+                // 여러 프레임 이미지는 쪽 범위로 나눠 보낼 수 없어 판단하지 않는다.
+                if (check != null && job.count() == 1) scanned(check, 1, job.grid(1));
                 for (int i = 1; i <= job.count(); i++) accept(consumer, i, ocrLocation(i), recognize(job.page(i)), remaining);
             }
         }
+    }
+    static void scanned(LayoutCheck check, int page, int[] lines) {
+        if (check.always()) check.always(page);
+        else if (lines != null) check.scannedPage(page, lines[0], lines[1]);
     }
     /** 기본 150 DPI. 큰 쪽은 픽셀 상한에 맞춰 DPI를 낮추고 최소 DPI로도 넘으면 거부한다. */
     static float renderDpi(float widthPoints, float heightPoints) throws IOException {
@@ -83,17 +105,34 @@ public final class OcrTextExtractor implements TextExtractor {
                 throw new IOException("PDF 내장 이미지 상한 초과");
         }
     }
-    /** ML 서버용: 단일 프레임 이미지를 같은 자식 프로세스 격리·상한으로 디코딩하고 PNG로 다시 인코딩해 OCR한다. 상한·입력 오류는 IllegalArgumentException. */
-    String recognizeImage(byte[] data) throws IOException {
-        try (var job = sandbox.single(data)) { return recognize(job.page(1)); }
-        catch (Limit e) { throw new IllegalArgumentException("이미지 오류"); }
+    /**
+     * ML 서버용: 단일 프레임 이미지를 같은 자식 프로세스 격리·상한으로 디코딩하고 PNG로 다시 인코딩해 OCR한다.
+     * 픽셀·형식·출력 상한 위반은 {@link ExtractionLimit}(ML 서버 413), 그 밖의 입력 오류는 IllegalArgumentException(400)이다.
+     */
+    public String recognizeImage(byte[] data) throws IOException { return recognizeImage(data, null); }
+    /** 마감 시각(System.nanoTime 기준)이 있는 인식. 자식 실행과 OCR 공급자 호출에 남은 시간만 쓴다. */
+    public String recognizeImage(byte[] data, long deadlineNanos) throws IOException { return recognizeImage(data, Long.valueOf(deadlineNanos)); }
+    private String recognizeImage(byte[] data, Long deadlineNanos) throws IOException {
+        try (var job = sandbox.single(data, deadlineNanos)) {
+            byte[] png = job.page(1);
+            return deadlineNanos == null ? recognize(png) : recognize(png, deadlineNanos);
+        }
+        catch (ExtractionLimit e) { throw e; }
         catch (ExtractionFailure e) {
+            var limit = limit(e);
+            if (limit != null) throw limit;
             if (Integer.valueOf(OcrWorker.LIMIT).equals(e.exitCode())) throw new IllegalArgumentException("이미지 오류");
             throw e;
         }
     }
-    /** 이미지 상한 위반. ML 서버는 입력 오류(400)로 바꾼다. */
-    static final class Limit extends IOException { Limit(String message) { super(message); } }
+    /** 격리 자식이 상한 위반 종류로 끝났으면 그 종류를 보존한 {@link ExtractionLimit}, 아니면 null. */
+    static ExtractionLimit limit(ExtractionFailure failure) {
+        if (!Integer.valueOf(OcrWorker.LIMIT).equals(failure.exitCode())) return null;
+        String type = failure.exceptionType().split("\\$cause\\$", 2)[0];
+        return type.equals(ExtractionLimit.class.getName()) || type.equals(Limit.class.getName()) ? new ExtractionLimit("처리 상한 초과", failure) : null;
+    }
+    /** 이미지 상한 위반. 자식 종료 코드 2와 종류 이름으로 부모에 전달되며 ML 서버는 413으로 응답한다. */
+    static final class Limit extends ExtractionLimit { Limit(String message) { super(message); } }
     /** 헤더 크기만 보고 부분 샘플링 비율을 정해 디코딩 결과를 픽셀·바이트 상한 안에 둔다. */
     static BufferedImage readSampled(javax.imageio.ImageReader reader, int frame) throws IOException {
         int width = reader.getWidth(frame), height = reader.getHeight(frame);
@@ -118,7 +157,13 @@ public final class OcrTextExtractor implements TextExtractor {
         if (png.length == 0 || png.length > OcrWorker.MAX_PNG) throw new IOException("OCR 이미지 상한 초과");
         return provider.recognize(png, "kor+eng");
     }
-    private static Location ocrLocation(int page) { return new Location("ocr", page, null, null, null, null, null, null); }
+    /** 마감 시각이 지났으면 보내지 않고 시간 초과, 아니면 남은 시간을 공급자에 넘긴다. */
+    String recognize(byte[] png, long deadlineNanos) throws IOException {
+        if (png.length == 0 || png.length > OcrWorker.MAX_PNG) throw new ExtractionLimit("OCR 이미지 상한 초과");
+        if (deadlineNanos - System.nanoTime() <= 0) throw new ExtractionFailure("ocr", null, true, "TimeoutException");
+        return provider.recognize(png, "kor+eng", deadlineNanos);
+    }
+    static Location ocrLocation(int page) { return new Location("ocr", page, null, null, null, null, null, null); }
     private static void accept(LocatedConsumer consumer, int page, Location location, String text, int[] remaining) throws IOException {
         if (text.length() > remaining[0]) throw new IOException("OCR 텍스트 상한 초과");
         remaining[0] -= text.length(); consumer.accept(page, location, text);

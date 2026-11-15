@@ -12,17 +12,11 @@ public final class FullProviders implements Providers.FullProvider {
                 Boolean.parseBoolean(p.getProperty("download")) ? p.getProperty("tokenizerUrl") : "",
                 p.getProperty("modelSha256"), p.getProperty("tokenizerSha256"), data);
     }
-    public Providers.RerankerProvider reranker(String url, String model, String key, int topN, int seconds) {
-        return new RemoteRerankerProvider(url, model, key, topN, seconds);
-    }
     public Providers.RerankerProvider localReranker(Path model, Path tokenizer, boolean download, Path data, int topN, int seconds) {
         return new OnnxRerankerProvider(model, tokenizer, download, data, topN, seconds);
     }
     public AutoCloseable ml(String[] args, java.util.Map<String, String> environment) throws Exception {
         return MlServer.start(MlConfig.load(args, environment));
     }
-    public TextExtractor ocr(Path data, int seconds, int memory, int pages) {
-        return new OcrTextExtractor(new TesseractOcrProvider(data, seconds, memory), pages, data);
-    }
-    public int ocrWorker(String[] args) { return OcrWorker.run(args); }
+    public Providers.OcrProvider tesseract(Path data, int seconds, int memory) { return new TesseractOcrProvider(data, seconds, memory); }
 }

@@ -1,5 +1,6 @@
 package com.bluesounds.nasquire.full;
 
+import com.bluesounds.nasquire.core.ocr.OcrTextExtractor;
 import com.bluesounds.nasquire.core.*;
 import java.net.*;
 import java.net.http.*;

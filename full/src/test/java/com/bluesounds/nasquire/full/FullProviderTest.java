@@ -1,5 +1,6 @@
 package com.bluesounds.nasquire.full;
 
+import com.bluesounds.nasquire.core.ocr.OcrTextExtractor;
 import com.bluesounds.nasquire.core.*;
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;

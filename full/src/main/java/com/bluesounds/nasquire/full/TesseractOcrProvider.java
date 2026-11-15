@@ -19,7 +19,14 @@ public final class TesseractOcrProvider implements Providers.OcrProvider {
         this.temporary = com.bluesounds.nasquire.core.OcrScratch.folder(data); this.seconds = seconds; this.memoryMiB = memoryMiB; this.executable = executable;
         com.bluesounds.nasquire.core.OcrScratch.cleanStale(data);
     }
-    public synchronized String recognize(byte[] image, String language) {
+    public String recognize(byte[] image, String language) { return run(image, language, seconds * 1000L); }
+    /** ML 문서 처리: 쪽마다 대기 상한을 문서 마감까지 남은 시간으로 줄인다(CPU 상한은 그대로). */
+    @Override public String recognize(byte[] image, String language, long deadlineNanos) {
+        long millis = TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime());
+        if (millis <= 0) throw new IllegalStateException("OCR 시간 초과", new ExtractionFailure("tesseract", null, true, "TimeoutException"));
+        return run(image, language, Math.min(seconds * 1000L, millis));
+    }
+    private synchronized String run(byte[] image, String language, long waitMillis) {
         if (!"kor+eng".equals(language) || image.length == 0 || image.length > 16 * 1024 * 1024) throw new IllegalArgumentException("OCR 입력 오류");
         Path folder = null; Process process = null;
         try {
@@ -36,7 +43,7 @@ public final class TesseractOcrProvider implements Providers.OcrProvider {
             if (tessdata != null && !tessdata.isBlank()) environment.put("TESSDATA_PREFIX", tessdata);
             command.redirectOutput(ProcessBuilder.Redirect.DISCARD); command.redirectError(ProcessBuilder.Redirect.DISCARD);
             process = command.start();
-            if (!process.waitFor(seconds, TimeUnit.SECONDS)) throw new ExtractionFailure("tesseract", null, true, "TimeoutException");
+            if (!process.waitFor(waitMillis, TimeUnit.MILLISECONDS)) throw new ExtractionFailure("tesseract", null, true, "TimeoutException");
             Path result = folder.resolve("result.txt");
             if (process.exitValue() != 0) throw new ExtractionFailure("tesseract", process.exitValue(), false, "ProcessFailure");
             if ( !Files.isRegularFile(result, LinkOption.NOFOLLOW_LINKS) || Files.size(result) > 1048576) throw new ExtractionFailure("tesseract-output", process.exitValue(), false, "OutputFailure");

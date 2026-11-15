@@ -22,11 +22,36 @@ services:
       NASQUIRE_MODE: ml
       NASQUIRE_DATA: /data
       NASQUIRE_ML_TOKEN_FILE: /run/secrets/ml-token
+      # 원격 공급자 게이트웨이(remote) 예시. 주소는 예시 값이며 키는 파일로만 넘긴다(명령행 금지).
+      # 원격으로 바꾼 기능은 위 command의 같은 기능 인자를 지운다(명령행이 환경변수보다 우선).
+      # NASQUIRE_ML_EMBEDDING: remote
+      # NASQUIRE_ML_EMBEDDING_MODEL: multilingual-e5-large
+      # NASQUIRE_ML_EMBEDDING_DIMENSIONS: "1024"
+      # NASQUIRE_ML_EMBEDDING_SERVERS: gpu1,gpu2
+      # NASQUIRE_ML_EMBEDDING_SERVER_GPU1_URL: https://embed1.example.com/v1
+      # NASQUIRE_ML_EMBEDDING_SERVER_GPU1_KEY_FILE: /run/secrets/embed-key
+      # NASQUIRE_ML_EMBEDDING_SERVER_GPU2_URL: https://embed2.example.com/v1
+      # NASQUIRE_ML_EMBEDDING_SERVER_GPU2_KEY_FILE: /run/secrets/embed-key
+      # NASQUIRE_ML_RERANKER: remote
+      # NASQUIRE_ML_RERANKER_MODEL: bge-reranker-v2-m3
+      # NASQUIRE_ML_RERANKER_SERVERS: infinity
+      # NASQUIRE_ML_RERANKER_SERVER_INFINITY_URL: http://infinity.example.com:7997
+      # 같은 내부망의 평문 http는 기능별로만 허용한다.
+      # NASQUIRE_ML_RERANKER_ALLOW_INSECURE_HTTP: "true"
+      # NASQUIRE_ML_DOCLING: remote
+      # NASQUIRE_ML_DOCLING_SERVERS: docling
+      # NASQUIRE_ML_DOCLING_SERVER_DOCLING_URL: https://docling.example.com
+      # NASQUIRE_ML_DOCLING_SERVER_DOCLING_KEY_FILE: /run/secrets/docling-key
+      # 문서 추출(/v1/extract, Open WebUI external PUT /process): OCR 최대 쪽 수, 문서당 Docling 최대 쪽 수
+      # NASQUIRE_ML_OCR_MAX_PAGES: "20"
+      # NASQUIRE_ML_DOCLING_MAX_PAGES: "10"
     ports:
       - "127.0.0.1:8081:8080"
     volumes:
       - ${ML_DATA_DIR:?ML_DATA_DIR를 준비하세요}:/data
       - ${ML_TOKEN_FILE:?ML_TOKEN_FILE을 준비하세요}:/run/secrets/ml-token:ro
+      # - ${EMBED_KEY_FILE}:/run/secrets/embed-key:ro
+      # - ${DOCLING_KEY_FILE}:/run/secrets/docling-key:ro
     mem_limit: 2g
     memswap_limit: 2g
     cpus: 2

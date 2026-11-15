@@ -34,7 +34,7 @@ public final class QdrantVectorStore implements VectorStore {
                 || apiKey == null || apiKey.length() > 4096 || apiKey.chars().anyMatch(c -> c < 0x21 || c > 0x7e)
                 || timeoutSeconds < 1 || timeoutSeconds > 60) throw new IllegalArgumentException("Qdrant 설정 범위 오류");
         base = url.replaceAll("/+$", ""); this.collection = collection; key = apiKey; timeout = Duration.ofSeconds(timeoutSeconds);
-        client = HttpClient.newBuilder().connectTimeout(timeout).followRedirects(HttpClient.Redirect.NEVER).build();
+        client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).connectTimeout(timeout).followRedirects(HttpClient.Redirect.NEVER).build();
     }
     public String id() { return "qdrant:" + base + "/" + collection; }
 

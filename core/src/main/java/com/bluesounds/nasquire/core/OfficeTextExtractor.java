@@ -43,7 +43,7 @@ public final class OfficeTextExtractor implements TextExtractor {
         void emit(Location location, String text) throws IOException {
             if (text == null || text.isBlank()) return;
             if (remaining <= 0) throw new Limit();
-            if (order >= 4096) throw new IOException("근거 단위 상한 4096 초과");
+            if (order >= 4096) throw new ExtractionLimit("근거 단위 상한 4096 초과");
             String part = text.substring(0, Math.min(remaining, text.length()));
             consumer.accept(++order, location, part); remaining -= part.length();
             if (remaining == 0) throw new Limit();
@@ -55,7 +55,7 @@ public final class OfficeTextExtractor implements TextExtractor {
     @Override
     public void extractLocated(Path name, Path path, LocatedConsumer consumer, int maxCharacters) throws IOException {
         if (!supports(name) || maxCharacters < 1) throw new IOException("형식 또는 문자 상한 오류");
-        if (Files.size(path) > 8L * 1024 * 1024) throw new IOException("Office/HWP 파일 상한 8 MiB 초과");
+        if (Files.size(path) > 8L * 1024 * 1024) throw new ExtractionLimit("Office/HWP 파일 상한 8 MiB 초과");
         String ext = extension(name);
         var sink = new Sink(consumer, maxCharacters);
         try {
@@ -72,7 +72,12 @@ public final class OfficeTextExtractor implements TextExtractor {
                 default -> throw new IOException("지원하지 않는 형식");
             }
         } catch (Limit done) { /* 문자 상한에서 정상 중단한다. */ }
-        catch (Exception e) { throw new IOException("문서 손상·암호 또는 안전 상한 초과", e); }
+        catch (Exception e) {
+            // 안전 상한 위반은 종류를 보존하고(ML 서버 413), 그 밖의 손상·암호는 기존 메시지로 감싼다.
+            var limit = ExtractionLimit.find(e);
+            if (limit != null) throw limit;
+            throw new IOException("문서 손상·암호 또는 안전 상한 초과", e);
+        }
     }
     static void preflightZip(Path path) throws Exception {
         long total = 0; int count = 0;
@@ -86,7 +91,7 @@ public final class OfficeTextExtractor implements TextExtractor {
                 try (var input = zip.getInputStream(entry)) {
                     byte[] data = input.readNBytes(8 * 1024 * 1024 + 1);
                     total += data.length;
-                    if (data.length > 8 * 1024 * 1024 || total > 16 * 1024 * 1024) throw new IOException("ZIP 해제 상한 초과");
+                    if (data.length > 8 * 1024 * 1024 || total > 16 * 1024 * 1024) throw new ExtractionLimit("ZIP 해제 상한 초과");
                     String name = entry.getName().toLowerCase(Locale.ROOT);
                     boolean xmlBytes = false;
                     for (var charset : List.of(java.nio.charset.StandardCharsets.UTF_8, java.nio.charset.StandardCharsets.UTF_16LE,
@@ -100,7 +105,7 @@ public final class OfficeTextExtractor implements TextExtractor {
                         xml.setContentHandler(new DefaultHandler() {
                             int depth, nodes;
                             public void startElement(String uri, String local, String q, Attributes a) throws SAXException {
-                                if (++depth > 64 || ++nodes > 100000) throw new SAXException("XML 구조 상한 초과");
+                                if (++depth > 64 || ++nodes > 100000) throw new SAXException(new ExtractionLimit("XML 구조 상한 초과"));
                             }
                             public void endElement(String uri, String local, String q) { depth--; }
                         });
@@ -195,7 +200,7 @@ public final class OfficeTextExtractor implements TextExtractor {
                 final List<BoundSheetRecord> bounds = new ArrayList<>();
                 List<String> names = List.of(); SSTRecord strings; int sheet = -1, formulaRow = -1, records;
                 public void processRecord(org.apache.poi.hssf.record.Record record) {
-                    if (++records > 100000) throw new IllegalArgumentException("XLS 레코드 상한 초과");
+                    if (++records > 100000) throw new UncheckedIOException(new ExtractionLimit("XLS 레코드 상한 초과"));
                     if (record instanceof FilePassRecord) throw new IllegalArgumentException("암호 파일");
                     if (record instanceof BoundSheetRecord bound) bounds.add(bound);
                     if (record instanceof SSTRecord sst) strings = sst;

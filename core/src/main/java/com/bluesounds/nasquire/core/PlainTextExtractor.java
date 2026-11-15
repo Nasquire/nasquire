@@ -33,7 +33,7 @@ public final class PlainTextExtractor implements TextExtractor {
             char[] buffer = new char[8192];
             int n;
             while ((n = reader.read(buffer)) != -1) {
-                if (text.length() + n > maxCharacters) throw new IOException("추출 텍스트 상한 초과");
+                if (text.length() + n > maxCharacters) throw new ExtractionLimit("추출 텍스트 상한 초과");
                 text.append(buffer, 0, n);
             }
             consumer.accept(1, text.toString().replace("\uFEFF", ""));

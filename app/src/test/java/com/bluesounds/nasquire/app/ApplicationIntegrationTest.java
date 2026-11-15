@@ -108,68 +108,95 @@ class ApplicationIntegrationTest {
     }
     void verifyFull(String token, String id, Path source) throws Exception {
         var defaults = json(call("/api/full", "GET", null, null, true), 200);
-        assertEquals("off", defaults.get("reranker").asText()); assertEquals("off", defaults.get("ocr").asText());
-        assertEquals(403, call("/api/full", "PUT", Map.of("reranker", "off"), null, false).statusCode());
-        assertEquals(403, call("/api/full", "PUT", Map.of("reranker", "off"), token, false).statusCode());
-        assertEquals(403, call("/api/full", "GET", null, token, false).statusCode());
+        assertFalse(defaults.has("ocr")); assertFalse(defaults.has("reranker")); assertEquals("15", defaults.get("ocrTimeoutSeconds").asText());
+        var ocrDefaults = json(call("/api/ocr", "GET", null, null, true), 200);
+        assertEquals("off", ocrDefaults.get("ocr").asText()); assertEquals("20", ocrDefaults.get("maxPages").asText());
+        assertEquals("off", json(call("/api/docling", "GET", null, null, true), 200).get("docling").asText());
+        var featureHealth = json(call("/api/health", "GET", null, null, true), 200);
+        assertEquals("off", featureHealth.get("ocr").get("mode").asText()); assertEquals("off", featureHealth.get("docling").get("mode").asText());
+        var rerankDefaults = json(call("/api/reranker", "GET", null, null, true), 200);
+        assertEquals("off", rerankDefaults.get("reranker").asText());
+        for (String path : List.of("/api/full", "/api/reranker", "/api/ocr", "/api/docling")) {
+            assertEquals(403, call(path, "PUT", Map.of("reranker", "off"), null, false).statusCode());
+            assertEquals(403, call(path, "PUT", Map.of("reranker", "off"), token, false).statusCode());
+            assertEquals(403, call(path, "GET", null, token, false).statusCode());
+        }
+        assertEquals(403, call("/api/health", "GET", null, token, false).statusCode());
         var anonymous = HttpClient.newHttpClient();
         assertEquals(401, anonymous.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/full")).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
         // 키 삭제도 관리자 세션+헤더 CSRF가 필요하다.
-        assertEquals(403, call("/api/full/key", "DELETE", null, null, false).statusCode());
-        assertEquals(403, call("/api/full/key", "DELETE", null, token, false).statusCode());
-        assertEquals(200, call("/api/full/key", "DELETE", null, null, true).statusCode());
-        if (!defaults.get("available").asBoolean()) {
-            assertEquals(409, call("/api/full", "PUT", Map.of("reranker", "remote"), null, true).statusCode());
+        assertEquals(403, call("/api/reranker/key", "DELETE", null, null, false).statusCode());
+        assertEquals(403, call("/api/reranker/key", "DELETE", null, token, false).statusCode());
+        assertEquals(200, call("/api/reranker/key", "DELETE", null, null, true).statusCode());
+        assertEquals(400, call("/api/full", "PUT", Map.of("reranker", "remote"), null, true).statusCode(), "리랭커는 검색 설정으로 이동");
+        boolean fullBuild = defaults.get("available").asBoolean();
+        if (!fullBuild) {
             assertEquals(409, call("/api/full", "PUT", Map.of("ocr", "tesseract"), null, true).statusCode());
-            assertEquals(409, call("/api/full", "PUT", Map.of("reranker", "builtin"), null, true).statusCode());
-            return;
+            assertEquals(409, call("/api/reranker", "PUT", Map.of("reranker", "builtin"), null, true).statusCode());
         }
+        // 원격 리랭커는 lite·full 공통이다. 서버 두 개 중 하나가 5xx면 다른 서버로 넘기고 헤더에 이름만 알린다.
         var server = com.sun.net.httpserver.HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var calls = new java.util.concurrent.atomic.AtomicInteger(); var broken = new java.util.concurrent.atomic.AtomicInteger();
         var received = new java.util.concurrent.atomic.AtomicReference<String>();
-        server.createContext("/rerank", e -> {
+        server.createContext("/good/rerank", e -> {
             received.set(new String(e.getRequestBody().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8)); calls.incrementAndGet();
             byte[] body = "{\"results\":[{\"index\":0,\"relevance_score\":0},{\"index\":1,\"relevance_score\":1}]}".getBytes();
             e.sendResponseHeaders(200, body.length); e.getResponseBody().write(body); e.close();
-        }); server.start();
+        });
+        server.createContext("/bad/rerank", e -> { e.getRequestBody().readAllBytes(); broken.incrementAndGet(); e.sendResponseHeaders(503, -1); e.close(); });
+        server.start();
+        String base = "http://127.0.0.1:" + server.getAddress().getPort();
         Path extra = source.resolve("full.md");
         try {
             Files.writeString(extra, "ocean full allowed second");
-            assertEquals(200, call("/api/full", "PUT", Map.of("reranker", "remote", "baseUrl", "http://127.0.0.1:" + server.getAddress().getPort(),
-                    "model", "test-model", "apiKey", "full-test-secret", "topN", "2", "timeoutSeconds", "1"), null, true).statusCode());
+            var servers = List.of(Map.of("name", "primary", "baseUrl", base + "/good", "apiKey", "full-test-secret"),
+                    Map.of("name", "backup", "baseUrl", base + "/bad"));
+            assertEquals(200, call("/api/reranker", "PUT", Map.of("reranker", "remote", "model", "test-model", "topN", "2", "timeoutSeconds", "2", "servers", servers), null, true).statusCode());
+            int verifyCalls = calls.get(), verifyBroken = broken.get();
             JsonNode original = null;
             for (int i = 0; i < 100; i++) {
                 original = json(call("/api/search?query=ocean", "GET", null, token, false), 200);
                 if (original.size() == 2) break; Thread.sleep(100);
             }
-            assertEquals(2, original.size()); assertEquals(0, calls.get());
-            var reranked = json(call("/api/search?query=ocean&rerank=true", "GET", null, token, false), 200);
-            assertEquals(original.get(1), reranked.get(0)); assertEquals(original.get(0), reranked.get(1));
+            assertEquals(2, original.size()); assertEquals(verifyCalls, calls.get());
+            boolean failoverSeen = false;
+            for (int i = 0; i < 2; i++) {
+                var response = call("/api/search?query=ocean&rerank=true", "GET", null, token, false);
+                var reranked = json(response, 200);
+                assertEquals(original.get(1), reranked.get(0)); assertEquals(original.get(0), reranked.get(1));
+                assertEquals("primary", response.headers().firstValue("X-Nasquire-Rerank-Server").orElseThrow());
+                assertEquals("applied", response.headers().firstValue("X-Nasquire-Rerank").orElseThrow());
+                failoverSeen |= response.headers().firstValue("X-Nasquire-Failover").orElseThrow().equals("true");
+                assertFalse(response.headers().map().toString().contains("127.0.0.1"), "주소 비노출");
+            }
+            assertTrue(failoverSeen, "round_robin으로 고장 서버가 먼저 선택되면 다음 서버로 넘김");
+            assertTrue(broken.get() > verifyBroken);
             assertFalse(received.get().contains("confidential")); assertTrue(received.get().contains("allowed"));
             var result = mcp(token, "search_documents", Map.of("query", "ocean", "rerank", true));
             assertFalse(result.at("/result/isError").asBoolean());
-            assertEquals(reranked, mapper.readTree(result.at("/result/content/0/text").asText()));
-            assertEquals(2, calls.get());
-            // 로컬 리랭커: 모델이 없으면 네트워크 다운로드 없이 원래 순서를 유지한다.
-            assertEquals(400, call("/api/full", "PUT", Map.of("reranker", "builtin", "localDownload", "maybe"), null, true).statusCode());
-            assertEquals(200, call("/api/full", "PUT", Map.of("reranker", "builtin"), null, true).statusCode());
-            JsonNode local = null;
-            for (int i = 0; i < 100; i++) {
-                local = json(call("/api/search?query=ocean&rerank=true", "GET", null, token, false), 200);
-                if (local.size() == 2) break; Thread.sleep(100);
-            }
-            assertEquals(new HashSet<>(original.findValuesAsString("path")), new HashSet<>(local.findValuesAsString("path")));
-            assertFalse(Files.exists(TEMP.resolve("data/models/mmarco-mMiniLMv2-L12-H384-v1/model-qint8.onnx")));
-            assertEquals(200, call("/api/full", "PUT", Map.of("reranker", "remote"), null, true).statusCode());
-            assertFalse(call("/api/full", "GET", null, null, true).body().contains("full-test-secret"));
-            String stored = Files.readString(TEMP.resolve("data/full.properties"));
+            var health = json(call("/api/health", "GET", null, null, true), 200);
+            assertEquals("remote", health.at("/reranker/mode").asText());
+            assertEquals(2, health.at("/reranker/servers").size());
+            assertFalse(health.toString().contains("127.0.0.1")); assertFalse(health.toString().contains("full-test-secret"));
+            var view = call("/api/reranker", "GET", null, null, true).body();
+            assertFalse(view.contains("full-test-secret")); assertTrue(view.contains("\"hasKey\":true"));
+            String stored = Files.readString(TEMP.resolve("data/reranker.properties"));
             assertFalse(stored.contains("full-test-secret")); assertTrue(stored.contains("v2"));
+            if (fullBuild) {
+                // 로컬 리랭커: 모델이 없으면 네트워크 다운로드 없이 원래 순서를 유지한다.
+                assertEquals(400, call("/api/reranker", "PUT", Map.of("reranker", "builtin", "localDownload", "maybe"), null, true).statusCode());
+                assertEquals(200, call("/api/reranker", "PUT", Map.of("reranker", "builtin"), null, true).statusCode());
+                var local = json(call("/api/search?query=ocean&rerank=true", "GET", null, token, false), 200);
+                assertEquals(new HashSet<>(original.findValuesAsString("path")), new HashSet<>(local.findValuesAsString("path")));
+                assertFalse(Files.exists(TEMP.resolve("data/models/mmarco-mMiniLMv2-L12-H384-v1/model-qint8.onnx")));
+                assertEquals(200, call("/api/reranker", "PUT", Map.of("reranker", "remote"), null, true).statusCode());
+            }
             // 재시작과 같은 로딩 경로, 용도별 AAD·키 누락 시 재생성 차단을 검증한다.
             try (var reloadIndex = new com.bluesounds.nasquire.core.SearchIndex(TEMP.resolve("reload-index"))) {
             var secretService = new EmbeddingSettings(reloadIndex, TEMP.resolve("data"), new org.springframework.mock.env.MockEnvironment());
-            try (var reloaded = new FullSettings(TEMP.resolve("data"), secretService)) { assertEquals(true, reloaded.view().get("hasKey")); }
-            var properties = new Properties(); try (var input = Files.newInputStream(TEMP.resolve("data/full.properties"))) { properties.load(input); }
-            assertThrows(EmbeddingSettings.KeyUnavailable.class, () -> secretService.decrypt("embedding", properties.getProperty("encryptedKey")));
+            try (var reloaded = new RerankerSettings(TEMP.resolve("data"), secretService)) { assertEquals(true, reloaded.view().get("hasKey")); }
+            var properties = new Properties(); try (var input = Files.newInputStream(TEMP.resolve("data/reranker.properties"))) { properties.load(input); }
+            assertThrows(EmbeddingSettings.KeyUnavailable.class, () -> secretService.decrypt("embedding", properties.getProperty("server.0.encryptedKey")));
             Path key = TEMP.resolve("data/embedding.key"), savedKey = TEMP.resolve("saved-full-key");
             Files.move(key, savedKey);
             try {
@@ -178,7 +205,8 @@ class ApplicationIntegrationTest {
             } finally { Files.move(savedKey, key); }
             }
         } finally {
-            assertEquals(200, call("/api/full", "PUT", Map.of("reranker", "off", "ocr", "off"), null, true).statusCode());
+            assertEquals(200, call("/api/reranker", "PUT", Map.of("reranker", "off"), null, true).statusCode());
+            assertEquals(200, call("/api/full", "PUT", Map.of("ocr", "off"), null, true).statusCode());
             Files.deleteIfExists(extra); server.stop(0);
             // 다음 테스트는 원래 한 파일만 있는 안정 상태를 전제로 한다.
             for (int i = 0; i < 100; i++) {
@@ -540,9 +568,16 @@ class ApplicationIntegrationTest {
                 Thread.sleep(100);
             }
             assertFalse(view.at("/status/reindexRequired").asBoolean());
-            assertEquals(1, json(call("/api/search?query=ocean&mode=hybrid", "GET", null, token, false), 200).size());
+            var hybrid = call("/api/search?query=ocean&mode=hybrid", "GET", null, token, false);
+            assertEquals(1, json(hybrid, 200).size());
+            // 이전 단일 서버 입력은 default 서버 하나로 저장되고 처리 서버 이름만 헤더로 알린다.
+            assertEquals("default", hybrid.headers().firstValue("X-Nasquire-Embedding-Server").orElseThrow());
+            assertEquals("false", hybrid.headers().firstValue("X-Nasquire-Failover").orElseThrow());
+            assertTrue(hybrid.headers().firstValue("X-Nasquire-Rerank").isEmpty());
             assertEquals(1, json(call("/api/search?query=ocean&mode=vector", "GET", null, token, false), 200).size());
             assertFalse(mcp(token, "search_documents", Map.of("query", "ocean", "mode", "hybrid", "source", source)).at("/result/isError").asBoolean());
+            assertTrue(json(call("/api/embeddings/test?server=default", "POST", null, null, true), 200).get("ok").asBoolean());
+            assertEquals("up", json(call("/api/health", "GET", null, null, true), 200).at("/embedding/servers/0/state").asText());
             try (var reopened = new com.bluesounds.nasquire.core.SearchIndex(TEMP.resolve("reopened-index"))) {
                 var restored = new EmbeddingSettings(reopened, TEMP.resolve("data"), new org.springframework.mock.env.MockEnvironment());
                 assertTrue((Boolean)restored.test().get("ok"));

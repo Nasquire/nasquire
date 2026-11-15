@@ -102,7 +102,7 @@ full은 세 명령 모두 full override를 추가한다. 복구는 관리자 비
 
 ## ML 전용 모드
 
-같은 full 이미지에 명령 인자를 붙인다. 검색 서버와 별도 데이터 폴더를 쓰며 UI·MCP·검색·DB는 없다. `deploy/docker-compose.ml.yml`은 OCR만 켠 예시다. 외부 OCR 호출을 검색 서버에 연결하는 클라이언트는 아직 미구현이다.
+같은 full 이미지에 명령 인자를 붙인다. 검색 서버와 별도 데이터 폴더를 쓰며 UI·MCP·검색·DB는 없다. `deploy/docker-compose.ml.yml`은 OCR만 켠 예시다. 검색 서버의 원격 OCR(`/api/ocr` remote)에 `https://ml.example.com/v1`과 ML 토큰을 넣어 연결한다.
 
 ```sh
 # 호스트에서 ML_DATA_DIR 폴더와 UID/GID 권한을 먼저 준비한다.
@@ -118,6 +118,8 @@ docker compose -f deploy/docker-compose.ml.yml up -d
 핵심 인자는 `--nasquire.mode=ml --server.address=0.0.0.0 --server.port=8080 --nasquire.ml.ocr=tesseract`다. 환경변수 `NASQUIRE_MODE=ml`도 함께 지정해야 기본 헬스체크가 ML 경로를 선택한다. 이 헬스체크는 `/v1/models`의 무인증 401로 리스너·인증 경로를 확인하며 추론 정확도 검사는 아니다. 검색 모드는 `/` 200을 검사한다.
 
 모델 파일을 `/data/models` 아래 준비한 뒤 command에 `--nasquire.ml.embedding=builtin`, `--nasquire.ml.reranker=builtin`을 추가할 수 있다. 명시한 `--nasquire.ml.download=true`만 다운로드를 허용한다. 2 GiB 예시의 사용량은 실제 부하에서 확인한다. 토큰은 명령줄에 쓰지 않고 파일(32~512자 ASCII)로 전달한다. TLS 프록시를 통해 `https://ml.example.com/v1`로 제공하며 프록시 로그에서 Authorization을 제외한다. 검색 서버의 원격 공급자 URL·키에 이 주소와 ML 토큰을 설정한다. ML 데이터/토큰도 백업하고 회전 시 클라이언트 설정을 함께 바꾼다.
+
+문서 추출 경로 `POST /v1/extract`(쪽별 결과, `layout=auto|off|force`)와 Open WebUI `external` 규격 `PUT /process`도 같은 서버가 제공한다. Open WebUI에서는 문서 설정의 콘텐츠 추출 엔진을 `External`, 주소를 `https://ml.example.com`(`/process`·`/v1` 없이), API 키를 ML 토큰으로 지정한다. 리버스 프록시는 `/process`도 전달하고 요청 본문 상한을 32 MiB 이상으로 둔다. 형식·상한·응답 형식은 [임베딩·ML 문서](../embeddings.md)의 "문서 추출" 절을 따른다.
 
 ## CI·이미지 생성
 

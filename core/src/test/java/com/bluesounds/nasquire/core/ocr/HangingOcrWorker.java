@@ -1,4 +1,4 @@
-package com.bluesounds.nasquire.full;
+package com.bluesounds.nasquire.core.ocr;
 
 /** 테스트용 가짜 OCR 자식: 손자 프로세스를 띄우고 중단에 응하지 않는 무한 루프로 멈춘다. */
 public final class HangingOcrWorker {

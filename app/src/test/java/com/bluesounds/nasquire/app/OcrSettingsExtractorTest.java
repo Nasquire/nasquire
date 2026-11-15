@@ -9,32 +9,28 @@ import org.apache.pdfbox.pdmodel.*;
 import org.apache.pdfbox.pdmodel.font.*;
 import org.apache.pdfbox.pdmodel.graphics.image.JPEGFactory;
 import org.junit.jupiter.api.*;
-import org.junit.jupiter.api.condition.EnabledIf;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.mock.env.MockEnvironment;
 import org.springframework.test.util.ReflectionTestUtils;
 import static org.junit.jupiter.api.Assertions.*;
 
-class FullSettingsOcrTest {
+class OcrSettingsExtractorTest {
     @TempDir Path temp;
 
-    static boolean full() { return ServiceLoader.load(Providers.FullProvider.class).findFirst().isPresent(); }
-
-    private FullSettings settings(SearchIndex index) throws Exception {
+    /** OCR 추출(렌더링 격리)은 core에 있으므로 lite에서도 같은 경로를 시험한다. */
+    private OcrSettings settings(SearchIndex index) throws Exception {
         Path data = Files.createDirectories(temp.resolve("data"));
-        return new FullSettings(data, new EmbeddingSettings(index, data, new MockEnvironment()));
+        return new OcrSettings(data, new EmbeddingSettings(index, data, new MockEnvironment()), new FullSettings(data));
     }
 
-    private void installOcr(FullSettings settings, AtomicInteger calls) throws Exception {
-        // app은 full 컴파일 의존성 없이 실제 OCR 추출기를 런타임에 로드한다. 렌더러 격리는 그대로 사용한다.
+    private void installOcr(OcrSettings settings, AtomicInteger calls) throws Exception {
+        // 실제 core OCR 추출기(자식 프로세스 렌더링)에 가짜 공급자를 끼운다.
         Providers.OcrProvider fake = (png, language) -> {
             assertEquals("kor+eng", language);
             assertArrayEquals(new byte[] {(byte)137, 80, 78, 71}, Arrays.copyOf(png, 4));
             calls.incrementAndGet(); return "OCRTESTALPHA 스캔 베타";
         };
-        var extractor = Class.forName("com.bluesounds.nasquire.full.OcrTextExtractor")
-                .getConstructor(Providers.OcrProvider.class, int.class, Path.class)
-                .newInstance(fake, 20, temp.resolve("data"));
+        var extractor = new com.bluesounds.nasquire.core.ocr.OcrTextExtractor(fake, 20, temp.resolve("data"));
         ReflectionTestUtils.setField(settings, "ocr", extractor);
     }
 
@@ -49,7 +45,7 @@ class FullSettingsOcrTest {
         } finally { image.flush(); }
     }
 
-    @Test @EnabledIf("full")
+    @Test
     void originalPdfNameSurvivesExtensionlessContentAndLegacyCalls() throws Exception {
         Path content = temp.resolve("content"); scanPdf(content);
         var calls = new AtomicInteger();
@@ -75,7 +71,7 @@ class FullSettingsOcrTest {
         }
     }
 
-    @Test @EnabledIf("full")
+    @Test
     void indexingThroughSettingsUsesPinnedPdfContentAndSearchesOcrEvidence() throws Exception {
         Path source = Files.createDirectories(temp.resolve("source")); scanPdf(source.resolve("scan.pdf"));
         var calls = new AtomicInteger();

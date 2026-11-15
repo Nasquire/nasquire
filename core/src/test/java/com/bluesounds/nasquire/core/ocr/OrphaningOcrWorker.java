@@ -1,4 +1,4 @@
-package com.bluesounds.nasquire.full;
+package com.bluesounds.nasquire.core.ocr;
 
 import java.nio.file.*;
 

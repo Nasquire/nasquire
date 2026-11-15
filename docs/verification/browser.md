@@ -62,7 +62,7 @@ Playwright 1.64.1·Chromium 156.0.8078.4·axe-core 4.14.0을 사용했다.
 
 ## 환경설정 통합·검색 결과 개선 (기준 11ed4c6)
 
-- 임베딩/full 메뉴를 **환경설정 / Settings** 하나로 통합했다. 검색 설정은 기존 `/api/embeddings`, 리랭커·OCR은 기존 `/api/full` 저장 흐름을 사용한다.
+- 임베딩/full 메뉴를 **환경설정 / Settings** 하나로 통합했다. 검색 설정은 기존 `/api/embeddings`, 리랭커·OCR은 기존 `/api/full` 저장 흐름을 사용한다(3.7 이후 리랭커는 `/api/reranker`, OCR은 `/api/ocr`, Docling은 `/api/docling`, full에는 Tesseract 제한만).
 - lite에서는 리랭커·OCR 섹션과 내장 임베딩 선택지가 DOM에 없음을 검사한다. full에서는 원격/내장 리랭커·OCR 입력을 검사한다. 현재 빌드는 정보 화면에서만 작게 표시한다.
 - 실제 샘플 검색·문서 열기로 API용 내부 경로 유지와 표시용 소스 이름·상대 경로를 검사한다. 고정 검색 응답으로 늦은 위치의 영문/한글 다중 토큰·대소문자 무시 강조·360자 발췌·앞뒤 생략·공백 축약·펼치기/접기·일치 없는 질의·HTML 문자열의 텍스트 처리를 검사한다. REST·MCP 응답 형식은 변경하지 않았다.
 - 초기 lite 브라우저 검증 2회는 신규 고정 응답 검증에서 종료 1이었다. 기존 여러 검색 결과가 단일 고정 결과로 교체되기 전에 locator를 검사한 것이 원인이다. 결과 수 대기를 추가했으며 실패 줄 번호만 기록해 인증값 없이 원인을 추적한다. 증거는 `build/verification/browser-settings-attempt-1/`, `browser-settings-attempt-2/`에 보존했다.

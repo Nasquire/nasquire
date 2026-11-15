@@ -18,7 +18,13 @@ public final class IndexingService implements AutoCloseable {
             this(state, indexed, pending, errors, message, List.of(), 0, List.of());
         }
     }
-    private record Stamp(long size, long mtime, long stableSince, boolean indexed) { }
+    /** doclingTries·retryAt: Docling 일시 실패로 1차 결과만 색인한 파일의 재시도 횟수와 다음 재시도 시각(0이면 대기 없음). 메모리에만 둔다. */
+    private record Stamp(long size, long mtime, long stableSince, boolean indexed, int doclingTries, long retryAt) {
+        Stamp(long size, long mtime, long stableSince, boolean indexed) { this(size, mtime, stableSince, indexed, 0, 0); }
+    }
+    private volatile DoclingPages docling;
+    /** 표·그림 의심 쪽 Docling 변환을 연결한다(null이면 해제). 연결되지 않은 동안에는 판단 객체를 만들지 않아 비용이 없다. */
+    public void docling(DoclingPages pages) { docling = pages; }
     private final SearchIndex index;
     private final OriginalOpener opener;
     private final IndexEvent.Listener listener;
@@ -145,13 +151,19 @@ public final class IndexingService implements AutoCloseable {
         var removed = new HashSet<String>();
         var active = sources.stream().map(Source::id).collect(java.util.stream.Collectors.toSet());
         for (String old : new HashSet<>(definitions.keySet())) {
-            if (!active.contains(old)) { index.deleteSource(old); deleted(old); definitions.remove(old); snapshots.remove(old); removed.add(old); }
+            if (!active.contains(old)) {
+                index.deleteSource(old); deleted(old); definitions.remove(old); snapshots.remove(old); removed.add(old);
+                var pages = docling; if (pages != null) pages.retryWaiting(old, 0);
+            }
         }
         var completed = new HashMap<String, Status>();
         for (Source source : sources) {
             if (selected != null && !selected.equals(source.id())) continue;
-            boolean changed = !source.equals(definitions.put(source.id(), source));
-            boolean requestedReindex = reindex.remove(source.id());
+            var previousDefinition = definitions.put(source.id(), source);
+            // "항상 Docling"만 바뀌면 범위는 같으므로 기존 결과를 지우지 않고 재색인한다.
+            boolean changed = !source.sameScope(previousDefinition);
+            boolean requestedReindex = reindex.remove(source.id())
+                    || (!changed && previousDefinition.alwaysDocling() != source.alwaysDocling());
             if (changed) {
                 // 루트·범위 변경과 시작 시에는 이전 범위의 문서를 먼저 정리한다.
                 index.deleteSource(source.id()); deleted(source.id()); snapshots.remove(source.id());
@@ -212,17 +224,17 @@ public final class IndexingService implements AutoCloseable {
                         var old = previous.get(key);
                         long now = System.currentTimeMillis();
                         boolean same = old != null && old.size == attrs.size() && old.mtime == attrs.lastModifiedTime().toMillis();
-                        var stamp = new Stamp(attrs.size(), attrs.lastModifiedTime().toMillis(), same ? old.stableSince : now, same && old.indexed);
+                        var pages = docling;
+                        // Docling 일시 실패로 1차 결과만 색인한 파일은 대기 시각이 지난 뒤의 검사에서 다시 처리한다(연결돼 있을 때만).
+                        boolean retryDue = same && old.indexed && old.retryAt > 0 && now >= old.retryAt && pages != null && pages.connected();
+                        var stamp = new Stamp(attrs.size(), attrs.lastModifiedTime().toMillis(), same ? old.stableSince : now, same && old.indexed && !retryDue,
+                                same ? old.doclingTries : 0, same ? old.retryAt : 0);
                         if (!stamp.indexed && now - stamp.stableSince >= stableMillis) {
                             extractionAttempts++;
-                            var chunks = new ArrayList<SearchIndex.Chunk>();
-                            int[] offset = {0};
-                            TextExtractor.LocatedConsumer sink = (page, location, text) -> {
-                                for (int i = 0; i < text.length(); i += 1200) {
-                                    String chunk = text.substring(i, Math.min(i + 1200, text.length()));
-                                    chunks.add(new SearchIndex.Chunk(page, offset[0], chunk, location)); offset[0] += chunk.length();
-                                }
-                            };
+                            var parts = new ArrayList<DoclingPages.Part>();
+                            TextExtractor.LocatedConsumer sink = (page, location, text) -> parts.add(new DoclingPages.Part(page, location, text));
+                            var check = pages == null ? null : pages.check(real, source.alwaysDocling());
+                            var outcome = new DoclingPages.Outcome(parts, false);
                             Object identity = attrs.fileKey();
                             {
                                 // 루트부터 각 요소를 NOFOLLOW로 열어 고정한 fd만 읽는다. 검사 뒤 중간 디렉터리를 소스 밖 링크로 바꾸거나
@@ -232,7 +244,9 @@ public final class IndexingService implements AutoCloseable {
                                     if (!java.util.Objects.equals(opened.fileKey(), identity) || opened.size() != stamp.size
                                             || opened.lastModifiedTime().toMillis() != stamp.mtime) throw new IOException("추출 중 파일 변경");
                                     if (opened.size() > limit) throw new IOException("파일 크기 상한 초과");
-                                    extractor.get().extractLocated(real, pinned.path(), sink, maxCharacters);
+                                    extractor.get().extractLocated(real, pinned.path(), sink, maxCharacters, check);
+                                    if (check != null && !check.suspects().isEmpty())
+                                        outcome = pages.refine(Source.normalized(relative).replaceAll("[\\p{Cntrl}\\p{Cf}]", "?"), real, pinned.path(), check, parts, maxCharacters);
                                     var done = Files.readAttributes(pinned.path(), BasicFileAttributes.class);
                                     if (done.size() != stamp.size || done.lastModifiedTime().toMillis() != stamp.mtime) throw new IOException("추출 중 파일 변경");
                                 }
@@ -242,10 +256,22 @@ public final class IndexingService implements AutoCloseable {
                             if (!file.toRealPath().equals(real) || !java.util.Objects.equals(after.fileKey(), identity)
                                     || after.size() != stamp.size || after.lastModifiedTime().toMillis() != stamp.mtime)
                                 throw new IOException("추출 중 파일 변경");
+                            var chunks = new ArrayList<SearchIndex.Chunk>();
+                            int offset = 0;
+                            for (var part : outcome.parts()) {
+                                String text = part.text();
+                                for (int i = 0; i < text.length(); i += 1200) {
+                                    String chunk = text.substring(i, Math.min(i + 1200, text.length()));
+                                    chunks.add(new SearchIndex.Chunk(part.page(), offset, chunk, part.location())); offset += chunk.length();
+                                }
+                            }
                             index.replace(source, key, stamp.mtime, chunks);
                             event(old != null && old.indexed ? IndexEvent.Kind.UPDATED : IndexEvent.Kind.ADDED,
                                     source.id(), key, stamp.size, stamp.mtime, stamp.size + ":" + stamp.mtime);
-                            stamp = new Stamp(stamp.size, stamp.mtime, stamp.stableSince, true);
+                            int tries = outcome.retry() ? stamp.doclingTries + 1 : 0;
+                            // 재시도 상한을 넘으면 대기 시각을 지워 1차 결과로 둔다(파일이 바뀌면 다시 0부터).
+                            long retryAt = outcome.retry() && tries <= pages.maxRetries() ? System.currentTimeMillis() + pages.retryDelay(tries) : 0;
+                            stamp = new Stamp(stamp.size, stamp.mtime, stamp.stableSince, true, tries, retryAt);
                         }
                         next.put(key, stamp);
                         if (stamp.indexed) counts[0]++; else counts[1]++;
@@ -273,6 +299,8 @@ public final class IndexingService implements AutoCloseable {
                 event(IndexEvent.Kind.DELETED, source.id(), deleted, old.size, old.mtime, old.size + ":" + old.mtime);
             }
             snapshots.put(source.id(), next);
+            var pages = docling;
+            if (pages != null) pages.retryWaiting(source.id(), (int)next.values().stream().filter(s -> s.retryAt > 0).count());
             return new Status(counts[2] == 0 ? "ready" : "error", counts[0], counts[1], counts[2], counts[2] == 0 ? "" : "일부 파일 추출 실패", failures, counts[3], oversized);
         } catch (IOException | RuntimeException e) {
             return new Status("error", 0, 0, 1, "소스를 읽을 수 없습니다");

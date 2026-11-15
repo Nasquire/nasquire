@@ -1,4 +1,4 @@
-package com.bluesounds.nasquire.full;
+package com.bluesounds.nasquire.core.ocr;
 
 import com.bluesounds.nasquire.core.OcrScratch;
 import com.bluesounds.nasquire.core.ExtractionFailure;
@@ -23,6 +23,9 @@ final class OcrSandbox {
     static final long MAX_INPUT = 1024L * 1024 * 1024;
     static final long BASE_MILLIS = 15_000, PAGE_MILLIS = 10_000, MAX_MILLIS = 300_000;
     static final int HEAP_MIB = 192, ADDRESS_MIB = 2048;
+    /** 격리 문서 추출(extract 모드) 결과 파일 상한과 시간 계산 단위 수(기본 상한 MAX_MILLIS에 닿는다). */
+    static final long MAX_RESULT = 16L * 1024 * 1024;
+    static final int EXTRACT_UNITS = 30;
     private final Path temporary;
     private final String mainClass;
     private final long baseMillis, pageMillis;
@@ -53,30 +56,67 @@ final class OcrSandbox {
             if (read > OcrWorker.MAX_OUTPUT) throw new IOException("OCR 이미지 작업자 출력 상한 초과");
             return png;
         }
+        /** 쪽 n의 래스터 직선 수 {가로, 세로}. 격자 모드가 아니었거나 결과가 없으면 null. */
+        int[] grid(int n) {
+            if (n < 1 || n > count) return null;
+            try {
+                var parts = new String(readBounded(folder.resolve("grid-" + n), 32), java.nio.charset.StandardCharsets.US_ASCII).trim().split(" ");
+                int horizontal = Integer.parseInt(parts[0]), vertical = Integer.parseInt(parts[1]);
+                return parts.length == 2 && horizontal >= 0 && vertical >= 0 ? new int[] {horizontal, vertical} : null;
+            } catch (IOException | RuntimeException e) { return null; }
+        }
+        /** extract 모드의 결과(JSON). 링크를 따르지 않고 열린 fd가 일반 파일일 때만 상한 안에서 읽는다. */
+        byte[] result() throws IOException { return readBounded(folder.resolve("result"), MAX_RESULT); }
         public void close() { delete(folder); }
     }
 
-    Job pdf(Path source, List<Integer> pages, int maxPages) throws IOException {
+    Job pdf(Path source, List<Integer> pages, int maxPages) throws IOException { return pdf(source, pages, maxPages, false); }
+    /** grid가 true면 자식이 쪽마다 래스터 직선 격자 수도 쓴다(Docling 연결 시의 쪽 판단). */
+    Job pdf(Path source, List<Integer> pages, int maxPages, boolean grid) throws IOException { return pdf(source, pages, maxPages, grid, null); }
+    /** deadlineNanos(System.nanoTime 기준, null이면 없음)가 있으면 슬롯 대기·복사·자식 실행을 그 안으로 줄인다. */
+    Job pdf(Path source, List<Integer> pages, int maxPages, boolean grid, Long deadlineNanos) throws IOException {
         var list = new StringJoiner(",");
         for (int page : pages) list.add(String.valueOf(page));
-        return run("pdf", maxPages, list.toString(), pages.size(), (folder, deadline) -> copy(source, folder.resolve("input"), deadline));
+        return run(grid ? "pdf-grid" : "pdf", maxPages, list.toString(), pages.size(), (folder, deadline) -> copy(source, folder.resolve("input"), deadline), deadlineNanos);
     }
-    Job image(Path source, int maxPages) throws IOException {
-        return run("image", maxPages, "", maxPages, (folder, deadline) -> copy(source, folder.resolve("input"), deadline));
+    Job image(Path source, int maxPages) throws IOException { return image(source, maxPages, false); }
+    Job image(Path source, int maxPages, boolean grid) throws IOException { return image(source, maxPages, grid, null); }
+    Job image(Path source, int maxPages, boolean grid, Long deadlineNanos) throws IOException {
+        return run(grid ? "image-grid" : "image", maxPages, "", maxPages, (folder, deadline) -> copy(source, folder.resolve("input"), deadline), deadlineNanos);
     }
-    Job single(byte[] data) throws IOException {
-        return run("single", 1, "", 1, (folder, deadline) -> {
-            try (var out = FileChannel.open(folder.resolve("input"), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)) {
-                var buffer = ByteBuffer.wrap(data); while (buffer.hasRemaining()) out.write(buffer);
-            }
-        });
+    /**
+     * 문서 추출(PDF 글자 층·쪽 판단, Office/HWP)을 자식에서 한다. params는 자식에 넘길 추출 설정(JSON)이며 결과는 {@link Job#result()}로 읽는다.
+     */
+    Job extract(Path source, String params, Long deadlineNanos) throws IOException {
+        byte[] encoded = params.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        if (encoded.length > 4096) throw new IOException("격리 추출 설정 오류");
+        return run("extract", 1, "", EXTRACT_UNITS, (folder, deadline) -> {
+            copy(source, folder.resolve("input"), deadline);
+            write(folder.resolve("params"), encoded);
+        }, deadlineNanos);
+    }
+    Job single(byte[] data) throws IOException { return single(data, null); }
+    Job single(byte[] data, Long deadlineNanos) throws IOException {
+        return run("single", 1, "", 1, (folder, deadline) -> write(folder.resolve("input"), data), deadlineNanos);
+    }
+    private static void write(Path target, byte[] data) throws IOException {
+        try (var out = FileChannel.open(target, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)) {
+            var buffer = ByteBuffer.wrap(data); while (buffer.hasRemaining()) out.write(buffer);
+        }
     }
     private interface Prepare { void into(Path folder, long deadlineNanos) throws IOException; }
 
-    private Job run(String mode, int maxPages, String pages, int units, Prepare prepare) throws IOException {
-        long limit = Math.min(MAX_MILLIS, baseMillis + pageMillis * units);
-        try { if (!SLOT.tryAcquire(limit + 10_000, TimeUnit.MILLISECONDS)) throw new IOException("OCR 작업자 사용 중"); }
+    private Job run(String mode, int maxPages, String pages, int units, Prepare prepare, Long deadlineNanos) throws IOException {
+        long limit = Math.min(MAX_MILLIS, baseMillis + pageMillis * units), wait = limit + 10_000;
+        // 호출자 마감 시각이 있으면(ML 문서 처리) 슬롯 대기와 작업 시간 모두 남은 시간 안으로 줄인다.
+        if (deadlineNanos != null) wait = Math.min(wait, remainingMillis(deadlineNanos));
+        try { if (wait <= 0 || !SLOT.tryAcquire(wait, TimeUnit.MILLISECONDS)) throw deadlineNanos != null && remainingMillis(deadlineNanos) <= 0
+                ? new ExtractionFailure("wait", null, true, "TimeoutException") : new IOException("OCR 작업자 사용 중"); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException("OCR 중단"); }
+        if (deadlineNanos != null) {
+            limit = Math.min(limit, remainingMillis(deadlineNanos));
+            if (limit <= 0) { SLOT.release(); throw new ExtractionFailure("wait", null, true, "TimeoutException"); }
+        }
         // 원본 복사부터 자식 종료까지 하나의 시간 상한에 넣는다.
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(limit);
         Path folder = null; Process process = null; boolean done = false;
@@ -111,7 +151,8 @@ final class OcrSandbox {
             try {
                 count = Integer.parseInt(new String(readBounded(folder.resolve("count"), 16), java.nio.charset.StandardCharsets.US_ASCII).trim());
                 if (count < 1 || count > maxPages || (!pages.isEmpty() && count != units)) throw new IOException("OCR 이미지 작업자 출력 오류");
-                checkOutput(folder, count);
+                // extract 모드는 PNG 대신 결과 JSON 하나를 쓰며 읽을 때 크기를 검사한다.
+                if (!mode.equals("extract")) checkOutput(folder, count);
             } catch (IOException | NumberFormatException e) {
                 throw new ExtractionFailure("render-output", exit, false, e.getClass().getName());
             }
@@ -124,6 +165,8 @@ final class OcrSandbox {
             else reap(process, cleanup);
         }
     }
+
+    private static long remainingMillis(long deadlineNanos) { return TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime()); }
 
     /** 자식이 쓴 결과의 종류·쪽당·합계 상한을 부모가 다시 확인한다(자식의 fsize 상한과 별개). */
     static void checkOutput(Path folder, int count) throws IOException {

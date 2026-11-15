@@ -1,4 +1,4 @@
-package com.bluesounds.nasquire.full;
+package com.bluesounds.nasquire.core.ocr;
 
 import java.awt.image.BufferedImage;
 import java.io.IOException;
@@ -11,7 +11,7 @@ import org.junit.jupiter.api.io.TempDir;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** 4단계 마지막 보안 잔여: OCR 원본 FIFO·중간 링크 교체(S1·S2), 자식 프로세스 그룹 회수·작업 폴더 검증(S4). */
-class FinalReviewFullTest {
+class OcrSandboxSecurityTest {
     @TempDir Path temp;
 
     @Test void fifoSourceFailsFastAndReleasesSlot() throws Exception {

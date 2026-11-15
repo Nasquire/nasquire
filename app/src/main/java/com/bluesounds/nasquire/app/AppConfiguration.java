@@ -37,12 +37,14 @@ public class AppConfiguration {
     @Bean(destroyMethod = "close")
     SearchIndex searchIndex(Path dataFolder) throws IOException { return new SearchIndex(dataFolder.resolve("index")); }
     @Bean(destroyMethod = "close")
-    IndexingService indexingService(SearchIndex index, Storage storage, EmbeddingSettings embeddings, FullSettings full, IndexingSettings settings,
+    IndexingService indexingService(SearchIndex index, Storage storage, EmbeddingSettings embeddings, OcrSettings ocr, DoclingSettings docling, IndexingSettings settings,
             @Value("${nasquire.max-text-characters:2000000}") int maxCharacters,
             @Value("${nasquire.stable-millis:2000}") long stableMillis) {
         if (maxCharacters < 1200 || maxCharacters > 4000000 || stableMillis < 0)
             throw new IllegalArgumentException("색인 설정값 범위 오류");
-        var service = new IndexingService(index, settings.view().get("maxFileBytes"), maxCharacters, stableMillis, List.of(full.extractor(), new PdfTextExtractor(), new PlainTextExtractor(), new OfficeTextExtractor()));
+        var service = new IndexingService(index, settings.view().get("maxFileBytes"), maxCharacters, stableMillis, List.of(ocr.extractor(), new PdfTextExtractor(), new PlainTextExtractor(), new OfficeTextExtractor()));
+        // Docling이 연결됐을 때만 표·그림 의심 쪽을 판단·변환한다(미연결이면 판단 비용 없음).
+        service.docling(docling.pages());
         service.start(storage::sources, settings.view().get("scanMillis"));
         return service;
     }

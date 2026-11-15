@@ -23,14 +23,14 @@ class ReviewSettingsTest {
         Path data = Files.createDirectories(temp.resolve("data"));
         try (var index = new SearchIndex(temp.resolve("index"))) {
             var settings = new EmbeddingSettings(index, data, new MockEnvironment());
-            var error = assertThrows(IllegalArgumentException.class, () -> settings.save(remote("http://example.com/v1")));
+            var error = assertThrows(IllegalArgumentException.class, () -> settings.save(remote("http://insecure.example.com/v1")));
             assertTrue(error.getMessage().contains("HTTPS"));
-            var qdrant = remote("https://example.com/v1"); qdrant.put("vectorStore", "qdrant"); qdrant.put("qdrantUrl", "http://example.com:6333");
+            var qdrant = remote("https://embeddings.example.com/v1"); qdrant.put("vectorStore", "qdrant"); qdrant.put("qdrantUrl", "http://insecure.example.com:6333");
             assertThrows(IllegalArgumentException.class, () -> settings.save(qdrant));
             assertEquals("off", settings.view().get("provider"), "거부된 설정은 게시하지 않음");
             settings.save(remote("http://127.0.0.1:9/v1"));
             assertEquals(false, settings.view().get("insecureHttp"));
-            var allowed = remote("http://example.com/v1"); allowed.put("allowInsecureHttp", "true");
+            var allowed = remote("http://insecure.example.com/v1"); allowed.put("allowInsecureHttp", "true");
             settings.save(allowed);
             assertEquals(true, settings.view().get("insecureHttp"), "명시 허용 시 화면 경고용 상태");
             assertThrows(IllegalArgumentException.class, () -> settings.save(Map.of("allowInsecureHttp", "yes")));
@@ -39,7 +39,7 @@ class ReviewSettingsTest {
 
     @Test void legacyPlainHttpSettingStartsWithVectorsDisabled() throws Exception {
         Path data = Files.createDirectories(temp.resolve("data"));
-        Files.writeString(data.resolve("embedding.properties"), "provider=remote\nbaseUrl=http\\://example.com/v1\nmodel=m\ndimensions=2\nvectorStore=qdrant\nqdrantUrl=http\\://127.0.0.1\\:6333\n");
+        Files.writeString(data.resolve("embedding.properties"), "provider=remote\nbaseUrl=http\\://insecure.example.com/v1\nmodel=m\ndimensions=2\nvectorStore=qdrant\nqdrantUrl=http\\://127.0.0.1\\:6333\n");
         try (var index = new SearchIndex(temp.resolve("index"))) {
             var settings = new EmbeddingSettings(index, data, new MockEnvironment());
             assertFalse(((String)settings.view().get("disabledReason")).isEmpty());
@@ -48,7 +48,7 @@ class ReviewSettingsTest {
             index.search("x", Set.of("s"), 5, "keyword");
             settings.clearKey(true); // 비활성 상태에서도 키 삭제는 가능하다.
             assertFalse(((String)settings.view().get("disabledReason")).isEmpty());
-            settings.save(remote("https://example.com/v1"));
+            settings.save(remote("https://embeddings.example.com/v1"));
             assertEquals("", settings.view().get("disabledReason"));
         }
     }
@@ -77,36 +77,37 @@ class ReviewSettingsTest {
                 assertEquals(false, new EmbeddingSettings(reopened, data, new MockEnvironment()).view().get("hasQdrantKey"));
             }
 
-            var fullSettings = new FullSettings(data, settings);
-            assertFalse(fullSettings.save(Map.of("baseUrl", "https://r.example.com/v1", "apiKey", "reranker-key-value")), "OCR 무관 변경은 재색인 없음");
-            assertEquals(true, fullSettings.view().get("hasKey"));
-            assertFalse(fullSettings.save(Map.of("baseUrl", "https://r2.example.com/v1")));
-            assertEquals(false, fullSettings.view().get("hasKey"));
-            fullSettings.save(Map.of("apiKey", "reranker-key-value"));
-            fullSettings.clearKey();
-            assertEquals(false, fullSettings.view().get("hasKey"));
-            assertFalse(stored(data.resolve("full.properties")).containsKey("encryptedKey"));
-            assertTrue(fullSettings.save(Map.of("ocrMaxPages", "5")), "OCR 필드 변경은 재색인");
-            assertFalse(fullSettings.save(Map.of("ocrMaxPages", "5")), "같은 값은 재색인 없음");
-            // 원격 리랭커 평문 주소는 공급자를 만들기 전에 거부한다.
-            assertThrows(IllegalArgumentException.class, () -> fullSettings.save(Map.of("reranker", "remote", "baseUrl", "http://example.com/v1")));
-            if (full()) {
-                fullSettings.save(Map.of("reranker", "remote", "baseUrl", "http://example.com/v1", "allowInsecureHttp", "true"));
-                assertEquals(true, fullSettings.view().get("insecureHttp"));
-                fullSettings.save(Map.of("reranker", "off"));
-            }
-            fullSettings.close();
+            var rerankers = new RerankerSettings(data, settings);
+            rerankers.save(Map.of("baseUrl", "https://r.example.com/v1", "apiKey", "reranker-key-value"));
+            assertEquals(true, rerankers.view().get("hasKey"));
+            rerankers.save(Map.of("baseUrl", "https://r2.example.com/v1"));
+            assertEquals(false, rerankers.view().get("hasKey"));
+            rerankers.save(Map.of("apiKey", "reranker-key-value"));
+            rerankers.clearKey(null);
+            assertEquals(false, rerankers.view().get("hasKey"));
+            assertFalse(RemoteServers.hasCiphertext(stored(data.resolve("reranker.properties"))));
+            var fullSettings = new FullSettings(data);
+            assertTrue(fullSettings.save(Map.of("ocrTimeoutSeconds", "5")), "Tesseract 제한 변경");
+            assertFalse(fullSettings.save(Map.of("ocrTimeoutSeconds", "5")), "같은 값은 변경 없음");
+            assertThrows(IllegalArgumentException.class, () -> fullSettings.save(Map.of("ocrMaxPages", "5")), "OCR 쪽 상한은 /api/ocr로 이동");
+            assertThrows(IllegalArgumentException.class, () -> fullSettings.save(Map.of("reranker", "remote")), "리랭커는 검색 설정으로 이동");
+            // 원격 리랭커 평문 주소는 공급자를 만들기 전에 거부한다(lite 포함).
+            assertThrows(IllegalArgumentException.class, () -> rerankers.save(Map.of("reranker", "remote", "baseUrl", "http://insecure.example.com/v1")));
+            rerankers.save(Map.of("reranker", "remote", "baseUrl", "http://insecure.example.com/v1", "allowInsecureHttp", "true"));
+            assertEquals(true, rerankers.view().get("insecureHttp"));
+            rerankers.save(Map.of("reranker", "off"));
+            rerankers.close();
         }
     }
 
     @Test void legacyPlainHttpRerankerStartsDisabled() throws Exception {
         Path data = Files.createDirectories(temp.resolve("data"));
-        Files.writeString(data.resolve("full.properties"), "reranker=remote\nbaseUrl=http\\://example.com/v1\n");
+        Files.writeString(data.resolve("full.properties"), "reranker=remote\nbaseUrl=http\\://insecure.example.com/v1\n");
         try (var index = new SearchIndex(temp.resolve("index"))) {
-            var full = new FullSettings(data, new EmbeddingSettings(index, data, new MockEnvironment()));
+            var full = new RerankerSettings(data, new EmbeddingSettings(index, data, new MockEnvironment()));
             assertFalse(((String)full.view().get("disabledReason")).isEmpty());
             var hits = List.of(new SearchIndex.Hit("s", "S", "s:a", 1, 0, "a", 0, 1), new SearchIndex.Hit("s", "S", "s:b", 1, 0, "b", 0, 0.5f));
-            assertEquals(hits, full.rerank("q", hits, true), "비활성 리랭커는 원래 순서");
+            assertEquals(hits, full.rerank("q", hits, true).hits(), "비활성 리랭커는 원래 순서");
             full.close();
         }
     }

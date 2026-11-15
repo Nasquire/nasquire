@@ -51,7 +51,7 @@ public final class OfficeSamples {
         }
     }
     /** Word 97 FIB와 단일 UTF-16 piece table을 직접 작성한다. 이미지·매크로는 없다. */
-    static void doc(Path path, String text) throws IOException {
+    public static void doc(Path path, String text) throws IOException {
         byte[] encoded = text.getBytes(StandardCharsets.UTF_16LE);
         var word = ByteBuffer.allocate(1024 + encoded.length).order(ByteOrder.LITTLE_ENDIAN);
         word.putShort(0, (short)0xa5ec).putShort(2, (short)0xc1).putShort(6, (short)0x409);

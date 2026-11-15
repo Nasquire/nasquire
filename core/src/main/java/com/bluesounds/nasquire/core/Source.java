@@ -4,9 +4,21 @@ import java.nio.file.*;
 import java.text.Normalizer;
 import java.util.*;
 
-public record Source(String id, String name, Path root, List<String> includes, List<String> excludes, String kind) {
+/**
+ * 색인 소스. alwaysDocling은 Docling이 연결됐을 때 이 소스의 PDF·단일 이미지를 쪽 판단 없이 모두 Docling으로 보낼지 여부다(기본 false).
+ * 검사 범위(루트·glob·종류)와 달리 바뀌어도 기존 색인을 지우지 않고 재색인만 한다.
+ */
+public record Source(String id, String name, Path root, List<String> includes, List<String> excludes, String kind, boolean alwaysDocling) {
     public Source(String id, String name, Path root, List<String> includes, List<String> excludes) {
         this(id, name, root, includes, excludes, "directory");
+    }
+    public Source(String id, String name, Path root, List<String> includes, List<String> excludes, String kind) {
+        this(id, name, root, includes, excludes, kind, false);
+    }
+    /** 검사 범위가 같은지(alwaysDocling 제외). */
+    public boolean sameScope(Source other) {
+        return other != null && id.equals(other.id) && name.equals(other.name) && root.equals(other.root) && includes.equals(other.includes)
+                && excludes.equals(other.excludes) && kind.equals(other.kind);
     }
     public Source {
         if (!Set.of("directory", "upload").contains(kind)) throw new IllegalArgumentException("소스 종류 오류");
@@ -38,7 +50,7 @@ public record Source(String id, String name, Path root, List<String> includes, L
 
     public boolean acceptsDirectory(Path relative) {
         // 포함 glob은 파일에 적용하며 기본/사용자 제외는 디렉터리에도 적용한다.
-        return new Source(id, name, root, List.of(), excludes).accepts(relative);
+        return new Source(id, name, root, List.of(), excludes, kind, false).accepts(relative);
     }
 
     private boolean matches(String glob, Path path) {

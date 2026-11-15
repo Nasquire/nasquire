@@ -215,6 +215,12 @@ consumers need idempotent upserts and reconciliation.
 
 ## API·버전·라이선스 / API, version and license
 
+원격 연결 계층 `com.bluesounds.nasquire.core.remote`(`RemoteServer`, `RemotePool`, `RemoteHttp`, `RemoteCheck`, `RemoteException`, `RemoteTrace`)도 공개 API다. `RemoteEmbeddingProvider`·`RemoteRerankerProvider`에 `RemotePool`을 넘기면 round_robin·페일오버(연결 실패·시간 초과·5xx·429만)·서킷 브레이커를 쓴다. Spring 의존이 없다.
+The remote layer `com.bluesounds.nasquire.core.remote` is public as well: pass a `RemotePool` to `RemoteEmbeddingProvider` or `RemoteRerankerProvider` for round-robin, failover (connection errors, timeouts, 5xx, 429 only) and a circuit breaker, without Spring.
+
+표·그림 의심 쪽 Docling 변환은 `IndexingService.docling(new DoclingPages(연결된 RemoteDoclingClient 공급자, 기준값 공급자, 재시도 상한, 첫 재시도 대기))`로 켠다. 공급자가 비어 있으면 판단하지 않는다. 판단 객체·신호는 `com.bluesounds.nasquire.core.layout`(`LayoutCheck`, `PageSignals`, `PdfLayout`, `RasterGrid`)이고 `Source`의 마지막 값 `alwaysDocling`(기존 생성자는 false)으로 소스별 전체 변환을 고른다.
+Enable table/figure page conversion with `IndexingService.docling(new DoclingPages(...))`; an empty client supplier disables detection entirely. Detection types live in `com.bluesounds.nasquire.core.layout`, and `Source.alwaysDocling` (false in the existing constructors) sends every page of a source.
+
 공개 API는 `com.bluesounds.nasquire.core`의 public 타입이며 `.internal`과 package-private 구현은
 호환 대상이 아니다. SemVer를 따르며 0.x 동안 마이너 버전에서 호환이 깨질 수 있다.
 현재 JPMS descriptor는 제공하지 않는다. POI/HWP 및 선택 full ServiceLoader/네이티브 구현의 기존
