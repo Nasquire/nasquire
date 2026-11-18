@@ -41,6 +41,7 @@
 - 컨테이너: `DATA_DIR=/path/to/data SOURCE_DIR=/path/to/documents docker compose -f deploy/docker-compose.yml up --build -d` (호스트 데이터 권한·HTTPS 프록시 선행). full은 `-f deploy/docker-compose.full.yml` 추가, ML은 `-f deploy/docker-compose.ml.yml` 독립 실행. 직접 빌드는 `docker build --target lite .` / `docker build --target full .`; 검증 한계는 `docs/verification/deploy.md`.
 
 ## 구현 규칙
+- 브랜치: 주제마다 `work/<주제>`에서 작업하고 끝나면 main에 squash 커밋 하나(`영역: 결과`)로 합친다. main 직접 커밋은 한 번에 끝나는 작은 수정만, 공개된 main 기록은 고치지 않는다.
 - AGPL 호환 의존성만 사용한다. 라이선스 변경 시 `THIRD-PARTY.md`를 갱신한다. LICENSE·LICENSE-EXCEPTIONS.md·NOTICE는 임의 변경하지 않는다.
 - 저작권 `Copyright (c) 2026 Bluesounds`, 정보 화면 저장소·라이선스 링크를 유지한다.
 - 계정·토큰 원문을 로그·DB에 남기지 않는다. 토큰은 읽기 전용, DB에는 SHA-256. 관리 작업은 관리자 세션 + CSRF가 필요하다.
