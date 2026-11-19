@@ -81,6 +81,7 @@ public final class MlServer implements AutoCloseable {
         server.start();
     }
     private void admit(HttpExchange exchange) throws IOException {
+        exchange.setStreams(new RequestBody(exchange), null);
         if (!authorized(exchange.getRequestHeaders().getFirst("Authorization"))) {
             try (exchange) {
                 exchange.getResponseHeaders().set("WWW-Authenticate", "Bearer");
@@ -458,9 +459,27 @@ public final class MlServer implements AutoCloseable {
         return list;
     }
     private static JsonObject error(String message) { var o = new JsonObject(); o.addProperty("error", message); return o; }
+    /** 애플리케이션이 본문 끝까지 읽었는지 기록한다. JDK가 닫을 때 일부를 비우는 동작에 연결 재사용을 맡기지 않는다. */
+    private static final class RequestBody extends FilterInputStream {
+        private boolean complete;
+        RequestBody(HttpExchange exchange) {
+            super(exchange.getRequestBody());
+            var headers = exchange.getRequestHeaders();
+            String length = headers.getFirst("Content-Length");
+            complete = headers.getFirst("Transfer-Encoding") == null && (length == null || length.equals("0"));
+        }
+        @Override public int read() throws IOException {
+            int value = super.read(); if (value == -1) complete = true; return value;
+        }
+        @Override public int read(byte[] bytes, int offset, int length) throws IOException {
+            int count = super.read(bytes, offset, length); if (count == -1) complete = true; return count;
+        }
+    }
     private static void send(HttpExchange exchange, int status, JsonElement body) throws IOException {
         byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+        // 본문 수신 전 거절(401·503·413 등)은 JDK가 연결을 닫을 수 있다. 클라이언트가 그 연결을 재사용하지 않게 미리 알린다.
+        if (!((RequestBody)exchange.getRequestBody()).complete) exchange.getResponseHeaders().set("Connection", "close");
         exchange.sendResponseHeaders(status, bytes.length);
         exchange.getResponseBody().write(bytes);
         // 닫기 전에 보낸다. 닫기는 받지 않은 요청 본문을 먼저 비우므로(포화 503 등) 응답이 그 뒤로 밀리지 않게 한다.

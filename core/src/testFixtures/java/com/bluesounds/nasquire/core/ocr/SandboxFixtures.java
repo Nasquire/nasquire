@@ -16,8 +16,10 @@ public final class SandboxFixtures {
     public static final class Hanging {
         public static void main(String[] args) throws Exception {
             new ProcessBuilder("/bin/sleep", "120").start();
-            long spins = 0;
-            while (true) { spins++; if (spins < 0) break; }
+            // 벽시계 마감 시험이 CPU 상한에 먼저 걸리지 않게, CPU를 쓰지 않고 종료를 기다린다.
+            while (true) {
+                try { Thread.sleep(120_000); } catch (InterruptedException ignored) { }
+            }
         }
     }
 }

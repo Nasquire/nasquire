@@ -82,7 +82,7 @@ docker stats --no-stream
 
 lite 컨테이너는 스왑 없음·읽기 전용 루트·`cap_drop: ALL`·비루트 사용자 조건이었다. 약 9초에 healthy였고 arm64 업로드 네이티브 `mkdirat`/`renameat2`도 동작했다. 384/320 MiB 성공은 소규모 표본이며 지원 최소값은 512 MiB로 유지한다. 원격 임베딩·대규모 문서의 메모리 보장으로 확대하지 않는다.
 
-arm64 이미지 크기는 lite 638 MB, full 899 MB였다. amd64 lite/full은 Kaniko 빌드 성공을 전달받았다. 실제 NAS 장비·대규모 문서·Actions 실행·GHCR 게시·전체 full 동시 부하는 여전히 미검증이다.
+arm64 이미지 크기는 lite 638 MB, full 899 MB였다. amd64 lite/full은 Kaniko 빌드 성공을 전달받았다. 실제 NAS 장비·대규모 문서·GHCR 게시·전체 full 동시 부하는 여전히 미검증이다. Actions 실행 결과는 아래 2026-11-20 절을 따른다.
 
 ### 이미지 전용 PDF 실패와 이번 진단 보강
 
@@ -158,3 +158,7 @@ Synology x86 NAS 실기의 색인 후 메모리 유지 피드백을 바탕으로
 추가 부하는 28개 모두 성공·오류/OOM 0이다. NMT 힙 committed는 동일 부하에서 148.2→82.8 MiB로 줄었다. cgroup memory.current·anon/file도 수집했으나 이 환경은 다른 작업과 공유되고 제한이 없어 **단독 512 MiB 컨테이너 검증은 아니다**. Container Manager 그래프는 회수 가능한 파일 캐시를 포함할 수 있다. 개선 후 NAS 실기·이미지 실행·full 모델/OCR 부하는 미검증이다. 재현·후보·초기 실패·원시 아티팩트는 [메모리 검증](memory.md)을 따른다.
 
 최종 `./gradlew build -q`, `./gradlew -Pfull build -q`, `VERIFY_PORT=8104 python3 scripts/verify-runtime.py` 모두 종료 0. full 기준 core 31·app 65·full 21건 실패/오류/생략 0이며, 48문서 런타임 최대 RSS는 266.7 MiB다. JVM 구성 검사 종료 0·내부 정보 grep 무일치(종료 1), 서버·포트 정리 완료. 로컬 요약: `build/verification/memory/summary.json`.
+
+## GitHub Actions 실행 (2026-11-20)
+
+공개 저장소 main push에서 CI(lite·full Gradle 빌드·테스트)와 이미지 workflow(GHCR 게시 없는 amd64 Buildx 빌드)가 GitHub 호스팅 러너로 실행되어 통과했다. 이전 실행에서 full 테스트가 가끔 `HTTP/1.1 header parser received no bytes`로 실패했다. ML 서버가 요청 본문을 다 받기 전에 응답(401·503·413 등)하면 JDK가 연결을 닫는데, 클라이언트가 그 연결을 재사용한 것을 원인으로 판단했다. 이런 응답에 `Connection: close`를 명시하도록 고쳤다. `v*` 태그의 GHCR 게시·증명 생성은 아직 실행하지 않았다.
