@@ -2,8 +2,10 @@ package com.bluesounds.nasquire.full;
 
 import com.bluesounds.nasquire.core.ocr.OcrTextExtractor;
 import com.bluesounds.nasquire.core.*;
+import java.io.*;
 import java.net.*;
 import java.net.http.*;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
@@ -36,6 +38,22 @@ class MlServerTest {
         if (auth != null) request.header("Authorization", auth);
         if (type != null) request.header("Content-Type", type);
         return client.send(request.build(), HttpResponse.BodyHandlers.ofString());
+    }
+    /**
+     * 본문 없이 상한을 넘는 Content-Length만 보내 본문 수신 전 413을 확인한다.
+     * 큰 본문을 실제로 보내면 서버가 받지 않은 본문을 남긴 채 닫을 때 RST가 응답을 지울 수 있다(클라이언트 쪽 연결 오류).
+     */
+    static int declaredOnly(int port, String token, String method, String path, String type, String filename, long length) throws IOException {
+        try (var socket = new Socket("127.0.0.1", port)) {
+            socket.setSoTimeout(30_000);
+            String head = method + " " + path + " HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer " + token + "\r\n"
+                    + (type == null ? "" : "Content-Type: " + type + "\r\n") + (filename == null ? "" : "X-Filename: " + filename + "\r\n")
+                    + "Content-Length: " + length + "\r\n\r\n";
+            socket.getOutputStream().write(head.getBytes(StandardCharsets.US_ASCII)); socket.getOutputStream().flush();
+            String status = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII)).readLine();
+            assertNotNull(status, "응답 없음");
+            return Integer.parseInt(status.split(" ")[1]);
+        }
     }
     private HttpResponse<String> json(MlServer server, String path, String auth, String body) throws Exception {
         return call(server, "POST", path, auth, "application/json", body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
@@ -107,7 +125,7 @@ class MlServerTest {
             assertEquals(400, json(server, "/v1/embeddings", bearer, "not json").statusCode());
             assertEquals(400, json(server, "/v1/embeddings", bearer, "[1]").statusCode());
             assertEquals(400, call(server, "POST", "/v1/embeddings", bearer, "text/plain", "{\"input\":\"a\"}".getBytes()).statusCode());
-            assertEquals(413, json(server, "/v1/embeddings", bearer, "{\"input\":\"" + "x".repeat(MlServer.MAX_JSON) + "\"}").statusCode());
+            assertEquals(413, declaredOnly(server.port(), TOKEN, "POST", "/v1/embeddings", "application/json", null, MlServer.MAX_JSON + 1));
         }
     }
     @Test void configurationRequiresTokenFromFileOrEnvironmentAndAFeature() throws Exception {

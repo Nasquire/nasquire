@@ -161,4 +161,4 @@ Synology x86 NAS 실기의 색인 후 메모리 유지 피드백을 바탕으로
 
 ## GitHub Actions 실행 (2026-11-20)
 
-공개 저장소 main push에서 CI(lite·full Gradle 빌드·테스트)와 이미지 workflow(GHCR 게시 없는 amd64 Buildx 빌드)가 GitHub 호스팅 러너로 실행되어 통과했다. 이전 실행에서 full 테스트가 가끔 `HTTP/1.1 header parser received no bytes`로 실패했다. ML 서버가 요청 본문을 다 받기 전에 응답(401·503·413 등)하면 JDK가 연결을 닫는데, 클라이언트가 그 연결을 재사용한 것을 원인으로 판단했다. 이런 응답에 `Connection: close`를 명시하도록 고쳤다. `v*` 태그의 GHCR 게시·증명 생성은 아직 실행하지 않았다.
+공개 저장소 main push에서 CI(lite·full Gradle 빌드·테스트)와 이미지 workflow(GHCR 게시 없는 amd64 Buildx 빌드)가 GitHub 호스팅 러너로 실행되어 통과했다. 이전 실행에서 full 테스트가 가끔 `HTTP/1.1 header parser received no bytes`로 실패했다. ML 서버가 요청 본문을 다 받기 전에 응답(401·503·413 등)하면 JDK가 연결을 닫는다. 이때 클라이언트가 그 연결을 재사용하거나, 큰 본문을 보내는 중이면 받지 않은 본문 때문에 연결이 리셋되어 응답이 사라질 수 있다. 서버는 이런 응답에 `Connection: close`를 명시하고, 크기 상한 시험은 큰 `Content-Length` 헤더만 보내 본문 수신 전 413을 확인하도록 고쳤다. 큰 본문을 그대로 보내는 클라이언트는 413 대신 연결 오류를 받을 수 있다. `v*` 태그의 GHCR 게시·증명 생성은 아직 실행하지 않았다.

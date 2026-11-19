@@ -287,9 +287,9 @@ class MlPipelineTest {
         var fake = fake();
         var server = start(fake, false);
         // 형식별 크기 상한(Office/HWP 8 MiB, 이미지 16 MiB)은 본문을 받기 전에 413.
-        assertEquals(413, extract(server, null, null, "big.docx", new byte[(int)MlPipeline.MAX_OFFICE + 1]).statusCode());
-        assertEquals(413, call(server, "PUT", "/process", "Bearer " + TOKEN, "image/png", null, new byte[(int)MlPipeline.MAX_IMAGE + 1]).statusCode());
-        assertEquals(413, call(server, "POST", "/v1/ocr", "Bearer " + TOKEN, "image/png", null, new byte[MlServer.MAX_IMAGE + 1]).statusCode());
+        assertEquals(413, MlServerTest.declaredOnly(server.port(), TOKEN, "POST", "/v1/extract", null, "big.docx", MlPipeline.MAX_OFFICE + 1));
+        assertEquals(413, MlServerTest.declaredOnly(server.port(), TOKEN, "PUT", "/process", "image/png", null, MlPipeline.MAX_IMAGE + 1));
+        assertEquals(413, MlServerTest.declaredOnly(server.port(), TOKEN, "POST", "/v1/ocr", "image/png", null, MlServer.MAX_IMAGE + 1L));
         // 포화: OCR 중인 문서가 있으면 /v1/extract·/process·/v1/ocr 모두 기다리지 않고 503.
         fake.ocrGate = new CountDownLatch(1);
         var first = client.sendAsync(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + "/v1/extract"))
